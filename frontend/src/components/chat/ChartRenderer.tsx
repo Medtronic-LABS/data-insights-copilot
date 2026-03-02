@@ -206,7 +206,10 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
   // BULLET CHART - For performance vs target
   // ============================================
   if (type === 'bullet') {
-    const { target: defaultTarget, ranges = [30, 70, 100] } = chartData;
+    // Get target from multiple possible locations
+    const dataTarget = (rawData as any)?.target;
+    const defaultTarget = chartData.target ?? dataTarget ?? 0.8;
+    const ranges = chartData.ranges ?? [30, 70, 100];
     
     // Transform data to bullet format
     let bulletData: { name: string; actual: number; target: number }[] = [];
@@ -216,24 +219,27 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
       bulletData = rawData.map(item => ({
         name: item.name || item.label || 'Item',
         actual: typeof item.actual === 'number' ? item.actual : parseFloat(item.actual) || 0,
-        target: typeof item.target === 'number' ? item.target : (defaultTarget || 80)
+        target: typeof item.target === 'number' ? item.target : defaultTarget
       }));
     } else if (rawData?.labels && rawData?.values) {
       // Labels/values format from backend
+      // Get target from data object if available
+      const targetFromData = rawData.target ?? defaultTarget;
+      
       bulletData = rawData.labels.map((label: string, index: number) => {
         const value = rawData.values![index];
         
+        // Skip if value is undefined (handles mismatched array lengths)
+        if (value === undefined) return null;
+        
         // Handle case where value is an object {actual, target}
         if (value && typeof value === 'object' && 'actual' in value) {
-          // Convert decimal rates to percentages if they're between 0-1
           let actualVal = typeof value.actual === 'number' ? value.actual : parseFloat(value.actual) || 0;
-          let targetVal = typeof value.target === 'number' ? value.target : (defaultTarget || 0.8);
+          let targetVal = typeof value.target === 'number' ? value.target : targetFromData;
           
           // If values are decimals (0-1), convert to percentage
-          if (actualVal <= 1 && targetVal <= 1) {
-            actualVal = actualVal * 100;
-            targetVal = targetVal * 100;
-          }
+          if (actualVal <= 1) actualVal = actualVal * 100;
+          if (targetVal <= 1) targetVal = targetVal * 100;
           
           return {
             name: label,
@@ -244,20 +250,27 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
         
         // Handle simple numeric value
         let numericValue = typeof value === 'number' ? value : parseFloat(value) || 0;
-        if (numericValue <= 1) numericValue = numericValue * 100; // Convert to percentage
+        let targetVal = typeof targetFromData === 'number' ? targetFromData : 0.8;
+        
+        // If values are decimals (0-1), convert to percentage
+        if (numericValue <= 1) numericValue = numericValue * 100;
+        if (targetVal <= 1) targetVal = targetVal * 100;
         
         return {
           name: label,
           actual: numericValue,
-          target: defaultTarget || 80
+          target: targetVal
         };
-      });
+      }).filter((item): item is { name: string; actual: number; target: number } => item !== null);
     } else if (chartData.actual !== undefined) {
       // Single bullet from chartData props
+      let targetVal = defaultTarget;
+      if (targetVal <= 1) targetVal = targetVal * 100;
+      
       bulletData = [{ 
         name: title || 'Progress', 
         actual: chartData.actual, 
-        target: defaultTarget || 80 
+        target: targetVal
       }];
     }
 
@@ -266,9 +279,9 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
       return <div className="text-sm text-gray-500 italic">No bullet chart data available</div>;
     }
 
-    // Determine max value for scaling
+    // Determine max value for scaling (safely handle empty arrays)
     const allValues = bulletData.flatMap(d => [d.actual, d.target]);
-    const maxValue = Math.max(...allValues, ...ranges);
+    const maxValue = Math.max(...allValues, ...ranges, 100);
 
     return (
       <div className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
