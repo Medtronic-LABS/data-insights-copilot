@@ -193,29 +193,119 @@ class SQLService:
             # Initialize critique service
             self.critique_service = get_critique_service()
 
-            # Check if patient_tracker exists to determine if we should ignore demo 'patient' table
-            # First, create a temporary connection to check tables
-            temp_db = SQLDatabase.from_uri(
-                self._database_url, 
-                view_support=True,
-                engine_args={'pool_size': 20, 'max_overflow': 50, 'pool_timeout': 60}
+            # WORKAROUND for PostgreSQL permission issues:
+            # Some PostgreSQL instances don't grant access to pg_collation system table.
+            # SQLAlchemy's full metadata reflection tries to load domains which requires pg_collation.
+            # Solution: First get table names via a lightweight query, then use include_tables
+            # to limit reflection to only those tables (avoids domain inspection).
+            
+            from sqlalchemy import create_engine, text
+            
+            # Create engine for lightweight table discovery
+            engine = create_engine(
+                self._database_url,
+                pool_size=20, 
+                max_overflow=50, 
+                pool_timeout=60
             )
-            all_tables = temp_db.get_usable_table_names()
+            
+            all_table_names = []
+            detected_schema = 'public'
+            
+            # Get table names without triggering full reflection
+            with engine.connect() as conn:
+                # First, try to get tables from ALL accessible schemas (not just public)
+                try:
+                    # Query for regular tables across all schemas the user can access
+                    tables_result = conn.execute(text("""
+                        SELECT table_schema, table_name 
+                        FROM information_schema.tables 
+                        WHERE table_type = 'BASE TABLE'
+                        AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                        ORDER BY table_schema, table_name
+                    """))
+                    tables_with_schema = [(row[0], row[1]) for row in tables_result]
+                    
+                    # Query for views across all schemas
+                    views_result = conn.execute(text("""
+                        SELECT table_schema, table_name 
+                        FROM information_schema.views 
+                        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                        ORDER BY table_schema, table_name
+                    """))
+                    views_with_schema = [(row[0], row[1]) for row in views_result]
+                    
+                    # Combine and determine the primary schema
+                    all_objects = tables_with_schema + views_with_schema
+                    
+                    if all_objects:
+                        # Use the schema that has the most tables
+                        from collections import Counter
+                        schema_counts = Counter(obj[0] for obj in all_objects)
+                        detected_schema = schema_counts.most_common(1)[0][0]
+                        logger.info(f"Detected primary schema: {detected_schema}")
+                        
+                        # Get table names from the primary schema
+                        all_table_names = [obj[1] for obj in all_objects if obj[0] == detected_schema]
+                        logger.info(f"Found {len(all_table_names)} tables/views in schema '{detected_schema}'")
+                    
+                except Exception as e:
+                    logger.warning(f"information_schema query failed: {e}")
+                
+                # Fallback: If information_schema didn't work, try pg_class directly
+                if not all_table_names:
+                    try:
+                        logger.info("Trying pg_class fallback for table discovery...")
+                        result = conn.execute(text("""
+                            SELECT c.relname 
+                            FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE c.relkind IN ('r', 'v')  -- r=table, v=view
+                            AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                            AND has_table_privilege(c.oid, 'SELECT')
+                            ORDER BY c.relname
+                        """))
+                        all_table_names = [row[0] for row in result]
+                        logger.info(f"pg_class fallback found {len(all_table_names)} accessible tables/views")
+                    except Exception as e2:
+                        logger.warning(f"pg_class fallback also failed: {e2}")
+            
+            engine.dispose()
+            
+            logger.info(f"Discovered {len(all_table_names)} tables/views total")
             
             # Determine tables to ignore (demo tables that shouldn't be used)
             ignore_tables = []
-            if 'patient_tracker' in all_tables and 'patient' in all_tables:
+            if 'patient_tracker' in all_table_names and 'patient' in all_table_names:
                 ignore_tables.append('patient')
                 logger.info("Will ignore demo 'patient' table - using 'patient_tracker' for patient data")
+            
+            # Filter out ignored tables
+            include_tables = [t for t in all_table_names if t not in ignore_tables]
 
-            # Initialize database connection with dynamic table discovery
-            # No hardcoded view names - uses whatever tables/views exist in the database
-            self.db = SQLDatabase.from_uri(
-                self._database_url,
-                view_support=True,
-                ignore_tables=ignore_tables if ignore_tables else None,
-                engine_args={'pool_size': 20, 'max_overflow': 50, 'pool_timeout': 60}
-            )
+            # CRITICAL: If no tables found, we cannot use include_tables=[] 
+            # as SQLAlchemy will still try full reflection. Instead, raise a clear error.
+            if not include_tables:
+                raise ValueError(
+                    "No accessible tables found in the database. "
+                    "Please ensure the database user has SELECT permission on at least one table. "
+                    "Check that tables exist and are not in system schemas."
+                )
+
+            # Initialize database connection with explicit include_tables
+            # This avoids full metadata reflection that requires pg_collation access
+            db_kwargs = {
+                'view_support': True,
+                'include_tables': include_tables,
+                'engine_args': {'pool_size': 20, 'max_overflow': 50, 'pool_timeout': 60}
+            }
+            
+            # If we detected a non-public schema, we need to set it
+            if detected_schema != 'public':
+                db_kwargs['schema'] = detected_schema
+                logger.info(f"Using schema: {detected_schema}")
+            
+            self.db = SQLDatabase.from_uri(self._database_url, **db_kwargs)
             logger.info("Database connection established with view support")
             
             self._cache_schema()
@@ -792,44 +882,89 @@ Response:"""
             table_names: Optional list of tables to inspect. If None, fetches all.
         """
         try:
-            # Create a temporary connection
-            temp_db = SQLDatabase.from_uri(
+            from sqlalchemy import create_engine, text
+            
+            # Create engine for lightweight table discovery (avoids pg_collation issue)
+            engine = create_engine(
                 uri,
-                engine_args={'pool_size': 20, 'max_overflow': 50, 'pool_timeout': 60}
+                pool_size=20, 
+                max_overflow=50, 
+                pool_timeout=60
             )
             
-            # If explicit tables requested, use those. Otherwise discover all.
+            all_table_names = []
+            
+            # Get table names without triggering full reflection
+            with engine.connect() as conn:
+                # Query for tables across all accessible schemas
+                try:
+                    tables_result = conn.execute(text("""
+                        SELECT table_schema, table_name 
+                        FROM information_schema.tables 
+                        WHERE table_type = 'BASE TABLE'
+                        AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                        ORDER BY table_schema, table_name
+                    """))
+                    tables_with_schema = [(row[0], row[1]) for row in tables_result]
+                    
+                    views_result = conn.execute(text("""
+                        SELECT table_schema, table_name 
+                        FROM information_schema.views 
+                        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                        ORDER BY table_schema, table_name
+                    """))
+                    views_with_schema = [(row[0], row[1]) for row in views_result]
+                    
+                    all_objects = tables_with_schema + views_with_schema
+                    all_table_names = [obj[1] for obj in all_objects]
+                    
+                except Exception as e:
+                    logger.warning(f"information_schema query failed: {e}")
+                
+                # Fallback to pg_class if information_schema didn't work
+                if not all_table_names:
+                    try:
+                        result = conn.execute(text("""
+                            SELECT c.relname 
+                            FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE c.relkind IN ('r', 'v')
+                            AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                            AND has_table_privilege(c.oid, 'SELECT')
+                            ORDER BY c.relname
+                        """))
+                        all_table_names = [row[0] for row in result]
+                    except Exception as e2:
+                        logger.warning(f"pg_class fallback also failed: {e2}")
+            
+            # If explicit tables requested, filter to only those that exist
             if table_names:
-                all_tables = temp_db.get_usable_table_names()
-                # Filter to only those that actually exist
-                target_tables = [t for t in table_names if t in all_tables]
+                target_tables = [t for t in table_names if t in all_table_names]
             else:
-                target_tables = temp_db.get_usable_table_names()
+                target_tables = all_table_names
             
             schema_info = {}
-            inspector = inspect(temp_db._engine)
+            inspector = inspect(engine)
             
             for table in target_tables:
-                # Get column info
-                columns = inspector.get_columns(table)
-                
-                column_details = []
-                for col in columns:
-                    column_details.append({
-                        "name": col["name"],
-                        "type": str(col["type"]),
-                        "nullable": col.get("nullable", True)
-                    })
-                
-                # Get FK info if possible (useful for graph relationships)
                 try:
-                    _ = inspector.get_foreign_keys(table)
-                    # FK info available for future use
-                except Exception:
-                    pass
-                
-                schema_info[table] = column_details
-                
+                    # Get column info
+                    columns = inspector.get_columns(table)
+                    
+                    column_details = []
+                    for col in columns:
+                        column_details.append({
+                            "name": col["name"],
+                            "type": str(col["type"]),
+                            "nullable": col.get("nullable", True)
+                        })
+                    
+                    schema_info[table] = column_details
+                except Exception as e:
+                    logger.warning(f"Could not get columns for table {table}: {e}")
+                    schema_info[table] = []
+            
+            engine.dispose()
             return {"tables": target_tables, "details": schema_info}
             
         except Exception as e:
