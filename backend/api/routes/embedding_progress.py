@@ -349,22 +349,102 @@ async def _run_embedding_job(
         # PHASE 1: EXTRACTION (or restore from checkpoint)
         # =================================================================
         if data_source_type == 'file':
-            # File-based source - no extraction needed
-            documents_raw = config.get('ingestion_documents')
-            if not documents_raw:
-                raise ValueError("No documents found for file data source")
-            try:
+            # File-based source - load from DuckDB/CSV instead of limited preview
+            job_service.update_progress(job_id, processed_documents=0, current_batch=0, 
+                                        phase="Loading file data from DuckDB...")
+            
+            # Get table name from config
+            file_name = config.get('ingestion_file_name', '')
+            if not file_name:
+                raise ValueError("No file name found in configuration")
+            
+            # Import helper to get table name
+            from backend.api.routes.ingestion import _sanitize_table_name, _get_user_duckdb_path
+            table_name = _sanitize_table_name(file_name)
+            duckdb_path = _get_user_duckdb_path(user_id)
+            
+            if not duckdb_path.exists():
+                # Fallback to preview documents if DuckDB not available
+                logger.warning(f"DuckDB not found at {duckdb_path}, falling back to preview documents")
+                documents_raw = config.get('ingestion_documents')
+                if not documents_raw:
+                    raise ValueError("No documents found for file data source")
                 parsed_docs = json.loads(documents_raw)
-                for i, doc in enumerate(parsed_docs):
-                    from backend.services.embedding_document_generator import EmbeddingDocument
-                    documents.append(EmbeddingDocument(
-                        document_id=f"file-doc-{i}",
-                        document_type="file",
-                        content=doc.get("page_content", ""),
+                for doc in parsed_docs:
+                    documents.append(Document(
+                        page_content=doc.get("page_content", ""),
                         metadata=doc.get("metadata", {})
                     ))
-            except Exception as e:
-                raise ValueError(f"Failed to parse ingestion documents: {e}")
+            else:
+                # Load ALL rows from DuckDB
+                import duckdb
+                
+                try:
+                    conn = duckdb.connect(str(duckdb_path), read_only=True)
+                    
+                    # Get total row count first
+                    count_result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+                    total_rows = count_result[0] if count_result else 0
+                    logger.info(f"Loading {total_rows:,} rows from DuckDB table: {table_name}")
+                    
+                    # Get column names
+                    col_info = conn.execute(f"DESCRIBE SELECT * FROM {table_name}").fetchall()
+                    columns = [row[0] for row in col_info]
+                    
+                    # Process in batches to avoid memory issues
+                    BATCH_SIZE = 10000
+                    offset = 0
+                    doc_id = 0
+                    
+                    while offset < total_rows:
+                        if job_service.is_job_cancelled(job_id):
+                            raise JobCancelledError(f"Job {job_id} cancelled during file loading")
+                        
+                        # Fetch batch
+                        batch_query = f"SELECT * FROM {table_name} LIMIT {BATCH_SIZE} OFFSET {offset}"
+                        rows = conn.execute(batch_query).fetchall()
+                        
+                        for row in rows:
+                            # Create document content from row data
+                            row_dict = {columns[i]: row[i] for i in range(len(columns)) if row[i] is not None}
+                            
+                            # Format as readable text for embedding
+                            content_parts = []
+                            for col, val in row_dict.items():
+                                if val is not None and str(val).strip():
+                                    # Clean column name for readability
+                                    clean_col = col.replace('_', ' ').title()
+                                    content_parts.append(f"{clean_col}: {val}")
+                            
+                            if content_parts:
+                                page_content = "\n".join(content_parts)
+                                documents.append(Document(
+                                    page_content=page_content,
+                                    metadata={
+                                        "source": file_name,
+                                        "table": table_name,
+                                        "row_id": doc_id,
+                                        "source_id": f"{table_name}_row_{doc_id}"
+                                    }
+                                ))
+                                doc_id += 1
+                        
+                        offset += BATCH_SIZE
+                        if offset % 50000 == 0 or offset >= total_rows:
+                            job_service.update_progress(
+                                job_id, processed_documents=0, current_batch=0,
+                                phase=f"Loading rows from file... ({min(offset, total_rows):,}/{total_rows:,})"
+                            )
+                            logger.info(f"Loaded {min(offset, total_rows):,}/{total_rows:,} rows from {table_name}")
+                    
+                    conn.close()
+                    logger.info(f"Created {len(documents):,} documents from {table_name}")
+                    
+                except duckdb.CatalogException:
+                    conn.close()
+                    raise ValueError(f"Table '{table_name}' not found in DuckDB. The file may still be processing in background. Please wait and try again.")
+                except Exception as e:
+                    raise ValueError(f"Failed to load data from DuckDB: {e}")
         else:
             # Database source - check for extraction checkpoint
             if resume_phase and resume_phase != CheckpointPhase.EXTRACTION:
