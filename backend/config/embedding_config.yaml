@@ -1,6 +1,28 @@
-# Table inclusion and exclusion rules
+# =============================================================================
+# Embedding Pipeline Configuration
+# =============================================================================
+# This file contains DEFAULT configurations for the embedding pipeline.
+#
+# PRIMARY SOURCE: Database `system_settings` table (managed via frontend)
+# FALLBACK: Values in this file are used if database settings unavailable
+#
+# To modify these settings at runtime, use the frontend Settings page.
+# Changes made there are stored in the database and take precedence.
+# =============================================================================
+
+# =============================================================================
+# Vector Store Infrastructure (paths - typically don't change at runtime)
+# =============================================================================
+vector_store:
+  chroma_base_path: "./data/indexes"
+
+# =============================================================================
+# Table Inclusion and Exclusion Rules
+# =============================================================================
+# These rules control which tables and columns are included in embeddings.
+# Primary source: system_settings.data_privacy category
 tables:
-  # Global column exclusions (applied to all tables)
+  # Global column exclusions (applied to all tables) - PII protection
   global_exclude_columns:
     - "first_name"
     - "last_name"
@@ -15,9 +37,11 @@ tables:
     - "father_educational_qualification"
     - "password"
     - "national_id"
+    - "email"
+    - "address"
+    - "social_security_number"
 
-
-  # Exclude entire tables (no medical/clinical value)
+  # Exclude entire tables (no clinical/analytical value)
   exclude_tables:
     - "audit"                               # System audit logs
     - "awsdms_ddl_audit"                    # AWS DMS migration logs
@@ -67,49 +91,12 @@ tables:
       - "password"
       - "username"
 
-# Embedding configuration
-embedding:
-  model_name: "BAAI/bge-m3"
-  model_path: "./models/bge-m3"
-  batch_size: 128
-
-# Advanced Chunking Configuration for Small-to-Big Retrieval
-chunking:
-  parent_splitter:
-    chunk_size: 800       # Reduced from 1000 - better for structured medical data
-    chunk_overlap: 150    # Reduced proportionally
-  child_splitter:
-    chunk_size: 200       # Reduced from 250 - captures single medical concepts better
-    chunk_overlap: 50     # Increased from 30 - ensures key medical terms aren't split
-
-# Vector store configuration
-vector_store:
-  type: "chroma"
-  chroma_path: "./data/indexes/chroma_db_advanced"
-  collection_name: "spice_healthcare_advanced"
-
-# Advanced Retriever Configuration
-retriever:
-  # Weights for combining dense (vector) and sparse (keyword) search
-  hybrid_search_weights: [0.75, 0.25] # Increased semantic weight - medical concepts are semantic
-  # Number of initial documents to fetch before reranking
-  top_k_initial: 50      # Increased from 20 - cast wider net for medical data
-  # Number of final documents to return after reranking
-  top_k_final: 10        # Increased from 5 - provide richer context to LLM
-  # Model for the final reranking step
-  reranker_model_name: "BAAI/bge-reranker-base"
-
-# Text processing
-text_processing:
-  chunk_size: 1000
-  chunk_overlap: 200
-  min_chunk_length: 50
-
 # =============================================================================
 # Medical Context Mappings for Clinical Terminology Enrichment
 # =============================================================================
 # These mappings provide human-readable names for clinical database columns,
 # improving embedding quality by adding semantic context for the LLM.
+# Primary source: system_settings.medical_context.terminology_mappings
 # Format: column_name: "Human Readable Name"
 medical_context:
   # Vital Signs
@@ -197,7 +184,7 @@ medical_context:
   condition: "Medical Condition"
   comorbidity: "Comorbid Condition"
   
-  # Screening Results
+  # Screening Scores
   phq9_score: "PHQ-9 Depression Score"
   phq4_score: "PHQ-4 Mental Health Score"
   gad7_score: "GAD-7 Anxiety Score"
@@ -208,6 +195,7 @@ medical_context:
 # =============================================================================
 # Column prefixes that indicate clinical boolean flags.
 # Used by _enrich_medical_content() to provide semantic context.
+# Primary source: system_settings.medical_context.clinical_flag_prefixes
 clinical_flag_prefixes:
   - "is_"           # e.g., is_diabetic, is_hypertensive
   - "has_"          # e.g., has_allergy, has_complication
@@ -217,4 +205,10 @@ clinical_flag_prefixes:
   - "confirmed_"    # e.g., confirmed_diagnosis, confirmed_pregnancy
   - "requires_"     # e.g., requires_insulin, requires_referral
   - "on_"           # e.g., on_medication, on_insulin
+
+# =============================================================================
+# Text Processing Defaults
+# =============================================================================
+text_processing:
+  min_chunk_length: 50
 
