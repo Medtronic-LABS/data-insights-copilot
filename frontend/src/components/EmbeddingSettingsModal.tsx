@@ -199,13 +199,28 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
                                         type="number"
                                         min={200}
                                         max={2000}
-                                        value={settings.chunking.parent_chunk_size}
-                                        onChange={(e) => setSettings({
-                                            ...settings,
-                                            chunking: { ...settings.chunking, parent_chunk_size: parseInt(e.target.value) || 800 }
-                                        })}
+                                        value={settings.chunking.parent_chunk_size || ''}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
+                                            if (val === '' || !isNaN(val)) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, parent_chunk_size: val === '' ? 0 : val }
+                                                });
+                                            }
+                                        }}
+                                        onBlur={(e) => {
+                                            const val = parseInt(e.target.value, 10);
+                                            if (isNaN(val) || val < 200) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, parent_chunk_size: 200 }
+                                                });
+                                            }
+                                        }}
                                         className="mt-1 w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                     />
+                                    <span className="text-[10px] text-gray-400">Min: 200</span>
                                 </div>
                                 <div>
                                     <label className="text-xs font-medium text-gray-600">Parent Overlap</label>
@@ -213,13 +228,28 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
                                         type="number"
                                         min={0}
                                         max={500}
-                                        value={settings.chunking.parent_chunk_overlap}
-                                        onChange={(e) => setSettings({
-                                            ...settings,
-                                            chunking: { ...settings.chunking, parent_chunk_overlap: parseInt(e.target.value) || 150 }
-                                        })}
+                                        value={settings.chunking.parent_chunk_overlap ?? ''}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
+                                            if (val === '' || !isNaN(val)) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, parent_chunk_overlap: val === '' ? 0 : val }
+                                                });
+                                            }
+                                        }}
+                                        onBlur={(e) => {
+                                            const val = parseInt(e.target.value, 10);
+                                            if (isNaN(val) || val < 0) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, parent_chunk_overlap: 0 }
+                                                });
+                                            }
+                                        }}
                                         className="mt-1 w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                     />
+                                    <span className="text-[10px] text-gray-400">Min: 0</span>
                                 </div>
                                 <div>
                                     <label className="text-xs font-medium text-gray-600">Child Chunk Size</label>
@@ -227,13 +257,28 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
                                         type="number"
                                         min={50}
                                         max={500}
-                                        value={settings.chunking.child_chunk_size}
-                                        onChange={(e) => setSettings({
-                                            ...settings,
-                                            chunking: { ...settings.chunking, child_chunk_size: parseInt(e.target.value) || 200 }
-                                        })}
+                                        value={settings.chunking.child_chunk_size || ''}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
+                                            if (val === '' || !isNaN(val)) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, child_chunk_size: val === '' ? 0 : val }
+                                                });
+                                            }
+                                        }}
+                                        onBlur={(e) => {
+                                            const val = parseInt(e.target.value, 10);
+                                            if (isNaN(val) || val < 50) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, child_chunk_size: 50 }
+                                                });
+                                            }
+                                        }}
                                         className="mt-1 w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                     />
+                                    <span className="text-[10px] text-gray-400">Min: 50</span>
                                 </div>
                                 <div>
                                     <label className="text-xs font-medium text-gray-600">Child Overlap</label>
@@ -241,13 +286,28 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
                                         type="number"
                                         min={0}
                                         max={100}
-                                        value={settings.chunking.child_chunk_overlap}
-                                        onChange={(e) => setSettings({
-                                            ...settings,
-                                            chunking: { ...settings.chunking, child_chunk_overlap: parseInt(e.target.value) || 50 }
-                                        })}
+                                        value={settings.chunking.child_chunk_overlap ?? ''}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
+                                            if (val === '' || !isNaN(val)) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, child_chunk_overlap: val === '' ? 0 : val }
+                                                });
+                                            }
+                                        }}
+                                        onBlur={(e) => {
+                                            const val = parseInt(e.target.value, 10);
+                                            if (isNaN(val) || val < 0) {
+                                                setSettings({
+                                                    ...settings,
+                                                    chunking: { ...settings.chunking, child_chunk_overlap: 0 }
+                                                });
+                                            }
+                                        }}
                                         className="mt-1 w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                     />
+                                    <span className="text-[10px] text-gray-400">Min: 0</span>
                                 </div>
                                 <div className="col-span-2">
                                     <button

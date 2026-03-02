@@ -602,7 +602,10 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({ settings, onChange,
                                     <input
                                         type="number"
                                         value={localSettings.chunking.parentChunkSize}
-                                        onChange={(e) => handleChange('chunking', 'parentChunkSize', parseInt(e.target.value))}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? 0 : parseInt(e.target.value, 10);
+                                            if (!isNaN(val)) handleChange('chunking', 'parentChunkSize', val);
+                                        }}
                                         disabled={readOnly}
                                         className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
                                     />
@@ -612,7 +615,10 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({ settings, onChange,
                                     <input
                                         type="number"
                                         value={localSettings.chunking.parentChunkOverlap}
-                                        onChange={(e) => handleChange('chunking', 'parentChunkOverlap', parseInt(e.target.value))}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? 0 : parseInt(e.target.value, 10);
+                                            if (!isNaN(val)) handleChange('chunking', 'parentChunkOverlap', val);
+                                        }}
                                         disabled={readOnly}
                                         className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
                                     />
@@ -632,7 +638,10 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({ settings, onChange,
                                     <input
                                         type="number"
                                         value={localSettings.chunking.childChunkSize}
-                                        onChange={(e) => handleChange('chunking', 'childChunkSize', parseInt(e.target.value))}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? 0 : parseInt(e.target.value, 10);
+                                            if (!isNaN(val)) handleChange('chunking', 'childChunkSize', val);
+                                        }}
                                         disabled={readOnly}
                                         className="w-full rounded-md border-blue-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border bg-white"
                                     />
@@ -642,7 +651,10 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({ settings, onChange,
                                     <input
                                         type="number"
                                         value={localSettings.chunking.childChunkOverlap}
-                                        onChange={(e) => handleChange('chunking', 'childChunkOverlap', parseInt(e.target.value))}
+                                        onChange={(e) => {
+                                            const val = e.target.value === '' ? 0 : parseInt(e.target.value, 10);
+                                            if (!isNaN(val)) handleChange('chunking', 'childChunkOverlap', val);
+                                        }}
                                         disabled={readOnly}
                                         className="w-full rounded-md border-blue-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border bg-white"
                                     />
