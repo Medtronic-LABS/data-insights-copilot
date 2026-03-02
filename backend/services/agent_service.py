@@ -16,7 +16,7 @@ from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 
-from backend.config import get_settings
+from backend.config import get_settings, get_llm_settings, get_embedding_settings
 from backend.core.logging import get_logger
 from backend.services.sql_service import get_sql_service, SQLService
 from backend.services.vector_store import get_vector_store
@@ -476,13 +476,14 @@ Use this to search unstructured text, notes, and semantic descriptions.
                     suggested_questions = []
             
             # Build response
+            embedding_settings = get_embedding_settings()
             response = ChatResponse(
                 answer=self._clean_answer(full_response),
                 chart_data=chart_data,
                 suggested_questions=suggested_questions,
                 reasoning_steps=reasoning_steps,
                 embedding_info=EmbeddingInfo(
-                    model=settings.embedding_model_name,
+                    model=embedding_settings.get('model_name', 'BAAI/bge-m3'),
                     dimensions=self.embedding_model.dimension,
                     search_method="hybrid" if rag_used else "structured",
                     vector_norm=embedding_info.get("norm"),
@@ -503,9 +504,10 @@ Use this to search unstructured text, notes, and semantic descriptions.
                     obs_service = get_observability_service()
                     input_tokens = len(query.split()) * 1.3
                     output_tokens = len(full_response.split()) * 1.3
+                    llm_settings = get_llm_settings()
                     await obs_service.track_usage(
                         operation="rag_pipeline",
-                        model=settings.openai_model,
+                        model=llm_settings.get('model_name', 'gpt-4o'),
                         input_tokens=int(input_tokens),
                         output_tokens=int(output_tokens),
                         latency_ms=int(duration * 1000),

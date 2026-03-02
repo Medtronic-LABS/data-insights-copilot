@@ -5,8 +5,6 @@ Provides CRUD operations for system settings with history tracking.
 import json
 import logging
 from typing import Optional, Dict, Any, List, Literal
-from datetime import datetime
-from functools import lru_cache
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
@@ -26,6 +24,11 @@ class SettingCategory(str, Enum):
     UI = "ui"
     SECURITY = "security"
     OBSERVABILITY = "observability"
+    # Operational configuration categories
+    DATA_PRIVACY = "data_privacy"
+    MEDICAL_CONTEXT = "medical_context"
+    CHUNKING = "chunking"
+    VECTOR_STORE = "vector_store"
 
 
 class SettingValueType(str, Enum):
@@ -121,6 +124,53 @@ class ObservabilitySettings(BaseModel):
     observability_enabled: bool = False
 
 
+# ============================================================================
+# Operational Configuration Models (Business Logic Settings)
+# ============================================================================
+
+class DataPrivacySettings(BaseModel):
+    """Data privacy and PII protection settings."""
+    global_exclude_columns: List[str] = Field(
+        default=["first_name", "last_name", "phone_number", "date_of_birth", "password", "national_id"],
+        description="Columns to exclude globally from embedding (PII protection)"
+    )
+    exclude_tables: List[str] = Field(
+        default=["audit", "user_token", "flyway_schema_history"],
+        description="Tables to exclude entirely from embedding"
+    )
+    table_specific_exclusions: Dict[str, List[str]] = Field(
+        default={},
+        description="Table-specific column exclusions"
+    )
+
+
+class MedicalContextSettings(BaseModel):
+    """Medical terminology and clinical context settings."""
+    terminology_mappings: Dict[str, str] = Field(
+        default={},
+        description="Medical terminology mappings (column_name -> human readable)"
+    )
+    clinical_flag_prefixes: List[str] = Field(
+        default=["is_", "has_", "was_", "history_of_", "flag_", "confirmed_", "requires_", "on_"],
+        description="Column prefixes that indicate clinical boolean flags"
+    )
+
+
+class ChunkingSettings(BaseModel):
+    """Chunking strategy settings for embedding pipeline."""
+    parent_chunk_size: int = Field(default=800, ge=100, le=4000, description="Parent chunk size")
+    parent_chunk_overlap: int = Field(default=150, ge=0, le=500, description="Parent chunk overlap")
+    child_chunk_size: int = Field(default=200, ge=50, le=1000, description="Child chunk size")
+    child_chunk_overlap: int = Field(default=50, ge=0, le=200, description="Child chunk overlap")
+    min_chunk_length: int = Field(default=50, ge=10, le=500, description="Minimum chunk length to index")
+
+
+class VectorStoreSettings(BaseModel):
+    """Vector store configuration settings."""
+    type: Literal["chroma", "pinecone", "qdrant", "weaviate"] = "chroma"
+    default_collection: str = "default_collection"
+
+
 # Mapping of category to validation model
 SETTINGS_VALIDATORS = {
     SettingCategory.AUTH: AuthSettings,
@@ -130,6 +180,11 @@ SETTINGS_VALIDATORS = {
     SettingCategory.UI: UISettings,
     SettingCategory.SECURITY: SecuritySettings,
     SettingCategory.OBSERVABILITY: ObservabilitySettings,
+    # Operational configuration validators
+    SettingCategory.DATA_PRIVACY: DataPrivacySettings,
+    SettingCategory.MEDICAL_CONTEXT: MedicalContextSettings,
+    SettingCategory.CHUNKING: ChunkingSettings,
+    SettingCategory.VECTOR_STORE: VectorStoreSettings,
 }
 
 

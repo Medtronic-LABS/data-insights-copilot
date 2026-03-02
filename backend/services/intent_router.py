@@ -3,7 +3,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from backend.config import get_settings
+from backend.config import get_settings, get_llm_settings
 from backend.core.logging import get_logger
 
 settings = get_settings()
@@ -31,9 +31,11 @@ class IntentClassifier:
         if llm:
             self.llm = llm
         else:
+            # Get LLM settings from database (runtime configurable)
+            llm_settings = get_llm_settings()
             self.llm = ChatOpenAI(
                 temperature=0,
-                model_name="gpt-4o",  # Use a competent model for structured output
+                model_name=llm_settings.get('model_name', 'gpt-4o'),
                 api_key=settings.openai_api_key
             )
         
