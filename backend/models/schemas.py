@@ -50,12 +50,23 @@ class ChartData(BaseModel):
     """Chart visualization data.
     
     Supports multiple chart types:
-    - List-based: pie, bar, line (data contains lists of labels/values)
-    - Single-value: scorecard, metric (data contains single value/label)
+    - List-based: pie, bar, line, horizontal_bar, treemap, funnel (data contains lists of labels/values)
+    - Single-value: scorecard, gauge (uses value field or data)
+    - Comparison: bullet (data contains actual/target pairs)
     """
-    title: str = Field(..., description="Chart title")
-    type: str = Field(..., description="Chart type (pie, bar, line, scorecard, metric)")
-    data: Dict[str, Any] = Field(..., description="Chart data - format depends on chart type")
+    title: Optional[str] = Field(default=None, description="Chart title")
+    type: str = Field(..., description="Chart type (pie, bar, line, scorecard, gauge, funnel, bullet, horizontal_bar, treemap)")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="Chart data - format depends on chart type")
+    
+    # Gauge-specific fields
+    value: Optional[float] = Field(default=None, description="Value for gauge charts")
+    min: Optional[float] = Field(default=None, description="Minimum value for gauge")
+    max: Optional[float] = Field(default=None, description="Maximum value for gauge")
+    target: Optional[float] = Field(default=None, description="Target value for gauge/bullet")
+    thresholds: Optional[List[Dict[str, Any]]] = Field(default=None, description="Threshold definitions for gauge")
+    
+    # Bullet-specific fields
+    ranges: Optional[List[float]] = Field(default=None, description="Range boundaries for bullet chart")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
