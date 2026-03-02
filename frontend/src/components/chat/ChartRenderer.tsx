@@ -206,70 +206,125 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
   // BULLET CHART - For performance vs target
   // ============================================
   if (type === 'bullet') {
-    const { actual, target, ranges = [30, 70, 100] } = chartData;
+    const { target: defaultTarget, ranges = [30, 70, 100] } = chartData;
     
-    // If data array provided, render multiple bullets
-    let bulletData: any[] = [];
+    // Transform data to bullet format
+    let bulletData: { name: string; actual: number; target: number }[] = [];
+    
     if (Array.isArray(rawData)) {
-      bulletData = rawData;
-    } else if (rawData?.labels && rawData?.values) {
-      bulletData = rawData.labels.map((label: string, index: number) => ({
-        name: label,
-        actual: rawData.values![index],
-        target: target || 80
+      // Array format: [{name: 'X', actual: 50, target: 80}, ...]
+      bulletData = rawData.map(item => ({
+        name: item.name || item.label || 'Item',
+        actual: typeof item.actual === 'number' ? item.actual : parseFloat(item.actual) || 0,
+        target: typeof item.target === 'number' ? item.target : (defaultTarget || 80)
       }));
-    } else if (actual !== undefined) {
-      bulletData = [{ name: title || 'Progress', actual, target: target || 80 }];
+    } else if (rawData?.labels && rawData?.values) {
+      // Labels/values format from backend
+      bulletData = rawData.labels.map((label: string, index: number) => {
+        const value = rawData.values![index];
+        
+        // Handle case where value is an object {actual, target}
+        if (value && typeof value === 'object' && 'actual' in value) {
+          // Convert decimal rates to percentages if they're between 0-1
+          let actualVal = typeof value.actual === 'number' ? value.actual : parseFloat(value.actual) || 0;
+          let targetVal = typeof value.target === 'number' ? value.target : (defaultTarget || 0.8);
+          
+          // If values are decimals (0-1), convert to percentage
+          if (actualVal <= 1 && targetVal <= 1) {
+            actualVal = actualVal * 100;
+            targetVal = targetVal * 100;
+          }
+          
+          return {
+            name: label,
+            actual: actualVal,
+            target: targetVal
+          };
+        }
+        
+        // Handle simple numeric value
+        let numericValue = typeof value === 'number' ? value : parseFloat(value) || 0;
+        if (numericValue <= 1) numericValue = numericValue * 100; // Convert to percentage
+        
+        return {
+          name: label,
+          actual: numericValue,
+          target: defaultTarget || 80
+        };
+      });
+    } else if (chartData.actual !== undefined) {
+      // Single bullet from chartData props
+      bulletData = [{ 
+        name: title || 'Progress', 
+        actual: chartData.actual, 
+        target: defaultTarget || 80 
+      }];
     }
+
+    // If no data, show message
+    if (bulletData.length === 0) {
+      return <div className="text-sm text-gray-500 italic">No bullet chart data available</div>;
+    }
+
+    // Determine max value for scaling
+    const allValues = bulletData.flatMap(d => [d.actual, d.target]);
+    const maxValue = Math.max(...allValues, ...ranges);
 
     return (
       <div className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
         {title && <h4 className="text-sm font-bold mb-4 text-gray-800 border-b pb-2">{title}</h4>}
-        <div className="space-y-4">
+        <div className="space-y-4 max-h-96 overflow-y-auto">
           {bulletData.map((item, index) => {
-            const maxRange = Math.max(...ranges, item.actual, item.target || 0);
+            const scaledRanges = ranges.map(r => (r / maxValue) * 100);
+            const scaledActual = (item.actual / maxValue) * 100;
+            const scaledTarget = (item.target / maxValue) * 100;
+            
             return (
               <div key={index} className="relative">
                 <div className="flex items-center mb-1">
-                  <span className="text-xs font-medium text-gray-700 w-24 truncate">{item.name}</span>
-                  <span className="text-xs text-gray-500 ml-auto">{item.actual}%</span>
+                  <span className="text-xs font-medium text-gray-700 w-28 truncate" title={item.name}>
+                    {item.name}
+                  </span>
+                  <span className="text-xs text-gray-500 ml-auto">
+                    {item.actual.toFixed(1)}%
+                  </span>
                 </div>
                 {/* Range backgrounds */}
                 <div className="relative h-6 bg-gray-100 rounded overflow-hidden">
-                  {ranges.map((range, i) => (
+                  {scaledRanges.map((range, i) => (
                     <div
                       key={i}
                       className="absolute h-full"
                       style={{
-                        width: `${(range / maxRange) * 100}%`,
+                        width: `${range}%`,
                         backgroundColor: i === 0 ? '#fee2e2' : i === 1 ? '#fef3c7' : '#d1fae5',
-                        zIndex: ranges.length - i
+                        zIndex: scaledRanges.length - i
                       }}
                     />
                   ))}
                   {/* Actual bar */}
                   <div
                     className="absolute h-3 top-1.5 bg-gray-800 rounded"
-                    style={{ width: `${(item.actual / maxRange) * 100}%`, zIndex: 10 }}
+                    style={{ width: `${Math.min(scaledActual, 100)}%`, zIndex: 10 }}
                   />
                   {/* Target marker */}
-                  {item.target && (
+                  {item.target > 0 && (
                     <div
                       className="absolute w-0.5 h-full bg-red-500"
-                      style={{ left: `${(item.target / maxRange) * 100}%`, zIndex: 11 }}
+                      style={{ left: `${Math.min(scaledTarget, 100)}%`, zIndex: 11 }}
                     />
                   )}
                 </div>
               </div>
             );
           })}
-          {/* Legend */}
-          <div className="flex gap-4 text-xs text-gray-500 mt-2">
-            <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-100 rounded"></span>Poor</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 bg-yellow-100 rounded"></span>Fair</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 bg-green-100 rounded"></span>Good</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-1 bg-red-500"></span>Target</span>
-          </div>
+        </div>
+        {/* Legend */}
+        <div className="flex gap-4 text-xs text-gray-500 mt-4 pt-2 border-t">
+          <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-100 rounded"></span>Poor (&lt;30%)</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-3 bg-yellow-100 rounded"></span>Fair (30-70%)</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-3 bg-green-100 rounded"></span>Good (&gt;70%)</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-1 bg-red-500"></span>Target</span>
         </div>
       </div>
     );
