@@ -1,13 +1,28 @@
 # =============================================================================
-# Embedding Pipeline Configuration
+# Embedding Pipeline Configuration - FALLBACK DEFAULTS ONLY
 # =============================================================================
-# This file contains DEFAULT configurations for the embedding pipeline.
 #
-# PRIMARY SOURCE: Database `system_settings` table (managed via frontend)
-# FALLBACK: Values in this file are used if database settings unavailable
+# ⚠️  IMPORTANT: This file is NO LONGER the primary configuration source.
 #
-# To modify these settings at runtime, use the frontend Settings page.
-# Changes made there are stored in the database and take precedence.
+# PRIMARY SOURCE: Database `system_settings` table (managed via frontend Settings page)
+# 
+# The system now reads all configuration from the database via SettingsService
+# with TTL-based caching (default: 5 minutes) to prevent database hammering.
+#
+# This file serves as:
+# 1. DOCUMENTATION of available settings and their default values
+# 2. FALLBACK values if database is unavailable during startup
+# 3. REFERENCE for the migration script (migrations/014_operational_config.sql)
+#
+# To modify these settings at runtime:
+# - Use the frontend Settings page (Settings > Operational Config)
+# - Or use the Settings API: PUT /api/v1/settings/{category}
+#
+# Database categories for operational config:
+# - data_privacy: PII protection rules (global_exclude_columns, exclude_tables, etc.)
+# - medical_context: Clinical terminology mappings
+# - chunking: Text chunking parameters
+# - vector_store: Vector database configuration
 # =============================================================================
 
 # =============================================================================
