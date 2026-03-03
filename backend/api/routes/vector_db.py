@@ -94,7 +94,7 @@ async def get_vector_db_status(
         conn.close()
 
         # 2. Get vector count directly from ChromaDB
-        chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../../data/indexes/{vector_db_name}"))
+        chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../data/indexes/{vector_db_name}"))
         vector_count = 0
         chroma_exists = False
         

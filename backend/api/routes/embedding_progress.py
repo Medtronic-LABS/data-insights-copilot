@@ -697,11 +697,17 @@ async def _run_embedding_job(
                 return
             
             # =================================================================
-            # CHECKPOINT: Save chunks
+            # CHECKPOINT: Save chunks (SKIP for large datasets - ChromaDB handles resume)
             # =================================================================
-            job_service.update_progress(job_id, processed_documents=0, current_batch=0, phase="Saving chunks checkpoint...")
-            checkpoint_service.save_chunks_checkpoint(job_id, config_id, child_chunks, incremental)
-            logger.info(f"CHECKPOINT: Chunking phase complete ({len(child_chunks)} chunks saved)")
+            CHECKPOINT_THRESHOLD = 100000  # Skip checkpoint for datasets > 100k chunks
+            if len(child_chunks) <= CHECKPOINT_THRESHOLD:
+                job_service.update_progress(job_id, processed_documents=0, current_batch=0, phase="Saving chunks checkpoint...")
+                checkpoint_service.save_chunks_checkpoint(job_id, config_id, child_chunks, incremental)
+                logger.info(f"CHECKPOINT: Chunking phase complete ({len(child_chunks)} chunks saved)")
+            else:
+                logger.info(f"CHECKPOINT: Skipping chunks checkpoint for large dataset ({len(child_chunks):,} chunks > {CHECKPOINT_THRESHOLD:,} threshold). ChromaDB stateful resume will handle interruptions.")
+                job_service.update_progress(job_id, processed_documents=0, current_batch=0, 
+                                            phase=f"Skipped checkpoint (large dataset: {len(child_chunks):,} chunks)")
             
             documents = child_chunks
         else:
@@ -709,7 +715,7 @@ async def _run_embedding_job(
             docstore = None
             if os.path.exists(docstore_path):
                 try:
-                    from backend.pipeline.transform import SQLiteDocStore
+                    from backend.pipeline.docstore import SQLiteDocStore
                     docstore = SQLiteDocStore(docstore_path)
                     logger.info(f"Loaded existing docstore from {docstore_path}")
                 except Exception as e:

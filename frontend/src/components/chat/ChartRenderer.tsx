@@ -273,7 +273,7 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
     } else if (rawData?.labels && rawData?.values) {
       // Labels/values format from backend
       // Get target from data object if available
-      const targetFromData = rawData.target ?? defaultTarget;
+      const targetFromData = (rawData as any)?.target ?? defaultTarget;
       
       bulletData = rawData.labels.map((label: string, index: number) => {
         const value = rawData.values![index];
