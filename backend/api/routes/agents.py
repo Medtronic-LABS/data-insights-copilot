@@ -26,7 +26,7 @@ def check_agent_admin_access(db, agent_id: int, current_user: User) -> bool:
     """
     Check if current user has admin access to a specific agent.
     - Super admin: always has access
-    - Admin: must have 'admin' per-agent role OR be the creator
+    - Admin: must have 'admin' per-agent role in user_agents table
     """
     if current_user.role == Role.SUPER_ADMIN.value:
         return True
@@ -113,6 +113,7 @@ async def list_agents(current_user: User = Depends(require_user)):
 async def create_agent(agent: AgentCreate, current_user: User = Depends(require_admin)):
     """
     Create a new agent (Admin only).
+    Creator is automatically assigned as admin of the new agent.
     """
     db = get_db_service()
     try:
@@ -126,15 +127,6 @@ async def create_agent(agent: AgentCreate, current_user: User = Depends(require_
             system_prompt=agent.system_prompt,
             created_by=user_id
         )
-        
-        # Automatically assign the creator as admin of the new agent (per-agent role)
-        if user_id and new_agent.get('id'):
-            db.assign_user_to_agent(
-                agent_id=new_agent['id'],
-                user_id=user_id,
-                role='admin',
-                granted_by=user_id
-            )
         
         # Log audit event
         audit = get_audit_service()

@@ -24,13 +24,16 @@ const UsersPage: React.FC = () => {
     const [users, setUsers] = useState<UserData[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [editingUser, setEditingUser] = useState<UserData | null>(null);
-    const [editForm, setEditForm] = useState({ role: '' });
+
+    // Role Change Modal State (shows role buttons directly)
+    const [roleChangeModal, setRoleChangeModal] = useState<{ show: boolean; user: UserData | null; saving: boolean }>({ show: false, user: null, saving: false });
 
     // Deactivate Modal State
     const [deactivateConfirm, setDeactivateConfirm] = useState<{ show: boolean; user: UserData | null }>({ show: false, user: null });
     // Activate Modal State
     const [activateConfirm, setActivateConfirm] = useState<{ show: boolean; user: UserData | null }>({ show: false, user: null });
+    // Role Change Confirmation Modal State
+    const [roleChangeConfirm, setRoleChangeConfirm] = useState<{ show: boolean; user: UserData | null; newRole: string }>({ show: false, user: null, newRole: '' });
 
     // Agent Assignment State
     const [agentModalUser, setAgentModalUser] = useState<UserData | null>(null);
@@ -67,18 +70,27 @@ const UsersPage: React.FC = () => {
     };
 
     const handleEdit = (u: UserData) => {
-        setEditingUser(u);
-        setEditForm({ role: u.role });
+        setRoleChangeModal({ show: true, user: u, saving: false });
     };
 
-    const handleSave = async () => {
-        if (!editingUser) return;
+    const handleRoleSelect = (newRole: string) => {
+        if (!roleChangeModal.user || newRole === roleChangeModal.user.role) return;
+        // Show confirmation
+        setRoleChangeConfirm({ show: true, user: roleChangeModal.user, newRole });
+    };
+
+    const confirmRoleChange = async () => {
+        if (!roleChangeConfirm.user) return;
+        setRoleChangeModal(m => ({ ...m, saving: true }));
         try {
-            await apiClient.patch(`/api/v1/users/${editingUser.id}`, editForm);
-            setEditingUser(null);
+            await apiClient.patch(`/api/v1/users/${roleChangeConfirm.user.id}`, { role: roleChangeConfirm.newRole });
+            setRoleChangeConfirm({ show: false, user: null, newRole: '' });
+            setRoleChangeModal({ show: false, user: null, saving: false });
             loadUsers();
         } catch (err: any) {
-            setError(err.response?.data?.detail || err.message || 'Failed to update user');
+            setError(err.response?.data?.detail || err.message || 'Failed to update user role');
+            setRoleChangeConfirm({ show: false, user: null, newRole: '' });
+            setRoleChangeModal(m => ({ ...m, saving: false }));
         }
     };
 
@@ -347,13 +359,13 @@ const UsersPage: React.FC = () => {
                                                                     Agents
                                                                 </button>
                                                             )}
-                                                            {/* Edit button - super admin only */}
+                                                            {/* Change Role button - super admin only */}
                                                             {canEditOrDeactivate(u) && (
                                                                 <button 
                                                                     onClick={() => handleEdit(u)} 
                                                                     className="px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
                                                                 >
-                                                                    Edit
+                                                                    Change Role
                                                                 </button>
                                                             )}
                                                             {/* Deactivate button - super admin only */}
@@ -386,41 +398,41 @@ const UsersPage: React.FC = () => {
                         </div>
                     )}
 
-                    {/* Edit Modal */}
-                    {editingUser && (
-                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                            <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-                                <h3 className="text-lg font-semibold mb-4">Edit User: {editingUser.username}</h3>
+                    {/* Change Role Modal - Role Selection with Buttons */}
+                    {roleChangeModal.show && roleChangeModal.user && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6" style={{ maxWidth: '28rem' }}>
+                                <h3 className="text-lg font-semibold mb-2">Change Role</h3>
+                                <p className="text-gray-600 mb-4">Select a new role for <span className="font-medium">{roleChangeModal.user.username}</span></p>
+                                <p className="text-sm text-gray-500 mb-4">Current role: <span className="font-medium text-blue-600">{getRoleDisplayName(roleChangeModal.user.role)}</span></p>
 
-                                <div className="space-y-4">
-                                    <div>
-                                        <label htmlFor="edit-role-select" className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                                        <select
-                                            id="edit-role-select"
-                                            value={editForm.role}
-                                            onChange={(e) => setEditForm(f => ({ ...f, role: e.target.value }))}
-                                            className="w-full border border-gray-300 rounded-md px-3 py-2 focus:ring-blue-500 focus:border-blue-500"
+                                <div className="space-y-2">
+                                    {getAssignableRoles().map(r => (
+                                        <button
+                                            key={r}
+                                            onClick={() => handleRoleSelect(r)}
+                                            disabled={r === roleChangeModal.user?.role || roleChangeModal.saving}
+                                            className={`w-full px-4 py-3 text-left rounded-lg border transition-colors ${
+                                                r === roleChangeModal.user?.role
+                                                    ? 'bg-blue-50 border-blue-300 text-blue-700 cursor-default'
+                                                    : 'border-gray-200 hover:bg-gray-50 hover:border-gray-300'
+                                            }`}
                                         >
-                                            {getAssignableRoles().map(r => (
-                                                <option key={r} value={r}>{getRoleDisplayName(r)}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-
+                                            <span className="font-medium">{getRoleDisplayName(r)}</span>
+                                            {r === roleChangeModal.user?.role && (
+                                                <span className="ml-2 text-xs text-blue-600">(current)</span>
+                                            )}
+                                        </button>
+                                    ))}
                                 </div>
 
-                                <div className="mt-6 flex justify-end gap-3">
+                                <div className="mt-6 flex justify-end">
                                     <button
-                                        onClick={() => setEditingUser(null)}
+                                        onClick={() => setRoleChangeModal({ show: false, user: null, saving: false })}
                                         className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                                        disabled={roleChangeModal.saving}
                                     >
                                         Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSave}
-                                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-                                    >
-                                        Save Changes
                                     </button>
                                 </div>
                             </div>
@@ -449,10 +461,23 @@ const UsersPage: React.FC = () => {
                         type="info"
                     />
 
+                    {/* Role Change Confirmation Modal */}
+                    <ConfirmationModal
+                        show={roleChangeConfirm.show}
+                        title="Confirm Role Change"
+                        message={roleChangeConfirm.user ? 
+                            `Are you sure you want to change ${roleChangeConfirm.user.username}'s role from "${getRoleDisplayName(roleChangeConfirm.user.role)}" to "${getRoleDisplayName(roleChangeConfirm.newRole)}"?${roleChangeConfirm.user.role === 'admin' && roleChangeConfirm.newRole === 'user' ? '\n\nThis will also revoke their admin access to all agents they manage.' : ''}` 
+                            : 'Are you sure you want to change this user\'s role?'}
+                        confirmText="Change Role"
+                        onConfirm={confirmRoleChange}
+                        onCancel={() => setRoleChangeConfirm({ show: false, user: null, newRole: '' })}
+                        type="warning"
+                    />
+
                     {/* Agent Assignment Modal */}
                     {agentModalUser && (
                         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+                            <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden" style={{ maxWidth: '42rem' }}>
                                 {/* Header */}
                                 <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-indigo-50 to-blue-50">
                                     <div className="flex items-center gap-3">

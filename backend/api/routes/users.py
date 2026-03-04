@@ -186,6 +186,15 @@ async def update_user(
             raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {get_all_roles()}")
         updates.append("role = ?")
         params.append(request.role)
+        
+        # Clean up per-agent roles when demoting from admin to user
+        # Users with system role 'user' cannot have per-agent role 'admin'
+        if existing_user['role'] == Role.ADMIN.value and request.role == Role.USER.value:
+            cursor.execute("""
+                UPDATE user_agents SET role = 'user' 
+                WHERE user_id = ? AND role = 'admin'
+            """, (user_id,))
+            logger.info(f"Downgraded per-agent roles for user {user_id} (demoted from admin to user)")
     
     if request.is_active is not None:
         updates.append("is_active = ?")
