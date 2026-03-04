@@ -21,6 +21,7 @@ class AuditAction(str, Enum):
     USER_DEACTIVATE = "user.deactivate"
     USER_LOGIN = "user.login"
     USER_LOGOUT = "user.logout"
+    USER_ROLE_SYNC = "user.role.sync"  # Role synced from Keycloak
     
     # Connection Management
     CONNECTION_CREATE = "connection.create"
