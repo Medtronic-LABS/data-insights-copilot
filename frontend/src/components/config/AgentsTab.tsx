@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { Agent } from '../../types/agent';
 import { getAgents, createAgent, handleApiError } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
@@ -13,6 +14,7 @@ interface AgentsTabProps {
 
 const AgentsTab: React.FC<AgentsTabProps> = ({ onSelectAgent }) => {
     const { user } = useAuth();
+    const navigate = useNavigate();
     const { success, error: showError } = useToast();
     const [agents, setAgents] = useState<Agent[]>([]);
     const [loading, setLoading] = useState(true);
@@ -100,10 +102,31 @@ const AgentsTab: React.FC<AgentsTabProps> = ({ onSelectAgent }) => {
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {agents.map((agent) => (
+                        {agents.map((agent) => {
+                            const canConfigure = isSuperAdmin(user) || agent.user_role === 'admin';
+                            
+                            const handleCardClick = () => {
+                                if (canConfigure) {
+                                    onSelectAgent(agent);
+                                } else {
+                                    navigate(`/chat?agent=${agent.id}`);
+                                }
+                            };
+                            
+                            const handleConfigureClick = (e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                onSelectAgent(agent);
+                            };
+                            
+                            const handleChatClick = (e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                navigate(`/chat?agent=${agent.id}`);
+                            };
+                            
+                            return (
                             <div
                                 key={agent.id}
-                                onClick={() => onSelectAgent(agent)}
+                                onClick={handleCardClick}
                                 className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group flex flex-col"
                             >
                                 <div className="p-6 flex-1">
@@ -128,20 +151,26 @@ const AgentsTab: React.FC<AgentsTabProps> = ({ onSelectAgent }) => {
                                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${agent.user_role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-yellow-100 text-yellow-800'}`}>
                                         {agent.user_role === 'admin' ? 'Can Configure' : 'Chat Only'}
                                     </span>
-                                    <div className="flex gap-2">
-                                        {(isSuperAdmin(user) || agent.user_role === 'admin') ? (
-                                            <button className="flex items-center text-blue-600 text-sm font-medium hover:underline">
+                                    <div className="flex gap-3">
+                                        {canConfigure && (
+                                            <button 
+                                                onClick={handleConfigureClick}
+                                                className="flex items-center text-blue-600 text-sm font-medium hover:underline"
+                                            >
                                                 Configure <Cog6ToothIcon className="w-4 h-4 ml-1" />
                                             </button>
-                                        ) : (
-                                            <button className="flex items-center text-green-600 text-sm font-medium hover:underline">
-                                                Chat <ChatBubbleLeftIcon className="w-4 h-4 ml-1" />
-                                            </button>
                                         )}
+                                        <button 
+                                            onClick={handleChatClick}
+                                            className="flex items-center text-green-600 text-sm font-medium hover:underline"
+                                        >
+                                            Chat <ChatBubbleLeftIcon className="w-4 h-4 ml-1" />
+                                        </button>
                                     </div>
                                 </div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>

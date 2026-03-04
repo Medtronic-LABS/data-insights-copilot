@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { chatService } from '../services/chatService';
 import { getActiveConfigMetadata } from '../services/api';
@@ -14,6 +15,7 @@ import { APP_CONFIG } from '../config';
 
 export default function ChatPage() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const canChat = canExecuteQuery(user);
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -41,6 +43,17 @@ export default function ChatPage() {
         const agentList = await getAgents();
         setAgents(agentList);
 
+        // Check for agent ID in URL query param
+        const agentIdParam = searchParams.get('agent');
+        if (agentIdParam) {
+          const agentId = parseInt(agentIdParam, 10);
+          // Verify agent exists in the list (user has access)
+          if (agentList.some((a: any) => a.id === agentId)) {
+            setSelectedAgentId(agentId);
+            return;
+          }
+        }
+        
         // Auto-select ONLY if there is exactly 1 agent
         if (agentList.length === 1) {
           setSelectedAgentId(agentList[0].id);
