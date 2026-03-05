@@ -739,6 +739,11 @@ def get_agent_service(agent_id: Optional[int] = None, user_id: Optional[int] = N
 
     if agent_id:
         db = get_db_service()
+        
+        agent_config = db.get_agent_by_id(agent_id)
+        if not agent_config:
+             raise ValueError(f"Agent {agent_id} not found")
+
         # Verify access if user_id is provided (skip for internal system calls if user_id is None)
         if user_id:
             has_access = db.check_user_access(user_id, agent_id)
@@ -746,12 +751,19 @@ def get_agent_service(agent_id: Optional[int] = None, user_id: Optional[int] = N
                 logger.warning(f"Access denied for user {user_id} to agent {agent_id}")
                 raise PermissionError(f"User {user_id} does not have access to agent {agent_id}")
         
-        agent_config = db.get_agent_by_id(agent_id)
-        if not agent_config:
-             raise ValueError(f"Agent {agent_id} not found")
-             
+        # For file-based agents, if the user is an admin/superadmin,
+        # they should query the data uploaded by the agent's creator.
+        service_user_id = user_id
+        if agent_config.get('data_source_type') == 'file' and user_id:
+            user_roles = db.get_user_roles(user_id)
+            if any(role in ['superadmin', 'admin'] for role in user_roles):
+                creator_id = agent_config.get('creator_id')
+                if creator_id:
+                    logger.info(f"Admin user {user_id} accessing file agent {agent_id}. Using creator's data (user_id: {creator_id}).")
+                    service_user_id = creator_id
+
         # Create new instance
-        service = AgentService(agent_config=agent_config, user_id=user_id, langfuse_trace=langfuse_trace)
+        service = AgentService(agent_config=agent_config, user_id=service_user_id, langfuse_trace=langfuse_trace)
         
         # Cache the service only if no request-specific trace was passed
         if not langfuse_trace:
