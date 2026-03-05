@@ -751,16 +751,22 @@ def get_agent_service(agent_id: Optional[int] = None, user_id: Optional[int] = N
                 logger.warning(f"Access denied for user {user_id} to agent {agent_id}")
                 raise PermissionError(f"User {user_id} does not have access to agent {agent_id}")
         
-        # For file-based agents, if the user is an admin/superadmin,
-        # they should query the data uploaded by the agent's creator.
+        # For file-based agents, ALL users should use the agent creator's files
+        # Files are stored per-user, so we need to use the creator's user_id
         service_user_id = user_id
-        if agent_config.get('data_source_type') == 'file' and user_id:
-            user_roles = db.get_user_roles(user_id)
-            if any(role in ['superadmin', 'admin'] for role in user_roles):
-                creator_id = agent_config.get('creator_id')
-                if creator_id:
-                    logger.info(f"Admin user {user_id} accessing file agent {agent_id}. Using creator's data (user_id: {creator_id}).")
-                    service_user_id = creator_id
+        
+        # Get the active config to check data_source_type
+        active_config = db.get_active_config(agent_id=agent_id)
+        data_source_type = active_config.get('data_source_type', 'database') if active_config else 'database'
+        
+        if data_source_type == 'file':
+            # Use the agent creator's user_id for file-based agents
+            creator_id = agent_config.get('created_by')
+            if creator_id:
+                logger.info(f"File-based agent {agent_id}: Using creator's data (created_by: {creator_id}) instead of user {user_id}")
+                service_user_id = creator_id
+            else:
+                logger.warning(f"File-based agent {agent_id} has no created_by field, using requesting user's files")
 
         # Create new instance
         service = AgentService(agent_config=agent_config, user_id=service_user_id, langfuse_trace=langfuse_trace)
