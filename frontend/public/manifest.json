@@ -1,7 +1,7 @@
 {
   "id": "/",
   "name": "Data Insights AI-Copilot",
-  "short_name": "AI Copilot",
+  "short_name": "Data Insights AI-Copilot",
   "description": "Intelligent clinical data analysis through AI-powered insights",
   "start_url": "/",
   "display": "standalone",
@@ -42,14 +42,14 @@
       "sizes": "1280x720",
       "type": "image/png",
       "form_factor": "wide",
-      "label": "AI Copilot Dashboard on Desktop"
+      "label": "Data Insights AI-Copilot Dashboard on Desktop"
     },
     {
       "src": "/screenshot-mobile.png",
       "sizes": "390x844",
       "type": "image/png",
       "form_factor": "narrow",
-      "label": "AI Copilot Chat on Mobile"
+      "label": "Data Insights AI-Copilot Chat on Mobile"
     }
   ],
   "categories": ["medical", "productivity", "utilities"],

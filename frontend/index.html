@@ -12,8 +12,8 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="AI Copilot" />
-    <meta name="application-name" content="AI Copilot" />
+    <meta name="apple-mobile-web-app-title" content="Data Insights" />
+    <meta name="application-name" content="Data Insights AI-Copilot" />
     <meta name="msapplication-TileColor" content="#1e40af" />
     <meta name="msapplication-TileImage" content="/icon-192.png" />
     
@@ -72,21 +72,22 @@
       }
       
       .pwa-loading-logo {
-        width: 64px;
-        height: 64px;
-        margin-bottom: 16px;
-        border-radius: 16px;
+        width: 280px;
+        max-width: 80vw;
+        height: auto;
+        margin-bottom: 24px;
       }
       
       .pwa-loading-text {
-        font-size: 18px;
-        font-weight: 600;
-        margin-bottom: 8px;
+        font-size: 16px;
+        font-weight: 500;
+        margin-bottom: 16px;
+        opacity: 0.9;
       }
       
       .pwa-loading-spinner {
-        width: 24px;
-        height: 24px;
+        width: 32px;
+        height: 32px;
         border: 3px solid rgba(255, 255, 255, 0.3);
         border-top-color: white;
         border-radius: 50%;
@@ -101,8 +102,8 @@
   <body>
     <!-- PWA Loading Screen -->
     <div class="pwa-loading" id="pwa-loading">
-      <img src="/icon-192.png" alt="AI Copilot" class="pwa-loading-logo" />
-      <div class="pwa-loading-text">AI Copilot</div>
+      <img src="/logo.svg" alt="Data Insights AI-Copilot" class="pwa-loading-logo" />
+      <div class="pwa-loading-text">Loading...</div>
       <div class="pwa-loading-spinner"></div>
     </div>
     
