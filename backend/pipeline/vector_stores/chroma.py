@@ -13,10 +13,28 @@ class ChromaStore(BaseVectorStore):
         from chromadb.config import Settings
         
         self.collection_name = collection_name
-        self.path = path or os.getenv("CHROMA_PATH", "./data/chroma_db")
+        
+        # Use collection-specific path under backend/data/indexes/{collection_name}
+        # This ensures each agent/collection has its own isolated ChromaDB
+        if path:
+            self.path = path
+        else:
+            # Get base path from settings or use default
+            from backend.services.settings_service import get_settings_service, SettingCategory
+            try:
+                settings_service = get_settings_service()
+                vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE.value)
+                base_path = vs_settings.get("chroma_base_path", "./data/indexes")
+            except Exception:
+                base_path = "./data/indexes"
+            
+            # Resolve to absolute path relative to backend directory
+            backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self.path = os.path.join(backend_dir, base_path.lstrip("./"), collection_name)
         
         # Ensure directory exists
         os.makedirs(self.path, exist_ok=True)
+        logger.info(f"ChromaStore initialized at path: {self.path} for collection: {collection_name}")
         
         self.client = chromadb.PersistentClient(
             path=self.path,
