@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from './components/Toast';
+import { SystemSettingsProvider } from './contexts/SystemSettingsContext';
 import ChatPage from './pages/ChatPage';
 import AboutPage from './pages/AboutPage';
 import LoginPage from './pages/LoginPage';
@@ -92,89 +93,91 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <ToastProvider>
-          <BrowserRouter>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/register" element={<RegisterPage />} />
-              <Route path="/callback" element={<CallbackPage />} />
-              <Route path="/" element={<DefaultRedirect />} />
-              <Route
-                path="/chat"
-                element={
-                  <ProtectedRoute>
-                    <ChatPage />
-                  </ProtectedRoute>
-                }
-              />
-              {/* Agent routes */}
-              <Route
-                path="/agents"
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <AgentsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/agents/:id"
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <AgentDashboardPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/agents/:id/config"
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <AgentConfigPage />
-                  </ProtectedRoute>
-                }
-              />
-              {/* Backward compatibility redirect */}
-              <Route
-                path="/config"
-                element={<Navigate to="/agents" replace />}
-              />
-              <Route path="/about" element={<AboutPage />} />
-              <Route
-                path="/users"
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <UsersPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/audit"
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <AuditLogsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/notifications"
-                element={
-                  <ProtectedRoute>
-                    <NotificationsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/data-management"
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <DataManagementPage />
-                  </ProtectedRoute>
-                }
-              />
+        <SystemSettingsProvider>
+          <ToastProvider>
+            <BrowserRouter>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/register" element={<RegisterPage />} />
+                <Route path="/callback" element={<CallbackPage />} />
+                <Route path="/" element={<DefaultRedirect />} />
+                <Route
+                  path="/chat"
+                  element={
+                    <ProtectedRoute>
+                      <ChatPage />
+                    </ProtectedRoute>
+                  }
+                />
+                {/* Agent routes */}
+                <Route
+                  path="/agents"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <AgentsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/agents/:id"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <AgentDashboardPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/agents/:id/config"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <AgentConfigPage />
+                    </ProtectedRoute>
+                  }
+                />
+                {/* Backward compatibility redirect */}
+                <Route
+                  path="/config"
+                  element={<Navigate to="/agents" replace />}
+                />
+                <Route path="/about" element={<AboutPage />} />
+                <Route
+                  path="/users"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <UsersPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/audit"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <AuditLogsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/notifications"
+                  element={
+                    <ProtectedRoute>
+                      <NotificationsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/data-management"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <DataManagementPage />
+                    </ProtectedRoute>
+                  }
+                />
 
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </BrowserRouter>
-        </ToastProvider>
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </BrowserRouter>
+          </ToastProvider>
+        </SystemSettingsProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

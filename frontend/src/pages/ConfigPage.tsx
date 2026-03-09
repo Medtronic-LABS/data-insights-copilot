@@ -97,10 +97,11 @@ const ConfigPage: React.FC = () => {
             maxTokens: 4096
         },
         chunking: {
-            parentChunkSize: 800,
-            parentChunkOverlap: 150,
-            childChunkSize: 200,
-            childChunkOverlap: 50
+            // Industry best practices for medical/healthcare RAG:
+            parentChunkSize: 512,      // Context for retrieval
+            parentChunkOverlap: 100,   // ~20% overlap
+            childChunkSize: 128,       // Precise semantic matching
+            childChunkOverlap: 25      // ~20% overlap
         },
         retriever: {
             topKInitial: 50,
@@ -162,10 +163,11 @@ const ConfigPage: React.FC = () => {
         const fetchDefaults = async () => {
             try {
                 const { getSystemSettings } = await import('../services/api');
-                const [embSettings, ragSettings, llmSettings] = await Promise.all([
+                const [embSettings, ragSettings, llmSettings, chunkingSettings] = await Promise.all([
                     getSystemSettings('embedding').catch(() => null),
                     getSystemSettings('rag').catch(() => null),
-                    getSystemSettings('llm').catch(() => null)
+                    getSystemSettings('llm').catch(() => null),
+                    getSystemSettings('chunking').catch(() => null)
                 ]);
 
                 setAdvancedSettings(prev => {
@@ -173,9 +175,15 @@ const ConfigPage: React.FC = () => {
                     if (embSettings && embSettings.model_name) {
                         next.embedding.model = embSettings.model_name;
                     }
+                    // Chunking settings from dedicated 'chunking' category
+                    if (chunkingSettings) {
+                        if (chunkingSettings.parent_chunk_size) next.chunking.parentChunkSize = chunkingSettings.parent_chunk_size;
+                        if (chunkingSettings.parent_chunk_overlap) next.chunking.parentChunkOverlap = chunkingSettings.parent_chunk_overlap;
+                        if (chunkingSettings.child_chunk_size) next.chunking.childChunkSize = chunkingSettings.child_chunk_size;
+                        if (chunkingSettings.child_chunk_overlap) next.chunking.childChunkOverlap = chunkingSettings.child_chunk_overlap;
+                    }
+                    // Retriever settings from 'rag' category
                     if (ragSettings) {
-                        if (ragSettings.chunk_size) next.chunking.parentChunkSize = ragSettings.chunk_size;
-                        if (ragSettings.chunk_overlap) next.chunking.parentChunkOverlap = ragSettings.chunk_overlap;
                         if (ragSettings.top_k_initial) next.retriever.topKInitial = ragSettings.top_k_initial;
                         if (ragSettings.top_k_final) next.retriever.topKFinal = ragSettings.top_k_final;
                         if (ragSettings.hybrid_weights) next.retriever.hybridWeights = ragSettings.hybrid_weights;
@@ -419,18 +427,20 @@ const ConfigPage: React.FC = () => {
         // Re-fetch backend defaults
         try {
             const { getSystemSettings } = await import('../services/api');
-            const [embSettings, ragSettings, llmSettings] = await Promise.all([
+            const [embSettings, chunkingSettings, llmSettings] = await Promise.all([
                 getSystemSettings('embedding').catch(() => null),
-                getSystemSettings('rag').catch(() => null),
+                getSystemSettings('chunking').catch(() => null),
                 getSystemSettings('llm').catch(() => null)
             ]);
 
             setAdvancedSettings(prev => {
                 const next = { ...prev };
                 if (embSettings && embSettings.model_name) next.embedding.model = embSettings.model_name;
-                if (ragSettings) {
-                    if (ragSettings.chunk_size) next.chunking.parentChunkSize = ragSettings.chunk_size;
-                    if (ragSettings.chunk_overlap) next.chunking.parentChunkOverlap = ragSettings.chunk_overlap;
+                if (chunkingSettings) {
+                    if (chunkingSettings.parent_chunk_size) next.chunking.parentChunkSize = chunkingSettings.parent_chunk_size;
+                    if (chunkingSettings.parent_chunk_overlap) next.chunking.parentChunkOverlap = chunkingSettings.parent_chunk_overlap;
+                    if (chunkingSettings.child_chunk_size) next.chunking.childChunkSize = chunkingSettings.child_chunk_size;
+                    if (chunkingSettings.child_chunk_overlap) next.chunking.childChunkOverlap = chunkingSettings.child_chunk_overlap;
                 }
                 if (llmSettings) {
                     if (llmSettings.temperature !== undefined) next.llm.temperature = llmSettings.temperature;
@@ -1085,11 +1095,11 @@ const ConfigPage: React.FC = () => {
                                                                             </div>
                                                                             <div className="p-3 bg-gray-50 rounded-lg border border-gray-100">
                                                                                 <p className="text-xs font-bold text-gray-400 uppercase mb-1">Parent Size</p>
-                                                                                <p className="text-sm font-semibold text-gray-700">{chunk.parentChunkSize || 800} chars</p>
+                                                                                <p className="text-sm font-semibold text-gray-700">{chunk.parentChunkSize || advancedSettings.chunking.parentChunkSize} chars</p>
                                                                             </div>
                                                                             <div className="p-3 bg-gray-50 rounded-lg border border-gray-100">
                                                                                 <p className="text-xs font-bold text-gray-400 uppercase mb-1">Child Size</p>
-                                                                                <p className="text-sm font-semibold text-gray-700">{chunk.childChunkSize || 200} chars</p>
+                                                                                <p className="text-sm font-semibold text-gray-700">{chunk.childChunkSize || advancedSettings.chunking.childChunkSize} chars</p>
                                                                             </div>
                                                                         </div>
                                                                     );

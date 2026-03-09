@@ -6,6 +6,7 @@ import type { Agent } from '../../../types/agent';
 import { updateAgent, deleteAgent, handleApiError } from '../../../services/api';
 import { useToast } from '../../Toast';
 import ConfirmationModal from '../../ConfirmationModal';
+import { useSystemSettings } from '../../../contexts/SystemSettingsContext';
 
 interface SettingsTabProps {
     activeConfig: ActiveConfig;
@@ -22,6 +23,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 }) => {
     const navigate = useNavigate();
     const { success: showSuccess, error: showError } = useToast();
+    const { advancedSettings } = useSystemSettings();
     
     // Edit state
     const [isEditing, setIsEditing] = useState(false);
@@ -255,11 +257,11 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                             </div>
                             <div className="p-3 bg-gray-50 rounded-lg border border-gray-100">
                                 <p className="text-xs font-bold text-gray-400 uppercase mb-1">Parent Size</p>
-                                <p className="text-sm font-semibold text-gray-700">{chunkConf.parentChunkSize || 800} chars</p>
+                                <p className="text-sm font-semibold text-gray-700">{chunkConf.parentChunkSize || advancedSettings.chunking.parentChunkSize} chars</p>
                             </div>
                             <div className="p-3 bg-gray-50 rounded-lg border border-gray-100">
                                 <p className="text-xs font-bold text-gray-400 uppercase mb-1">Child Size</p>
-                                <p className="text-sm font-semibold text-gray-700">{chunkConf.childChunkSize || 200} chars</p>
+                                <p className="text-sm font-semibold text-gray-700">{chunkConf.childChunkSize || advancedSettings.chunking.childChunkSize} chars</p>
                             </div>
                         </div>
                     </div>

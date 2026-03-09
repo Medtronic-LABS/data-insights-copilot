@@ -4,6 +4,7 @@ import EmbeddingSettingsModal from '../../EmbeddingSettingsModal';
 import ScheduleSelector from '../../ScheduleSelector';
 import { CheckCircleIcon, ExclamationTriangleIcon, Cog6ToothIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import type { ActiveConfig, VectorDbStatus } from '../../../contexts/AgentContext';
+import { useSystemSettings } from '../../../contexts/SystemSettingsContext';
 
 interface KnowledgeTabProps {
     activeConfig: ActiveConfig;
@@ -25,6 +26,9 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
     onEmbeddingCancel
 }) => {
     const [showSettingsModal, setShowSettingsModal] = useState(false);
+    
+    // Get system settings from context (loaded from backend Settings page)
+    const { getEmbeddingModalDefaults } = useSystemSettings();
 
     // Get vector DB name from config
     const getVectorDbName = () => {
@@ -43,8 +47,9 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
         }
     };
 
-    // Get chunking config from activeConfig for default settings
+    // Get chunking config from activeConfig, falling back to system settings
     const getChunkingConfig = () => {
+        const systemDefaults = getEmbeddingModalDefaults();
         try {
             const chunkConf = activeConfig.chunking_config
                 ? (typeof activeConfig.chunking_config === 'string'
@@ -52,39 +57,38 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
                     : activeConfig.chunking_config)
                 : {};
             return {
-                parent_chunk_size: chunkConf.parentChunkSize || 800,
-                parent_chunk_overlap: chunkConf.parentChunkOverlap || 150,
-                child_chunk_size: chunkConf.childChunkSize || 200,
-                child_chunk_overlap: chunkConf.childChunkOverlap || 50,
+                parent_chunk_size: chunkConf.parentChunkSize || systemDefaults.chunking.parent_chunk_size,
+                parent_chunk_overlap: chunkConf.parentChunkOverlap || systemDefaults.chunking.parent_chunk_overlap,
+                child_chunk_size: chunkConf.childChunkSize || systemDefaults.chunking.child_chunk_size,
+                child_chunk_overlap: chunkConf.childChunkOverlap || systemDefaults.chunking.child_chunk_overlap,
             };
         } catch {
             return {
-                parent_chunk_size: 800,
-                parent_chunk_overlap: 150,
-                child_chunk_size: 200,
-                child_chunk_overlap: 50,
+                parent_chunk_size: systemDefaults.chunking.parent_chunk_size,
+                parent_chunk_overlap: systemDefaults.chunking.parent_chunk_overlap,
+                child_chunk_size: systemDefaults.chunking.child_chunk_size,
+                child_chunk_overlap: systemDefaults.chunking.child_chunk_overlap,
             };
         }
     };
 
-    // Get complete default settings for the modal
-    const getDefaultSettings = () => ({
-        batch_size: 128,  // Optimized for GPU
-        max_concurrent: 5,
-        chunking: getChunkingConfig(),
-        parallelization: {
-            num_workers: undefined,
-            chunking_batch_size: undefined,
-            delta_check_batch_size: 50000,
-        },
-        medical_context_config: {
-            medical_context: {},
-            clinical_flag_prefixes: ['is_', 'has_', 'was_', 'history_of_', 'confirmed_', 'requires_', 'on_'],
-            use_yaml_defaults: true,
-        },
-        max_consecutive_failures: 5,
-        retry_attempts: 3,
-    });
+    // Get complete default settings for the modal from system settings
+    const getDefaultSettings = () => {
+        const systemDefaults = getEmbeddingModalDefaults();
+        return {
+            batch_size: systemDefaults.batch_size,
+            max_concurrent: systemDefaults.max_concurrent,
+            chunking: getChunkingConfig(),
+            parallelization: systemDefaults.parallelization,
+            medical_context_config: {
+                medical_context: {},
+                clinical_flag_prefixes: ['is_', 'has_', 'was_', 'history_of_', 'confirmed_', 'requires_', 'on_'],
+                use_yaml_defaults: true,
+            },
+            max_consecutive_failures: systemDefaults.max_consecutive_failures,
+            retry_attempts: systemDefaults.retry_attempts,
+        };
+    };
 
     const handleEmbeddingConfirm = (settings: any, incremental: boolean) => {
         onStartEmbedding(incremental, settings);

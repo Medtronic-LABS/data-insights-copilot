@@ -19,7 +19,7 @@ import { getActiveConfigMetadata, getPromptHistory, listEmbeddingJobs, getConnec
 const defaultAdvancedSettings: AdvancedSettings = {
     embedding: { model: 'BAAI/bge-m3' },
     llm: { temperature: 0.0, maxTokens: 4096 },
-    chunking: { parentChunkSize: 800, parentChunkOverlap: 150, childChunkSize: 200, childChunkOverlap: 50 },
+    chunking: { parentChunkSize: 512, parentChunkOverlap: 100, childChunkSize: 128, childChunkOverlap: 25 },
     retriever: { topKInitial: 50, topKFinal: 10, hybridWeights: [0.75, 0.25], rerankEnabled: true, rerankerModel: 'BAAI/bge-reranker-base' }
 };
 

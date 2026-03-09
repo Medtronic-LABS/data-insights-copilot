@@ -1022,14 +1022,18 @@ export const classifyTableColumns = async (tableName: string): Promise<ColumnCla
 /**
  * Start RAG embedding for selected text columns in a table.
  * Processing runs in background for large datasets.
+ * 
+ * NOTE: chunk sizes should come from system settings, not hardcoded.
+ * The backend will use system_settings defaults if not provided.
  */
 export const startRAGEmbedding = async (config: RAGConfig): Promise<RAGProcessingResult> => {
   const response = await apiClient.post('/api/v1/ingestion/rag/embed', {
     table_name: config.table_name,
     text_columns: config.text_columns,
     id_column: config.id_column || 'patient_id',
-    parent_chunk_size: config.parent_chunk_size || 800,
-    child_chunk_size: config.child_chunk_size || 200,
+    // Don't hardcode - let backend use system_settings defaults
+    parent_chunk_size: config.parent_chunk_size,
+    child_chunk_size: config.child_chunk_size,
   });
   return response.data;
 };

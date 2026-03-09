@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Cog6ToothIcon, XMarkIcon, InformationCircleIcon, PencilIcon } from '@heroicons/react/24/outline';
 import type { ChunkingConfig, ParallelizationConfig, MedicalContextConfig } from '../types/rag';
+import { useSystemSettings } from '../contexts/SystemSettingsContext';
 
 interface EmbeddingSettings {
     batch_size: number;
@@ -19,29 +20,6 @@ interface EmbeddingSettingsModalProps {
     defaultSettings?: Partial<EmbeddingSettings>;
 }
 
-const defaultConfig: EmbeddingSettings = {
-    batch_size: 128,  // Optimized for GPU (MPS/CUDA) with local models like BGE-M3
-    max_concurrent: 5,
-    chunking: {
-        parent_chunk_size: 800,
-        parent_chunk_overlap: 150,
-        child_chunk_size: 200,
-        child_chunk_overlap: 50,
-    },
-    parallelization: {
-        num_workers: undefined, // auto
-        chunking_batch_size: undefined, // auto
-        delta_check_batch_size: 50000,
-    },
-    medical_context_config: {
-        medical_context: {},
-        clinical_flag_prefixes: ['is_', 'has_', 'was_', 'history_of_', 'confirmed_', 'requires_', 'on_'],
-        use_yaml_defaults: true,
-    },
-    max_consecutive_failures: 5,
-    retry_attempts: 3,
-};
-
 const Tooltip: React.FC<{ text: string }> = ({ text }) => (
     <div className="group relative inline-block ml-1">
         <InformationCircleIcon className="w-4 h-4 text-gray-400 cursor-help" />
@@ -58,6 +36,31 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
     onConfirm,
     defaultSettings,
 }) => {
+    // Get settings from system settings context (loaded from backend)
+    const { getEmbeddingModalDefaults, isLoading: settingsLoading } = useSystemSettings();
+    
+    // Build config from system settings
+    const systemDefaults = getEmbeddingModalDefaults();
+    
+    const defaultConfig: EmbeddingSettings = {
+        batch_size: systemDefaults.batch_size,
+        max_concurrent: systemDefaults.max_concurrent,
+        chunking: {
+            parent_chunk_size: systemDefaults.chunking.parent_chunk_size,
+            parent_chunk_overlap: systemDefaults.chunking.parent_chunk_overlap,
+            child_chunk_size: systemDefaults.chunking.child_chunk_size,
+            child_chunk_overlap: systemDefaults.chunking.child_chunk_overlap,
+        },
+        parallelization: systemDefaults.parallelization,
+        medical_context_config: {
+            medical_context: {},
+            clinical_flag_prefixes: ['is_', 'has_', 'was_', 'history_of_', 'confirmed_', 'requires_', 'on_'],
+            use_yaml_defaults: true,
+        },
+        max_consecutive_failures: systemDefaults.max_consecutive_failures,
+        retry_attempts: systemDefaults.retry_attempts,
+    };
+
     const [settings, setSettings] = useState<EmbeddingSettings>({
         ...defaultConfig,
         ...defaultSettings,
@@ -65,6 +68,26 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [editChunking, setEditChunking] = useState(false);
     const [incremental, setIncremental] = useState(true);
+
+    // Update settings when system settings load
+    useEffect(() => {
+        if (!settingsLoading) {
+            const newDefaults = getEmbeddingModalDefaults();
+            setSettings(prev => ({
+                ...prev,
+                batch_size: defaultSettings?.batch_size ?? newDefaults.batch_size,
+                max_concurrent: defaultSettings?.max_concurrent ?? newDefaults.max_concurrent,
+                chunking: defaultSettings?.chunking ?? {
+                    parent_chunk_size: newDefaults.chunking.parent_chunk_size,
+                    parent_chunk_overlap: newDefaults.chunking.parent_chunk_overlap,
+                    child_chunk_size: newDefaults.chunking.child_chunk_size,
+                    child_chunk_overlap: newDefaults.chunking.child_chunk_overlap,
+                },
+                max_consecutive_failures: defaultSettings?.max_consecutive_failures ?? newDefaults.max_consecutive_failures,
+                retry_attempts: defaultSettings?.retry_attempts ?? newDefaults.retry_attempts,
+            }));
+        }
+    }, [settingsLoading, getEmbeddingModalDefaults, defaultSettings]);
 
     if (!isOpen) return null;
 
@@ -74,10 +97,17 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
     };
 
     const resetToDefaults = () => {
+        const newDefaults = getEmbeddingModalDefaults();
         setSettings({
             ...defaultConfig,
-            // Keep chunking from defaultSettings since it comes from main page
-            chunking: defaultSettings?.chunking || defaultConfig.chunking,
+            batch_size: newDefaults.batch_size,
+            max_concurrent: newDefaults.max_concurrent,
+            chunking: defaultSettings?.chunking ?? {
+                parent_chunk_size: newDefaults.chunking.parent_chunk_size,
+                parent_chunk_overlap: newDefaults.chunking.parent_chunk_overlap,
+                child_chunk_size: newDefaults.chunking.child_chunk_size,
+                child_chunk_overlap: newDefaults.chunking.child_chunk_overlap,
+            },
         });
         setEditChunking(false);
     };
