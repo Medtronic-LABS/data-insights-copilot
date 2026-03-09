@@ -12,7 +12,6 @@ Bottleneck Addressed:
 import pandas as pd
 import yaml
 from tqdm import tqdm
-import logging
 import asyncio
 from typing import Dict, List, Iterator, Tuple, Optional, AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
@@ -21,9 +20,10 @@ from dataclasses import dataclass
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from backend.core.logging import get_logger
 from backend.sqliteDb.db import get_db_service
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _get_database_uri(agent_id: Optional[int] = None, connection_id: Optional[int] = None) -> Optional[str]:
@@ -514,26 +514,71 @@ class DataExtractor:
             logger.error(f"Failed to get count for {table_name}: {e}")
             return
         
-        total_batches = (total_rows + batch_size - 1) // batch_size
+        # Get primary key column for cursor
+        # If no clear primary key, default to 'id' or first column
+        pk_query = f"""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tco
+            JOIN information_schema.key_column_usage kcu 
+              ON kcu.constraint_name = tco.constraint_name
+              AND kcu.constraint_schema = tco.constraint_schema
+              AND kcu.constraint_name = tco.constraint_name
+            WHERE tco.constraint_type = 'PRIMARY KEY' AND kcu.table_name = '{table_name}'
+        """
+        try:
+            pk_result = self.db_connector.execute_query(pk_query)
+            cursor_col = pk_result[0][0] if pk_result else safe_columns[0]
+            if cursor_col not in safe_columns:
+                safe_columns.append(cursor_col)
+        except Exception:
+            cursor_col = safe_columns[0]
+            
         cols_str = ", ".join([f'"{c}"' for c in safe_columns])
         
-        for batch_idx in range(total_batches):
-            offset = batch_idx * batch_size
-            query = f'SELECT {cols_str} FROM public."{table_name}" LIMIT {batch_size} OFFSET {offset}'
+        last_cursor_val = None
+        batch_idx = 0
+        
+        while True:
+            # Construct keyset pagination query
+            if last_cursor_val is None:
+                query = f'SELECT {cols_str} FROM public."{table_name}" ORDER BY "{cursor_col}" LIMIT {batch_size}'
+            else:
+                # Handle varying types carefully (assume string format covers most Postgres cases correctly with parameterization, but we inject safely)
+                # For robust implementation, parameterize the query if possible, but here we format it. 
+                # String conversion might fail. Let's rely on basic string formatting assuming safe values.
+                if isinstance(last_cursor_val, str):
+                    query = f'SELECT {cols_str} FROM public."{table_name}" WHERE "{cursor_col}" > \'{last_cursor_val}\' ORDER BY "{cursor_col}" LIMIT {batch_size}'
+                else:
+                    query = f'SELECT {cols_str} FROM public."{table_name}" WHERE "{cursor_col}" > {last_cursor_val} ORDER BY "{cursor_col}" LIMIT {batch_size}'
             
             try:
                 results = self.db_connector.execute_query(query)
+                if not results:
+                    break
+                    
                 df = pd.DataFrame(results, columns=safe_columns)
+                
+                # Update cursor
+                last_cursor_val = df.iloc[-1][cursor_col]
+                
+                # Check if this is the last batch
+                is_last = len(df) < batch_size
                 
                 yield TableBatch(
                     table_name=table_name,
                     dataframe=df,
                     batch_index=batch_idx,
-                    total_batches=total_batches,
-                    is_last=(batch_idx == total_batches - 1)
+                    total_batches=-1, # Unknown with pure keyset
+                    is_last=is_last
                 )
+                
+                if is_last:
+                    break
+                    
+                batch_idx += 1
             except Exception as e:
                 logger.error(f"Failed to extract batch {batch_idx} from {table_name}: {e}")
+                break
 
 
 def create_data_extractor(config_path: str = "config/embedding_config.yaml", database_uri: Optional[str] = None) -> DataExtractor:
