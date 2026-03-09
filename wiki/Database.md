@@ -87,6 +87,58 @@ Links a RAG configuration to a specific set of generated embeddings.
 
 ---
 
+## Per-Agent Embedding Configuration (Migration 019)
+
+These tables support per-agent embedding model configuration, allowing different agents to use different embedding models (e.g., one agent using BGE-M3, another using OpenAI embeddings).
+
+### `agent_embedding_configs`
+Stores the embedding model configuration for each agent.
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Config ID. |
+| `agent_id` | INTEGER UNIQUE | FK to `agents.id`. |
+| `provider` | TEXT | Embedding provider (`sentence-transformers`, `openai`, `bge-m3`). |
+| `model_name` | TEXT | Model identifier (e.g., `BAAI/bge-m3`, `text-embedding-3-small`). |
+| `model_path` | TEXT | Local path for downloaded models. |
+| `dimension` | INTEGER | Vector dimension (e.g., 1024, 1536). |
+| `batch_size` | INTEGER | Batch size for embedding generation. |
+| `collection_name` | TEXT | Qdrant collection name (format: `agent_{id}_{model_hash}`). |
+| `last_embedded_at` | TIMESTAMP | Last successful embedding run. |
+| `document_count` | INTEGER | Number of documents indexed. |
+| `requires_reindex` | INTEGER | 1 if model changed and reindex needed. |
+
+### `agent_embedding_history`
+Audit trail for embedding model changes per agent.
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | History ID. |
+| `agent_id` | INTEGER | FK to `agents.id`. |
+| `previous_provider` | TEXT | Previous provider before change. |
+| `previous_model` | TEXT | Previous model name. |
+| `previous_dimension` | INTEGER | Previous vector dimension. |
+| `new_provider` | TEXT | New provider after change. |
+| `new_model` | TEXT | New model name. |
+| `new_dimension` | INTEGER | New vector dimension. |
+| `change_reason` | TEXT | Reason for the change. |
+| `changed_by` | TEXT | Username who made the change. |
+| `changed_at` | TIMESTAMP | When the change occurred. |
+| `reindex_triggered` | INTEGER | 1 if reindexing was triggered. |
+| `reindex_job_id` | TEXT | Job ID of the reindex operation. |
+
+### Important: Vector Collection Isolation
+
+Each agent gets its own vector collection in Qdrant, named using the pattern:
+```
+agent_{agent_id}_{model_hash_8chars}
+```
+
+This ensures:
+- **Dimension safety**: Different models with different dimensions don't conflict
+- **Semantic isolation**: Embeddings from different models stay in separate vector spaces
+- **Independent reindexing**: Changing one agent's model doesn't affect others
+
+---
+
 ## System Settings (Migration 006)
 
 ### `system_settings`
