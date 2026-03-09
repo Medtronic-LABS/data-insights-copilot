@@ -303,6 +303,18 @@ async def _run_embedding_job(
         # =================================================================
         chunking_conf = json.loads(config.get('chunking_config', '{}') or '{}')
         
+        # Get system defaults from settings service (no hardcoding!)
+        from backend.services.settings_service import get_settings_service, SettingCategory
+        settings_service = get_settings_service()
+        
+        # Load chunking defaults from system settings
+        try:
+            chunking_defaults = settings_service.get_category_settings_raw(SettingCategory.CHUNKING.value)
+        except Exception as e:
+            logger.warning(f"Failed to load chunking settings from DB, using fallback: {e}")
+            chunking_defaults = {}
+        
+        # Priority: UI input > DB config > System settings
         if ui_chunking:
             parent_chunk_size = ui_chunking.parent_chunk_size
             parent_chunk_overlap = ui_chunking.parent_chunk_overlap
@@ -310,15 +322,18 @@ async def _run_embedding_job(
             child_chunk_overlap = ui_chunking.child_chunk_overlap
             logger.info(f"Using UI chunking config: parent={parent_chunk_size}/{parent_chunk_overlap}, child={child_chunk_size}/{child_chunk_overlap}")
         elif chunking_conf:
-            parent_chunk_size = chunking_conf.get('parentChunkSize', 800)
-            parent_chunk_overlap = chunking_conf.get('parentChunkOverlap', 150)
-            child_chunk_size = chunking_conf.get('childChunkSize', 200)
-            child_chunk_overlap = chunking_conf.get('childChunkOverlap', 50)
+            parent_chunk_size = chunking_conf.get('parentChunkSize', chunking_defaults.get('parent_chunk_size', 512))
+            parent_chunk_overlap = chunking_conf.get('parentChunkOverlap', chunking_defaults.get('parent_chunk_overlap', 100))
+            child_chunk_size = chunking_conf.get('childChunkSize', chunking_defaults.get('child_chunk_size', 128))
+            child_chunk_overlap = chunking_conf.get('childChunkOverlap', chunking_defaults.get('child_chunk_overlap', 25))
             logger.info(f"Using DB chunking config: parent={parent_chunk_size}/{parent_chunk_overlap}, child={child_chunk_size}/{child_chunk_overlap}")
         else:
-            parent_chunk_size, parent_chunk_overlap = 800, 150
-            child_chunk_size, child_chunk_overlap = 200, 50
-            logger.info("Using default chunking config")
+            # Use system settings as defaults (configured in Settings page)
+            parent_chunk_size = chunking_defaults.get('parent_chunk_size', 512)
+            parent_chunk_overlap = chunking_defaults.get('parent_chunk_overlap', 100)
+            child_chunk_size = chunking_defaults.get('child_chunk_size', 128)
+            child_chunk_overlap = chunking_defaults.get('child_chunk_overlap', 25)
+            logger.info(f"Using system settings chunking config: parent={parent_chunk_size}/{parent_chunk_overlap}, child={child_chunk_size}/{child_chunk_overlap}")
         
         extractor_config = {
             "tables": {"exclude_tables": [], "global_exclude_columns": []},
@@ -460,8 +475,10 @@ async def _run_embedding_job(
                 # Perform extraction
                 connection_id = config.get('connection_id')
                 if not connection_id:
-                    raise ValueError("Configuration missing connection_id")
-                    
+                    raise ValueError(
+                        f"Configuration {config_id} has data_source_type='database' but no connection_id. "
+                        "Please edit the agent configuration and select a database connection, then republish."
+                    )
                 connection_info = db_service.get_db_connection_by_id(connection_id)
                 if not connection_info:
                     raise ValueError(f"Connection {connection_id} not found")
