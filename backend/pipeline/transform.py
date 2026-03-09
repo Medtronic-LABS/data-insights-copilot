@@ -537,8 +537,8 @@ class AdvancedDataTransformer:
         if num_workers == 1:
             # Single-threaded for small datasets
             splitter = _get_cached_splitter(
-                parent_config.get('chunk_size', 800),
-                parent_config.get('chunk_overlap', 150)
+                parent_config.get('chunk_size', 512),
+                parent_config.get('chunk_overlap', 100)
             )
             parent_docs = splitter.split_documents(documents)
             if on_progress:
@@ -688,8 +688,8 @@ def _parallel_split_worker(docs: List[Document], config: Dict) -> List[Document]
     """
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         encoding_name="cl100k_base",
-        chunk_size=config.get('chunk_size', 800),
-        chunk_overlap=config.get('chunk_overlap', 150)
+        chunk_size=config.get('chunk_size', 512),
+        chunk_overlap=config.get('chunk_overlap', 100)
     )
     return splitter.split_documents(docs)
 
@@ -720,8 +720,8 @@ def _parallel_split_worker_lightweight(
     
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         encoding_name="cl100k_base",
-        chunk_size=config.get('chunk_size', 800),
-        chunk_overlap=config.get('chunk_overlap', 150)
+        chunk_size=config.get('chunk_size', 512),
+        chunk_overlap=config.get('chunk_overlap', 100)
     )
     return splitter.split_documents(docs)
 
@@ -747,13 +747,13 @@ def _parallel_child_split_worker(
     
     if has_tabular:
         splitter = _get_tabular_splitter(
-            keys_per_chunk=config.get('chunk_size', 200) // 20,  # ~20 chars per key-value line
-            chunk_overlap_keys=config.get('chunk_overlap', 50) // 20
+            keys_per_chunk=config.get('chunk_size', 128) // 20,  # ~20 chars per key-value line
+            chunk_overlap_keys=config.get('chunk_overlap', 25) // 20
         )
     else:
         splitter = _get_cached_splitter(
-            config.get('chunk_size', 200),
-            config.get('chunk_overlap', 50)
+            config.get('chunk_size', 128),
+            config.get('chunk_overlap', 25)
         )
     
     all_children = []
@@ -790,13 +790,13 @@ def _parallel_child_split_worker_lightweight(
     
     if has_tabular:
         splitter = _get_tabular_splitter(
-            keys_per_chunk=config.get('chunk_size', 200) // 20,
-            chunk_overlap_keys=config.get('chunk_overlap', 50) // 20
+            keys_per_chunk=config.get('chunk_size', 128) // 20,
+            chunk_overlap_keys=config.get('chunk_overlap', 25) // 20
         )
     else:
         splitter = _get_cached_splitter(
-            config.get('chunk_size', 200),
-            config.get('chunk_overlap', 50)
+            config.get('chunk_size', 128),
+            config.get('chunk_overlap', 25)
         )
     
     all_children = []
@@ -853,13 +853,13 @@ def _parallel_child_split_worker_db(
     
     if has_tabular:
         splitter = _get_tabular_splitter(
-            keys_per_chunk=config.get('chunk_size', 200) // 20,
-            chunk_overlap_keys=config.get('chunk_overlap', 50) // 20
+            keys_per_chunk=config.get('chunk_size', 128) // 20,
+            chunk_overlap_keys=config.get('chunk_overlap', 25) // 20
         )
     else:
         splitter = _get_cached_splitter(
-            config.get('chunk_size', 200),
-            config.get('chunk_overlap', 50)
+            config.get('chunk_size', 128),
+            config.get('chunk_overlap', 25)
         )
     
     all_children = []

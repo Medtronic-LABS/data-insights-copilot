@@ -283,15 +283,15 @@ def get_rag_settings() -> dict:
         from backend.services.settings_service import get_settings_service
         return get_settings_service().get_category_settings_raw('rag')
     except Exception:
-        # Fallback defaults
+        # Fallback defaults - industry standard for medical/healthcare RAG
         return {
             'top_k_initial': 50,
             'top_k_final': 10,
             'hybrid_weights': [0.75, 0.25],
             'rerank_enabled': True,
             'reranker_model': 'BAAI/bge-reranker-base',
-            'chunk_size': 800,
-            'chunk_overlap': 150
+            'chunk_size': 512,
+            'chunk_overlap': 100
         }
 
 
@@ -344,12 +344,12 @@ def get_chunking_settings() -> dict:
         from backend.services.settings_service import get_settings_service
         return get_settings_service().get_category_settings_raw('chunking')
     except Exception:
-        # Fallback defaults
+        # Fallback defaults - industry standard for medical/healthcare RAG
         return {
-            'parent_chunk_size': 800,
-            'parent_chunk_overlap': 150,
-            'child_chunk_size': 200,
-            'child_chunk_overlap': 50,
+            'parent_chunk_size': 512,
+            'parent_chunk_overlap': 100,
+            'child_chunk_size': 128,
+            'child_chunk_overlap': 25,
             'min_chunk_length': 50
         }
 

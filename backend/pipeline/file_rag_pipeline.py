@@ -37,10 +37,10 @@ class FileRAGConfig:
     # Columns to exclude from RAG
     exclude_columns: List[str] = field(default_factory=list)
     # Parent chunk settings
-    parent_chunk_size: int = 800
-    parent_chunk_overlap: int = 150
+    parent_chunk_size: int = 512
+    parent_chunk_overlap: int = 100
     # Child chunk settings  
-    child_chunk_size: int = 200
+    child_chunk_size: int = 128
     child_chunk_overlap: int = 50
     # Embedding settings
     embedding_batch_size: int = 128

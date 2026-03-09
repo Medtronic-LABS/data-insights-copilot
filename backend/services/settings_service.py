@@ -108,8 +108,9 @@ class RAGSettings(BaseModel):
     hybrid_weights: List[float] = Field(default=[0.75, 0.25])
     rerank_enabled: bool = True
     reranker_model: str = "BAAI/bge-reranker-base"
-    chunk_size: int = Field(default=800, ge=100, le=4000)
-    chunk_overlap: int = Field(default=150, ge=0, le=500)
+    # Use industry-standard defaults for medical/healthcare RAG
+    chunk_size: int = Field(default=512, ge=100, le=4000)
+    chunk_overlap: int = Field(default=100, ge=0, le=500)
     
     @field_validator('hybrid_weights')
     @classmethod
@@ -186,11 +187,16 @@ class MedicalContextSettings(BaseModel):
 
 
 class ChunkingSettings(BaseModel):
-    """Chunking strategy settings for embedding pipeline."""
-    parent_chunk_size: int = Field(default=800, ge=100, le=4000, description="Parent chunk size")
-    parent_chunk_overlap: int = Field(default=150, ge=0, le=500, description="Parent chunk overlap")
-    child_chunk_size: int = Field(default=200, ge=50, le=1000, description="Child chunk size")
-    child_chunk_overlap: int = Field(default=50, ge=0, le=200, description="Child chunk overlap")
+    """Chunking strategy settings for embedding pipeline.
+    
+    Industry best practices for medical/healthcare RAG:
+    - Smaller chunks = more precise retrieval + faster processing
+    - ~20% overlap maintains context between chunks
+    """
+    parent_chunk_size: int = Field(default=512, ge=100, le=4000, description="Parent chunk size for context")
+    parent_chunk_overlap: int = Field(default=100, ge=0, le=500, description="Parent chunk overlap (~20%)")
+    child_chunk_size: int = Field(default=128, ge=50, le=1000, description="Child chunk size for precise matching")
+    child_chunk_overlap: int = Field(default=25, ge=0, le=200, description="Child chunk overlap (~20%)")
     min_chunk_length: int = Field(default=50, ge=10, le=500, description="Minimum chunk length to index")
 
 

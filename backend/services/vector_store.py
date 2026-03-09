@@ -79,12 +79,12 @@ class VectorStoreService:
             },
             'chunking': {
                 'parent_splitter': {
-                    'chunk_size': chunking_settings.get('parent_chunk_size', 800),
-                    'chunk_overlap': chunking_settings.get('parent_chunk_overlap', 150),
+                    'chunk_size': chunking_settings.get('parent_chunk_size', 500),
+                    'chunk_overlap': chunking_settings.get('parent_chunk_overlap', 100),
                 },
                 'child_splitter': {
-                    'chunk_size': chunking_settings.get('child_chunk_size', 200),
-                    'chunk_overlap': chunking_settings.get('child_chunk_overlap', 50),
+                    'chunk_size': chunking_settings.get('child_chunk_size', 128),
+                    'chunk_overlap': chunking_settings.get('child_chunk_overlap', 25),
                 },
             },
             'vector_store': {
