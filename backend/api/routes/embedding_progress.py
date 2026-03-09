@@ -745,10 +745,13 @@ async def _run_embedding_job(
         # =================================================================
         MIN_GPU_BATCH_SIZE = 128  # Optimal for MPS/CUDA with BGE-M3
         
+        # Local GPU providers that benefit from larger batch sizes
+        LOCAL_GPU_PROVIDERS = ("sentence-transformers", "huggingface", "bge-m3", "bge")
+        
         if ui_batch_size is not None:
             batch_size = ui_batch_size
             # Override suboptimal batch sizes for GPU providers
-            if provider_type in ("sentence-transformers", "huggingface") and batch_size < MIN_GPU_BATCH_SIZE:
+            if provider_type in LOCAL_GPU_PROVIDERS and batch_size < MIN_GPU_BATCH_SIZE:
                 logger.info(f"MPS/CUDA OPTIMIZATION: UI batch_size={batch_size} is suboptimal for GPU. Overriding to {MIN_GPU_BATCH_SIZE} for ~2.5x speedup.")
                 batch_size = MIN_GPU_BATCH_SIZE
             else:
@@ -756,6 +759,7 @@ async def _run_embedding_job(
         elif provider_type == "openai":
             batch_size = emb_conf.get("batch_size", 500)
         else:
+            # Default to optimal GPU batch size for local models
             batch_size = emb_conf.get("batch_size", MIN_GPU_BATCH_SIZE)
         
         if ui_max_concurrent is not None:
