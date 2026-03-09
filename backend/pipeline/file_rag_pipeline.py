@@ -638,7 +638,7 @@ class FileRAGPipeline:
         
         Search Flow:
         1. Embed query using BGE-M3
-        2. Search child chunks in ChromaDB
+        2. Search child chunks in Vector DB (Qdrant or ChromaDB)
         3. Retrieve parent documents for full context
         
         Args:
@@ -650,34 +650,83 @@ class FileRAGPipeline:
         Returns:
             List of search results with scores and context
         """
-        import chromadb
-        from chromadb.config import Settings
         from backend.pipeline.docstore import SQLiteDocStore
         from backend.api.routes.ingestion import _get_user_data_dir
+        from backend.services.chroma_service import get_vector_store_type
         
         user_dir = _get_user_data_dir(self.user_id)
+        collection_name = f"file_rag_{table_name}"
         
         # Embed query
         query_embedding = await self.embedding_provider.aembed_query(query)
         
-        # Search ChromaDB
-        chroma_path = user_dir / "chroma_db"
-        chroma_client = chromadb.PersistentClient(
-            path=str(chroma_path),
-            settings=Settings(anonymized_telemetry=False),
-        )
+        # Get vector store type from settings
+        vector_store_type = get_vector_store_type()
         
-        collection_name = f"file_rag_{table_name}"
-        collection = chroma_client.get_collection(collection_name)
-        
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
-        
-        # Process results
         search_results = []
+        
+        if vector_store_type == 'qdrant':
+            # Search using Qdrant
+            try:
+                from backend.pipeline.vector_stores.factory import VectorStoreFactory
+                
+                vector_store = VectorStoreFactory.get_provider('qdrant', collection_name=collection_name)
+                results = await vector_store.search(
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                )
+                
+                for r in results:
+                    search_results.append({
+                        "chunk_id": r.get("id"),
+                        "child_content": r.get("document", ""),
+                        "similarity_score": round(r.get("score", 0), 4),
+                        "metadata": r.get("metadata", {}),
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Qdrant search failed, falling back to ChromaDB: {e}")
+                vector_store_type = 'chroma'
+        
+        if vector_store_type == 'chroma' and not search_results:
+            # Fallback to ChromaDB
+            import chromadb
+            from chromadb.config import Settings
+            
+            chroma_path = user_dir / "chroma_db"
+            chroma_client = chromadb.PersistentClient(
+                path=str(chroma_path),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            
+            collection = chroma_client.get_collection(collection_name)
+            
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
+            )
+            
+            # Process ChromaDB results
+            if results["ids"] and results["ids"][0]:
+                for i in range(len(results["ids"][0])):
+                    chunk_id = results["ids"][0][i]
+                    child_content = results["documents"][0][i]
+                    metadata = results["metadatas"][0][i]
+                    distance = results["distances"][0][i]
+                    
+                    # Convert distance to similarity score (ChromaDB uses L2 by default)
+                    similarity = 1 - distance
+                    
+                    search_results.append({
+                        "chunk_id": chunk_id,
+                        "child_content": child_content,
+                        "similarity_score": round(similarity, 4),
+                        "metadata": metadata,
+                    })
+        
+        # Process results and fetch parent documents
+        final_results = []
         seen_parents = set()
         
         if return_parents:
@@ -685,20 +734,13 @@ class FileRAGPipeline:
             docstore_path = user_dir / f"{table_name}_parents.db"
             docstore = SQLiteDocStore(str(docstore_path))
         
-        for i in range(len(results["ids"][0])):
-            chunk_id = results["ids"][0][i]
-            child_content = results["documents"][0][i]
-            metadata = results["metadatas"][0][i]
-            distance = results["distances"][0][i]
+        for result in search_results:
+            metadata = result.get("metadata", {})
             
-            # Convert distance to similarity score (ChromaDB uses L2 by default)
-            # For cosine distance: similarity = 1 - distance
-            similarity = 1 - distance
-            
-            result = {
-                "chunk_id": chunk_id,
-                "child_content": child_content,
-                "similarity_score": round(similarity, 4),
+            final_result = {
+                "chunk_id": result["chunk_id"],
+                "child_content": result["child_content"],
+                "similarity_score": result["similarity_score"],
                 "metadata": metadata,
             }
             
@@ -708,19 +750,19 @@ class FileRAGPipeline:
                 if parent_id not in seen_parents:
                     parent_docs = docstore.mget([parent_id])
                     if parent_docs and parent_docs[0]:
-                        result["parent_content"] = parent_docs[0].page_content
-                        result["parent_id"] = parent_id
+                        final_result["parent_content"] = parent_docs[0].page_content
+                        final_result["parent_id"] = parent_id
                     seen_parents.add(parent_id)
             
             # Include source row info for SQL join capability
             if "row_id" in metadata:
-                result["source_row_id"] = metadata["row_id"]
+                final_result["source_row_id"] = metadata["row_id"]
             if "source_column" in metadata:
-                result["source_column"] = metadata["source_column"]
+                final_result["source_column"] = metadata["source_column"]
             
-            search_results.append(result)
+            final_results.append(final_result)
         
-        return search_results
+        return final_results
 
 
 # Convenience function
