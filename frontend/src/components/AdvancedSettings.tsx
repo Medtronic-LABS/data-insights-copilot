@@ -5,6 +5,7 @@ import {
     registerEmbeddingModel, registerLLMModel
 } from '../services/api';
 import type { ModelInfo } from '../services/api';
+import ModelCatalog from './ModelCatalog';
 
 interface AdvancedSettingsProps {
     settings: {
@@ -63,6 +64,9 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({ settings, onChange,
     // Registration UI state
     const [showRegisterEmbedding, setShowRegisterEmbedding] = useState(false);
     const [showRegisterLLM, setShowRegisterLLM] = useState(false);
+    
+    // Model Catalog toggle
+    const [showModelCatalog, setShowModelCatalog] = useState(false);
 
     const [newModelForm, setNewModelForm] = useState({
         provider: 'huggingface',
@@ -279,7 +283,49 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({ settings, onChange,
                                 Active: {activeEmbedding.display_name}
                             </span>
                         )}
+                        {/* Browse Catalog Button */}
+                        {!readOnly && (
+                            <button
+                                type="button"
+                                onClick={() => setShowModelCatalog(true)}
+                                className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                </svg>
+                                Browse Catalog
+                            </button>
+                        )}
                     </div>
+
+                    {/* Model Catalog Modal */}
+                    {showModelCatalog && (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+                                <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                                    <h2 className="text-lg font-semibold text-gray-900">Model Catalog</h2>
+                                    <button
+                                        onClick={() => setShowModelCatalog(false)}
+                                        className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-4">
+                                    <ModelCatalog 
+                                        readOnly={readOnly} 
+                                        onModelActivated={() => {
+                                            loadModels();
+                                            setActivationMsg('✓ Model activated from catalog');
+                                            setTimeout(() => setActivationMsg(null), 4000);
+                                        }} 
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Vector DB Naming Section */}
                     <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-gray-50 rounded-lg border border-gray-200">
