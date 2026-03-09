@@ -21,19 +21,19 @@ Step 3 (Synthesis): DuckDB executes instantly, LLM formats final response
 """
 
 import asyncio
-import logging
 import time
 import re
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
+from backend.core.logging import get_logger
 from backend.pipeline.ingestion.intent_router import (
     QueryIntent,
     get_intent_router,
 )
 from backend.services.file_sql_service import FileSQLService, get_file_sql_service
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

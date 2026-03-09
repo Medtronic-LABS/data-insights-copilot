@@ -7,12 +7,13 @@ This service complements the existing EmbeddingRegistry / LLMRegistry singletons
 custom model registration, and embedding↔LLM compatibility rules.
 """
 import json
-import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
-logger = logging.getLogger(__name__)
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -522,6 +523,6 @@ _model_registry_service: Optional[ModelRegistryService] = None
 def get_model_registry_service() -> ModelRegistryService:
     """Get the singleton ModelRegistryService instance."""
     global _model_registry_service
-    if _model_registry_service is None:
+    if (_model_registry_service is None):
         _model_registry_service = ModelRegistryService()
     return _model_registry_service

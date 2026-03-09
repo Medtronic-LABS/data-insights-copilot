@@ -1,8 +1,9 @@
 from typing import List, Dict, Any, Optional
-import logging
+
+from backend.core.logging import get_logger
 from backend.rag.retrieve import create_retriever
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 class RAGQueryInterface:
     def __init__(self, config_path="config/embedding_config.yaml"):

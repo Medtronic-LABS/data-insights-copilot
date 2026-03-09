@@ -4,6 +4,10 @@ from typing import Dict, Set, List, Optional
 import os
 import threading
 
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 class ChromaClientManager:
     _instances: Dict[str, chromadb.PersistentClient] = {}
     _lock = threading.Lock()
@@ -78,8 +82,7 @@ def get_existing_chunk_ids(
         
     except Exception as e:
         # Log but don't fail - if we can't check, we'll re-embed everything
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to fetch existing chunk IDs: {e}")
+        logger.warning(f"Failed to fetch existing chunk IDs: {e}")
         return set()
 
 

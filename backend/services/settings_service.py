@@ -11,14 +11,15 @@ Services can register as listeners to be notified when settings change.
 This enables immediate cache invalidation without waiting for TTL expiration.
 """
 import json
-import logging
 import time
 import threading
 from typing import Optional, Dict, Any, List, Literal, Callable, Set
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
