@@ -6,11 +6,12 @@ import os
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-import logging
 import json
 import hashlib
 
-logger = logging.getLogger(__name__)
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Database path
 DB_DIR = Path(__file__).parent
@@ -587,6 +588,7 @@ class DatabaseService:
                 "id": prompt_id,
                 "prompt_text": prompt_text,
                 "version": str(new_version),
+                "version_number": new_version,
                 "is_active": 1,
                 "created_by": user_id,
                 "agent_id": agent_id
