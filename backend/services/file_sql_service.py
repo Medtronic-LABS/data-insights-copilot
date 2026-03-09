@@ -81,7 +81,8 @@ class FileSQLService:
     DuckDB queries CSV files directly from disk without loading into RAM.
     """
     
-    def __init__(self, user_id: int, callbacks: list = None, trace_id: str = None):
+    def __init__(self, user_id: int, callbacks: list = None, trace_id: str = None, 
+                 allowed_tables: List[str] = None):
         """
         Initialize File SQL service for a specific user.
         
@@ -89,11 +90,15 @@ class FileSQLService:
             user_id: User ID whose uploaded files to query
             callbacks: Optional list of LangChain callbacks (e.g., LangfuseCallbackHandler)
             trace_id: Optional trace ID to group all LLM calls under one trace
+            allowed_tables: Optional list of table names to restrict queries to.
+                           If None, all tables are available. Used to scope
+                           queries to a specific agent's data source.
         """
         self.user_id = user_id
         self.db_path = DATA_STORAGE_DIR / f"user_{user_id}" / "database.duckdb"
         self.callbacks = callbacks or []
         self.trace_id = trace_id
+        self.allowed_tables = allowed_tables  # NEW: Filter tables for this agent
         
         if not self.db_path.exists():
             raise ValueError(f"No uploaded files found for user {user_id}")
@@ -119,14 +124,17 @@ class FileSQLService:
         self._schema_cache: Optional[Dict] = None
         self._cache_schema()
         
-        logger.info(f"FileSQLService initialized for user {user_id}")
+        if allowed_tables:
+            logger.info(f"FileSQLService initialized for user {user_id}, restricted to tables: {allowed_tables}")
+        else:
+            logger.info(f"FileSQLService initialized for user {user_id}")
     
     def _get_connection(self, read_only: bool = True) -> duckdb.DuckDBPyConnection:
         """Get a DuckDB connection."""
         return duckdb.connect(str(self.db_path), read_only=read_only)
     
     def _cache_schema(self) -> None:
-        """Cache the schema information for all user tables."""
+        """Cache the schema information for allowed user tables."""
         try:
             conn = self._get_connection()
             
@@ -151,6 +159,11 @@ class FileSQLService:
             table_info = []
             
             for table_name, orig_file, row_count, columns_json in tables:
+                # NEW: Skip tables not in allowed_tables if filter is set
+                if self.allowed_tables and table_name not in self.allowed_tables:
+                    logger.debug(f"Skipping table {table_name} - not in allowed_tables")
+                    continue
+                    
                 columns = json.loads(columns_json) if columns_json else []
                 
                 # Get column types from DuckDB
@@ -185,7 +198,8 @@ Columns:
                 "schema_text": "\n\n".join(schema_parts),
             }
             
-            logger.info(f"Cached schema for {len(table_info)} tables")
+            logger.info(f"Cached schema for {len(table_info)} tables" + 
+                       (f" (filtered from allowed_tables)" if self.allowed_tables else ""))
             
         except Exception as e:
             logger.error(f"Failed to cache schema: {e}")
@@ -228,6 +242,21 @@ IMPORTANT RULES:
 6. For date columns, use standard SQL date functions
 7. NULL handling: Use COALESCE or IS NOT NULL as needed
 
+SPECIAL QUERY PATTERNS:
+
+8. **LOOKUP QUERIES** (e.g., "which org is X", "what is patient Y", "info about Z"):
+   - When user asks about a specific ID/value, return ALL relevant columns for that entity
+   - Example: "which org is 14299" → SELECT * FROM table WHERE organization_id = 14299 LIMIT 10
+   - Example: "details for patient 123" → SELECT * FROM table WHERE patient_id = 123
+   - If the requested name/description column doesn't exist, return what IS available
+   - NEVER just return the same ID the user asked about - that's useless!
+
+9. **AGGREGATION BY ENTITY** (e.g., "how many patients in org 14299"):
+   - Filter by the entity, then aggregate: SELECT COUNT(*) FROM table WHERE organization_id = 14299
+
+10. **EXISTENCE CHECK**: If user just wants to verify something exists:
+    - Return a count or sample: SELECT COUNT(*) as record_count FROM table WHERE condition
+
 QUESTION: {question}
 
 Return ONLY the SQL query. No markdown, no explanation, no comments.
@@ -248,7 +277,7 @@ SQL:"""
         return sql
     
     def _get_sample_data(self, limit: int = 3) -> str:
-        """Get sample rows from each table for LLM context."""
+        """Get sample rows and distinct values from each table for LLM context."""
         schema = self.get_schema()
         if not schema["tables"]:
             return "No data available."
@@ -259,7 +288,10 @@ SQL:"""
         try:
             for table in schema["tables"]:
                 table_name = table["name"]
+                col_types = table.get("column_types", {})
+                
                 try:
+                    # Get sample rows
                     rows = conn.execute(f"SELECT * FROM {table_name} LIMIT {limit}").fetchall()
                     cols = table["columns"]
                     
@@ -268,13 +300,46 @@ SQL:"""
                         sample_text += " | ".join(cols) + "\n"
                         for row in rows:
                             sample_text += " | ".join(str(v)[:30] if v else "NULL" for v in row) + "\n"
+                        
+                        # Get distinct values for categorical columns (VARCHAR with low cardinality)
+                        # This helps the LLM know exact values like "High risk" vs "High"
+                        categorical_values = []
+                        for col in cols:
+                            col_type = col_types.get(col, "").upper()
+                            # Only check VARCHAR/TEXT columns that might be categorical
+                            if "VARCHAR" in col_type or "TEXT" in col_type or col_type == "":
+                                try:
+                                    # Check cardinality - only include if < 20 distinct values
+                                    count_result = conn.execute(f"""
+                                        SELECT COUNT(DISTINCT "{col}") FROM {table_name}
+                                    """).fetchone()[0]
+                                    
+                                    if count_result and count_result <= 20:
+                                        distinct_vals = conn.execute(f"""
+                                            SELECT DISTINCT "{col}" FROM {table_name} 
+                                            WHERE "{col}" IS NOT NULL 
+                                            ORDER BY "{col}" 
+                                            LIMIT 20
+                                        """).fetchall()
+                                        
+                                        if distinct_vals:
+                                            vals = [str(v[0])[:50] for v in distinct_vals if v[0]]
+                                            if vals:
+                                                categorical_values.append(f"  {col}: {vals}")
+                                except Exception:
+                                    pass  # Skip columns that error
+                        
+                        if categorical_values:
+                            sample_text += "\nDISTINCT VALUES (use these exact values in queries):\n"
+                            sample_text += "\n".join(categorical_values)
+                        
                         samples.append(sample_text)
                 except Exception as e:
                     logger.warning(f"Could not get sample from {table_name}: {e}")
         finally:
             conn.close()
         
-        return "\n".join(samples) if samples else "No sample data available."
+        return "\n\n".join(samples) if samples else "No sample data available."
     
     def _validate_sql(self, sql: str) -> bool:
         """Validate SQL query for safety."""
