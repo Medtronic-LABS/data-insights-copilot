@@ -302,7 +302,7 @@ const AgentConfigPage: React.FC = () => {
         setPublishing(true);
         setError(null);
 
-        // Derive vector db name if missing
+        // Derive vector db name if missing - ALWAYS include agent ID for isolation
         const finalEmbeddingConfig = { ...advancedSettings.embedding } as any;
         if (!finalEmbeddingConfig.vectorDbName) {
             let baseName = '';
@@ -314,7 +314,8 @@ const AgentConfigPage: React.FC = () => {
 
             if (baseName) {
                 const formatted = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-                finalEmbeddingConfig.vectorDbName = `${formatted}_data`;
+                // IMPORTANT: Always include agent ID to ensure isolation between agents
+                finalEmbeddingConfig.vectorDbName = `agent_${agent.id}_${formatted}_data`;
             } else {
                 finalEmbeddingConfig.vectorDbName = `agent_${agent.id}_data`;
             }

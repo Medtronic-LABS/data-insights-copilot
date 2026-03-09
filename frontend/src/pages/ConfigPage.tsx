@@ -486,10 +486,9 @@ const ConfigPage: React.FC = () => {
         setPublishing(true);
         setError(null);
 
-        // Derive vector db name if missing to ensure multi-tenant isolation
+        // Derive vector db name if missing - ALWAYS include agent ID for isolation
         const finalEmbeddingConfig = { ...advancedSettings.embedding } as any;
         if (!finalEmbeddingConfig.vectorDbName) {
-            // Try to use a descriptive name first
             let baseName = '';
             if (dataSourceType === 'database' && connectionName) {
                 baseName = connectionName;
@@ -499,9 +498,9 @@ const ConfigPage: React.FC = () => {
 
             if (baseName) {
                 const formatted = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-                finalEmbeddingConfig.vectorDbName = `${formatted}_data`;
+                // IMPORTANT: Always include agent ID to ensure isolation between agents
+                finalEmbeddingConfig.vectorDbName = `agent_${selectedAgent.id}_${formatted}_data`;
             } else {
-                // Absolute fallback to agent ID
                 finalEmbeddingConfig.vectorDbName = `agent_${selectedAgent.id}_data`;
             }
         }
