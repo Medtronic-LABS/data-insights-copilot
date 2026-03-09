@@ -128,9 +128,9 @@ class EmbeddingJobService:
         cursor = conn.cursor()
         
         try:
-            # Get total documents for percentage calculation
+            # Get total documents and embedding start time for speed calculation
             cursor.execute(
-                "SELECT total_documents, started_at FROM embedding_jobs WHERE job_id = ?",
+                "SELECT total_documents, started_at, embedding_started_at FROM embedding_jobs WHERE job_id = ?",
                 (job_id,)
             )
             row = cursor.fetchone()
@@ -138,20 +138,23 @@ class EmbeddingJobService:
                 logger.warning(f"Job {job_id} not found for progress update")
                 return
             
-            total_documents = row['total_documents']
-            started_at = row['started_at']
+            # Convert Row to dict for safe access
+            job_data = dict(row)
+            total_documents = job_data['total_documents']
+            # Use embedding_started_at for accurate speed calculation (falls back to started_at)
+            embedding_start = job_data.get('embedding_started_at') or job_data.get('started_at')
             
             # Calculate progress percentage (include skipped in progress)
             total_handled = processed_documents + skipped_documents
             progress_percentage = (total_handled / total_documents * 100) if total_documents > 0 else 0
             
-            # Calculate speed and ETA
+            # Calculate speed and ETA based on embedding phase start time
             docs_per_second = None
             estimated_completion = None
             
-            if started_at:
+            if embedding_start:
                 try:
-                    start_time = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                    start_time = datetime.fromisoformat(embedding_start.replace('Z', '+00:00'))
                     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                     if elapsed > 0 and processed_documents > 0:
                         docs_per_second = processed_documents / elapsed
@@ -198,11 +201,12 @@ class EmbeddingJobService:
             conn.close()
     
     def transition_to_embedding(self, job_id: str) -> None:
-        """Transition job to EMBEDDING state."""
+        """Transition job to EMBEDDING state and record embedding start time."""
         self._update_job(
             job_id,
             status=EmbeddingJobStatus.EMBEDDING,
-            phase="Generating embeddings"
+            phase="Generating embeddings",
+            embedding_started_at=datetime.now(timezone.utc).isoformat()
         )
         self._log_event(job_id, "status_change", {"from": "PREPARING", "to": "EMBEDDING"})
     
