@@ -154,8 +154,8 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
                             </div>
                         </div>
 
-                        {/* Vector DB Stats Card */}
-                        {vectorDbStatus && (
+                        {/* Vector DB Stats Card - Show empty state if no vectorDbStatus */}
+                        {vectorDbStatus ? (
                             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6 pt-6 sm:pt-8 border-t border-gray-100">
                                 <div className="p-3 sm:p-4 bg-blue-50/50 rounded-xl border border-blue-100">
                                     <p className="text-xs text-blue-600 font-bold uppercase tracking-wider mb-2">Stored Documents</p>
@@ -236,6 +236,26 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
                                 {/* Schedule Selector */}
                                 <div className="col-span-1 md:col-span-3 mt-4 pt-6 border-t border-gray-100">
                                     <ScheduleSelector vectorDbName={getVectorDbName()} />
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="pt-6 sm:pt-8 border-t border-gray-100">
+                                <div className="flex flex-col items-center justify-center text-center p-8 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
+                                    <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mb-4">
+                                        <svg className="w-8 h-8 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                        </svg>
+                                    </div>
+                                    <h3 className="text-lg font-semibold text-gray-900 mb-2">No Knowledge Base Yet</h3>
+                                    <p className="text-sm text-gray-500 max-w-md mb-4">
+                                        This agent doesn't have a vector database yet. Click "Sync Now" or "Rebuild DB" above to create embeddings from your data source.
+                                    </p>
+                                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <span>First sync may take several minutes depending on data size</span>
+                                    </div>
                                 </div>
                             </div>
                         )}
