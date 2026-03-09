@@ -14,3 +14,4 @@ __pycache__/
 /data/indexes
 /frontend/dev-dist
 /data/duckdb_files
+/data/chroma_db
