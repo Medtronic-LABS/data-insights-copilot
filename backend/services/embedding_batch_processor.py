@@ -31,12 +31,12 @@ MIN_MEMORY_HEADROOM_MB = 512  # Keep at least 512MB free
 # Batch size constraints
 MIN_BATCH_SIZE = 10
 MAX_BATCH_SIZE = 500
-DEFAULT_BATCH_SIZE = 128  # Match model's internal batch size for optimal GPU utilization
+DEFAULT_BATCH_SIZE = 50
 
 # Concurrency constraints
 MIN_CONCURRENT = 1
 MAX_CONCURRENT = 8
-DEFAULT_CONCURRENT = 3
+DEFAULT_CONCURRENT = 5
 
 
 @dataclass
@@ -243,14 +243,23 @@ class EmbeddingBatchProcessor:
     - Stateful job resuming (filters out already-embedded documents)
     """
     
-    def __init__(self, config: Optional[BatchConfig] = None):
+    def __init__(self, config: Optional[BatchConfig] = None, use_celery: bool = False, table_name: str = ""):
         """
         Initialize the batch processor.
         
         Args:
             config: Batch processing configuration
+            use_celery: Whether to dispatch batches to Celery
+            table_name: Tracing table name if using Celery
         """
         self.config = config or BatchConfig()
+        self.use_celery = use_celery
+        self.table_name = table_name
+        
+        if self.use_celery:
+            from backend.pipeline.workers.embedding_worker import process_embedding_batch
+            self.celery_task = process_embedding_batch
+            
         self.embedding_model = None
         self._cancelled = False
         self._paused = False
@@ -772,8 +781,16 @@ class EmbeddingBatchProcessor:
             start_time = time.time()
             
             try:
+                if self.use_celery:
+                    # Dispatch to Celery queue! 
+                    # documents must be serialized chunks to reconstruct ChunkedDocument
+                    logger.debug(f"Batch {batch_number}: Pushing to Celery queue")
+                    batch_run_id = f"job_{int(time.time()*100)}"
+                    self.celery_task.delay(batch_run_id, self.table_name, documents)
+                    # We return empty embeddings to signal async processing success
+                    embeddings = []
                 # Task 2.3: Check if provider supports native async
-                if hasattr(self.embedding_model, 'supports_async') and self.embedding_model.supports_async:
+                elif hasattr(self.embedding_model, 'supports_async') and self.embedding_model.supports_async:
                     # Use native async embedding (e.g., OpenAI)
                     logger.debug(f"Batch {batch_number}: Using native async embedding")
                     embeddings = await asyncio.wait_for(

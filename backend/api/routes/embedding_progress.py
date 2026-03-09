@@ -603,12 +603,17 @@ async def _run_embedding_job(
             cursor.execute("DELETE FROM document_index WHERE vector_db_name = ?", (vector_db_name,))
             conn.commit()
             try:
-                client = get_chroma_client(chroma_path)
-                try:
-                    client.delete_collection(name=vector_db_name)
-                    logger.info(f"Deleted existing collection {vector_db_name} for rebuild.")
-                except ValueError:
-                    pass
+                from backend.services.settings_service import get_settings_service, SettingCategory
+                settings_service = get_settings_service()
+                vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+                provider_type = vs_settings.get("type", "qdrant")  # Default to qdrant for prod
+                
+                from backend.pipeline.vector_stores.factory import VectorStoreFactory
+                vector_store = VectorStoreFactory.get_provider(provider_type, collection_name=vector_db_name)
+                
+                import asyncio
+                await vector_store.delete_collection()
+                logger.info(f"Deleted existing collection {vector_db_name} for rebuild.")
             except Exception as e:
                 logger.warning(f"Failed to cleanly delete collection during rebuild: {e}")
             docs_to_process = documents
@@ -646,20 +651,22 @@ async def _run_embedding_job(
                 job_service.complete_job(job_id, validation_passed=True)
                 return
 
-            if stale_source_ids and os.path.exists(chroma_path):
+            if stale_source_ids:
                 job_service.update_progress(job_id, processed_documents=0, current_batch=0, phase=f"Purging {len(stale_source_ids)} outdated documents...")
                 try:
-                    client = get_chroma_client(chroma_path)
-                    try:
-                        collection = client.get_collection(name=vector_db_name)
-                        for i in range(0, len(stale_source_ids), 100):
-                            batch_stale = stale_source_ids[i:i+100]
-                            collection.delete(where={"source_id": {"$in": batch_stale}})
-                        logger.info(f"Deleted outdated chunks for {len(stale_source_ids)} documents.")
-                    except ValueError:
-                        pass
+                    from backend.services.settings_service import get_settings_service, SettingCategory
+                    settings_service = get_settings_service()
+                    vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+                    provider_type = vs_settings.get("type", "qdrant")
+                    
+                    from backend.pipeline.vector_stores.factory import VectorStoreFactory
+                    vector_store = VectorStoreFactory.get_provider(provider_type, collection_name=vector_db_name)
+                    
+                    import asyncio
+                    await vector_store.delete_by_source_ids(stale_source_ids)
+                    logger.info(f"Deleted outdated chunks for {len(stale_source_ids)} documents.")
                 except Exception as e:
-                    logger.warning(f"Failed to cleanly delete stale chunks from Chroma: {e}")
+                    logger.warning(f"Failed to cleanly delete stale chunks from Vector DB: {e}")
 
         documents = docs_to_process
         
@@ -768,11 +775,16 @@ async def _run_embedding_job(
         
         job_service.transition_to_embedding(job_id)
 
+        use_celery = os.getenv("USE_CELERY_FOR_EMBEDDINGS", "false").lower() == "true"
+        
+        if use_celery:
+            logger.info(f"Celery mode enabled - dispatching batches to RabbitMQ queue")
+        
         processor = EmbeddingBatchProcessor(BatchConfig(
             batch_size=batch_size,
             max_concurrent=max_concurrent,
             retry_attempts=ui_retry_attempts
-        ))
+        ), use_celery=use_celery, table_name=vector_db_name)
         
         # Stateful resume: Fetch existing chunk IDs from Chroma
         from backend.services.chroma_service import get_existing_chunk_ids
@@ -798,8 +810,11 @@ async def _run_embedding_job(
             current_batch = (processed // batch_size) + 1
             job_service.update_progress(job_id, processed, current_batch, failed, skipped_documents=skipped_count)
             
-        client = get_chroma_client(chroma_path)
-        collection = client.get_or_create_collection(name=vector_db_name)
+        vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+        vector_db_provider_type = vs_settings.get("type", "qdrant")
+        
+        from backend.pipeline.vector_stores.factory import VectorStoreFactory
+        vector_store = VectorStoreFactory.get_provider(vector_db_provider_type, collection_name=vector_db_name)
         
         consecutive_failures = 0
         max_consecutive_failures = ui_max_consecutive_failures
@@ -835,13 +850,18 @@ async def _run_embedding_job(
             if ids:
                 for attempt in range(ui_retry_attempts):
                     try:
-                        await asyncio.to_thread(collection.upsert, ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+                        await vector_store.upsert_batch(
+                            ids=ids,
+                            documents=texts,
+                            embeddings=embeddings,
+                            metadatas=metadatas
+                        )
                         consecutive_failures = 0
                         break
                     except Exception as e:
                         consecutive_failures += 1
                         if consecutive_failures >= max_consecutive_failures:
-                            raise RuntimeError(f"ChromaDB circuit breaker: {consecutive_failures} consecutive failures. Last error: {e}")
+                            raise RuntimeError(f"Vector DB circuit breaker: {consecutive_failures} consecutive failures. Last error: {e}")
                         if attempt == ui_retry_attempts - 1:
                             raise
                         import random

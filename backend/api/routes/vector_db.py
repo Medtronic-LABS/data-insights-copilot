@@ -7,6 +7,7 @@ from backend.core.logging import get_logger
 from backend.services.scheduler_service import (
     get_scheduler_service, SchedulerService, ScheduleType
 )
+from backend.services.settings_service import get_settings_service
 import os
 import chromadb
 from chromadb.config import Settings
@@ -41,6 +42,62 @@ def format_size(size_bytes: int) -> str:
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024.0
     return f"{size_bytes:.2f} PB"
+
+
+def get_vector_store_type() -> str:
+    """Get the configured vector store type from settings."""
+    try:
+        settings_service = get_settings_service()
+        vs_settings = settings_service.get_category_settings_raw('vector_store')
+        return vs_settings.get('type', 'chroma').strip('"')
+    except Exception as e:
+        logger.warning(f"Could not get vector store type from settings: {e}")
+        return 'chroma'
+
+
+def get_qdrant_vector_count(collection_name: str) -> tuple[int, bool]:
+    """
+    Get vector count from Qdrant.
+    Returns (vector_count, exists).
+    """
+    try:
+        import requests
+        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        response = requests.get(f"{qdrant_url}/collections/{collection_name}", timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            result = data.get('result', {})
+            points_count = result.get('points_count', 0)
+            return points_count, True
+        elif response.status_code == 404:
+            return 0, False
+        else:
+            logger.warning(f"Qdrant returned status {response.status_code} for collection {collection_name}")
+            return 0, False
+    except Exception as e:
+        logger.warning(f"Could not connect to Qdrant: {e}")
+        return 0, False
+
+
+def get_chroma_vector_count(collection_name: str, chroma_path: str) -> tuple[int, bool]:
+    """
+    Get vector count from ChromaDB.
+    Returns (vector_count, exists).
+    """
+    if not os.path.exists(chroma_path):
+        return 0, False
+    
+    try:
+        client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
+        try:
+            collection = client.get_collection(name=collection_name)
+            return collection.count(), True
+        except ValueError:
+            return 0, False
+    except Exception as e:
+        logger.warning(f"Could not connect to ChromaDB at {chroma_path}: {e}")
+        return 0, False
 
 
 # ============================================
@@ -85,6 +142,7 @@ async def get_vector_db_status(
 ):
     """
     Get detailed statistics for a Vector Database including index count, vectors, and schedule info.
+    Supports both ChromaDB and Qdrant based on configuration.
     Requires Admin role or above.
     """
     try:
@@ -120,23 +178,20 @@ async def get_vector_db_status(
         
         conn.close()
 
-        # 2. Get vector count directly from ChromaDB
-        chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../data/indexes/{vector_db_name}"))
+        # 2. Get vector count based on configured vector store type
+        vector_store_type = get_vector_store_type()
         vector_count = 0
-        chroma_exists = False
+        vector_store_exists = False
         
-        if os.path.exists(chroma_path):
-            try:
-                client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
-                try:
-                    collection = client.get_collection(name=vector_db_name)
-                    vector_count = collection.count()
-                    chroma_exists = True
-                except ValueError:
-                    # Collection doesn't exist
-                    pass
-            except Exception as e:
-                logger.warning(f"Could not connect to ChromaDB at {chroma_path}: {e}")
+        if vector_store_type == 'qdrant':
+            # Try Qdrant first
+            vector_count, vector_store_exists = get_qdrant_vector_count(vector_db_name)
+            logger.debug(f"Qdrant vector count for {vector_db_name}: {vector_count}")
+        else:
+            # Fall back to ChromaDB
+            chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../data/indexes/{vector_db_name}"))
+            vector_count, vector_store_exists = get_chroma_vector_count(vector_db_name, chroma_path)
+            logger.debug(f"ChromaDB vector count for {vector_db_name}: {vector_count}")
 
         # 3. Get schedule information
         schedule = scheduler_service.get_schedule(vector_db_name)
@@ -151,19 +206,19 @@ async def get_vector_db_status(
                 "last_run_status": schedule.get('last_run_status')
             }
 
-        # 4. Diagnostics & Monitoring (T06)
+        # 4. Diagnostics & Monitoring
         diagnostics = []
-        if chroma_exists and document_count > 0 and vector_count == 0:
-            diagnostics.append({"level": "error", "message": "ChromaDB collection exists but is empty despite indexed documents."})
-        elif chroma_exists and vector_count > 0 and document_count == 0:
-            diagnostics.append({"level": "warning", "message": "Vectors exist in ChromaDB but no documents found in SQLite index."})
+        if vector_store_exists and document_count > 0 and vector_count == 0:
+            diagnostics.append({"level": "error", "message": f"{vector_store_type.capitalize()} collection exists but is empty despite indexed documents."})
+        elif vector_store_exists and vector_count > 0 and document_count == 0:
+            diagnostics.append({"level": "warning", "message": f"Vectors exist in {vector_store_type.capitalize()} but no documents found in SQLite index."})
         
-        if not chroma_exists and document_count > 0:
-            diagnostics.append({"level": "error", "message": "SQLite index exists but ChromaDB directory is missing."})
+        if not vector_store_exists and document_count > 0:
+            diagnostics.append({"level": "error", "message": f"SQLite index exists but {vector_store_type.capitalize()} collection is missing."})
 
         return {
             "name": vector_db_name,
-            "exists": document_count > 0 or chroma_exists,
+            "exists": document_count > 0 or vector_store_exists,
             "total_documents_indexed": document_count,
             "total_vectors": vector_count,
             "last_updated_at": last_updated,
@@ -172,6 +227,7 @@ async def get_vector_db_status(
             "last_full_run": registry_metadata["last_full_run"],
             "last_incremental_run": registry_metadata["last_incremental_run"],
             "version": registry_metadata["version"],
+            "vector_store_type": vector_store_type,
             "diagnostics": diagnostics,
             "schedule": schedule_info
         }
