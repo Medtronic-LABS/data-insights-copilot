@@ -303,6 +303,18 @@ async def _run_embedding_job(
         # =================================================================
         chunking_conf = json.loads(config.get('chunking_config', '{}') or '{}')
         
+        # Get system defaults from settings service (no hardcoding!)
+        from backend.services.settings_service import get_settings_service, SettingCategory
+        settings_service = get_settings_service()
+        
+        # Load chunking defaults from system settings
+        try:
+            chunking_defaults = settings_service.get_category_settings_raw(SettingCategory.CHUNKING.value)
+        except Exception as e:
+            logger.warning(f"Failed to load chunking settings from DB, using fallback: {e}")
+            chunking_defaults = {}
+        
+        # Priority: UI input > DB config > System settings
         if ui_chunking:
             parent_chunk_size = ui_chunking.parent_chunk_size
             parent_chunk_overlap = ui_chunking.parent_chunk_overlap
@@ -310,15 +322,18 @@ async def _run_embedding_job(
             child_chunk_overlap = ui_chunking.child_chunk_overlap
             logger.info(f"Using UI chunking config: parent={parent_chunk_size}/{parent_chunk_overlap}, child={child_chunk_size}/{child_chunk_overlap}")
         elif chunking_conf:
-            parent_chunk_size = chunking_conf.get('parentChunkSize', 800)
-            parent_chunk_overlap = chunking_conf.get('parentChunkOverlap', 150)
-            child_chunk_size = chunking_conf.get('childChunkSize', 200)
-            child_chunk_overlap = chunking_conf.get('childChunkOverlap', 50)
+            parent_chunk_size = chunking_conf.get('parentChunkSize', chunking_defaults.get('parent_chunk_size', 512))
+            parent_chunk_overlap = chunking_conf.get('parentChunkOverlap', chunking_defaults.get('parent_chunk_overlap', 100))
+            child_chunk_size = chunking_conf.get('childChunkSize', chunking_defaults.get('child_chunk_size', 128))
+            child_chunk_overlap = chunking_conf.get('childChunkOverlap', chunking_defaults.get('child_chunk_overlap', 25))
             logger.info(f"Using DB chunking config: parent={parent_chunk_size}/{parent_chunk_overlap}, child={child_chunk_size}/{child_chunk_overlap}")
         else:
-            parent_chunk_size, parent_chunk_overlap = 800, 150
-            child_chunk_size, child_chunk_overlap = 200, 50
-            logger.info("Using default chunking config")
+            # Use system settings as defaults (configured in Settings page)
+            parent_chunk_size = chunking_defaults.get('parent_chunk_size', 512)
+            parent_chunk_overlap = chunking_defaults.get('parent_chunk_overlap', 100)
+            child_chunk_size = chunking_defaults.get('child_chunk_size', 128)
+            child_chunk_overlap = chunking_defaults.get('child_chunk_overlap', 25)
+            logger.info(f"Using system settings chunking config: parent={parent_chunk_size}/{parent_chunk_overlap}, child={child_chunk_size}/{child_chunk_overlap}")
         
         extractor_config = {
             "tables": {"exclude_tables": [], "global_exclude_columns": []},
@@ -460,8 +475,10 @@ async def _run_embedding_job(
                 # Perform extraction
                 connection_id = config.get('connection_id')
                 if not connection_id:
-                    raise ValueError("Configuration missing connection_id")
-                    
+                    raise ValueError(
+                        f"Configuration {config_id} has data_source_type='database' but no connection_id. "
+                        "Please edit the agent configuration and select a database connection, then republish."
+                    )
                 connection_info = db_service.get_db_connection_by_id(connection_id)
                 if not connection_info:
                     raise ValueError(f"Connection {connection_id} not found")
@@ -603,12 +620,17 @@ async def _run_embedding_job(
             cursor.execute("DELETE FROM document_index WHERE vector_db_name = ?", (vector_db_name,))
             conn.commit()
             try:
-                client = get_chroma_client(chroma_path)
-                try:
-                    client.delete_collection(name=vector_db_name)
-                    logger.info(f"Deleted existing collection {vector_db_name} for rebuild.")
-                except ValueError:
-                    pass
+                from backend.services.settings_service import get_settings_service, SettingCategory
+                settings_service = get_settings_service()
+                vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+                provider_type = vs_settings.get("type", "qdrant")  # Default to qdrant for prod
+                
+                from backend.pipeline.vector_stores.factory import VectorStoreFactory
+                vector_store = VectorStoreFactory.get_provider(provider_type, collection_name=vector_db_name)
+                
+                import asyncio
+                await vector_store.delete_collection()
+                logger.info(f"Deleted existing collection {vector_db_name} for rebuild.")
             except Exception as e:
                 logger.warning(f"Failed to cleanly delete collection during rebuild: {e}")
             docs_to_process = documents
@@ -646,20 +668,22 @@ async def _run_embedding_job(
                 job_service.complete_job(job_id, validation_passed=True)
                 return
 
-            if stale_source_ids and os.path.exists(chroma_path):
+            if stale_source_ids:
                 job_service.update_progress(job_id, processed_documents=0, current_batch=0, phase=f"Purging {len(stale_source_ids)} outdated documents...")
                 try:
-                    client = get_chroma_client(chroma_path)
-                    try:
-                        collection = client.get_collection(name=vector_db_name)
-                        for i in range(0, len(stale_source_ids), 100):
-                            batch_stale = stale_source_ids[i:i+100]
-                            collection.delete(where={"source_id": {"$in": batch_stale}})
-                        logger.info(f"Deleted outdated chunks for {len(stale_source_ids)} documents.")
-                    except ValueError:
-                        pass
+                    from backend.services.settings_service import get_settings_service, SettingCategory
+                    settings_service = get_settings_service()
+                    vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+                    provider_type = vs_settings.get("type", "qdrant")
+                    
+                    from backend.pipeline.vector_stores.factory import VectorStoreFactory
+                    vector_store = VectorStoreFactory.get_provider(provider_type, collection_name=vector_db_name)
+                    
+                    import asyncio
+                    await vector_store.delete_by_source_ids(stale_source_ids)
+                    logger.info(f"Deleted outdated chunks for {len(stale_source_ids)} documents.")
                 except Exception as e:
-                    logger.warning(f"Failed to cleanly delete stale chunks from Chroma: {e}")
+                    logger.warning(f"Failed to cleanly delete stale chunks from Vector DB: {e}")
 
         documents = docs_to_process
         
@@ -738,28 +762,43 @@ async def _run_embedding_job(
         # =================================================================
         MIN_GPU_BATCH_SIZE = 128  # Optimal for MPS/CUDA with BGE-M3
         
+        # Local GPU providers that benefit from larger batch sizes
+        LOCAL_GPU_PROVIDERS = ("sentence-transformers", "huggingface", "bge-m3", "bge")
+        
+        # Also check model name for local models (handles misconfigured provider settings)
+        LOCAL_MODEL_PATTERNS = ("bge-", "bge_", "sentence-transformers", "all-minilm", "e5-", "gte-")
+        model_name_lower = model_name.lower() if model_name else ""
+        is_local_model = (
+            provider_type in LOCAL_GPU_PROVIDERS or 
+            any(pattern in model_name_lower for pattern in LOCAL_MODEL_PATTERNS)
+        )
+        
+        if is_local_model and provider_type not in LOCAL_GPU_PROVIDERS:
+            logger.info(f"Detected local model '{model_name}' but provider is '{provider_type}'. Treating as local GPU model.")
+        
         if ui_batch_size is not None:
             batch_size = ui_batch_size
             # Override suboptimal batch sizes for GPU providers
-            if provider_type in ("sentence-transformers", "huggingface") and batch_size < MIN_GPU_BATCH_SIZE:
+            if is_local_model and batch_size < MIN_GPU_BATCH_SIZE:
                 logger.info(f"MPS/CUDA OPTIMIZATION: UI batch_size={batch_size} is suboptimal for GPU. Overriding to {MIN_GPU_BATCH_SIZE} for ~2.5x speedup.")
                 batch_size = MIN_GPU_BATCH_SIZE
             else:
                 logger.info(f"Using UI-specified batch_size: {batch_size}")
-        elif provider_type == "openai":
+        elif provider_type == "openai" and not is_local_model:
             batch_size = emb_conf.get("batch_size", 500)
         else:
+            # Default to optimal GPU batch size for local models
             batch_size = emb_conf.get("batch_size", MIN_GPU_BATCH_SIZE)
         
         if ui_max_concurrent is not None:
             max_concurrent = ui_max_concurrent
             logger.info(f"Using UI-specified max_concurrent: {max_concurrent}")
-        elif provider_type == "openai":
+        elif provider_type == "openai" and not is_local_model:
             max_concurrent = 20
         else:
             max_concurrent = min(4, max(1, multiprocessing.cpu_count() // 4))
         
-        logger.info(f"Embedding batch config: batch_size={batch_size}, max_concurrent={max_concurrent}, provider={provider_type}")
+        logger.info(f"Embedding batch config: batch_size={batch_size}, max_concurrent={max_concurrent}, provider={provider_type}, model={model_name}")
             
         total_docs = len(documents)
         import math
@@ -768,11 +807,16 @@ async def _run_embedding_job(
         
         job_service.transition_to_embedding(job_id)
 
+        use_celery = os.getenv("USE_CELERY_FOR_EMBEDDINGS", "false").lower() == "true"
+        
+        if use_celery:
+            logger.info(f"Celery mode enabled - dispatching batches to RabbitMQ queue")
+        
         processor = EmbeddingBatchProcessor(BatchConfig(
             batch_size=batch_size,
             max_concurrent=max_concurrent,
             retry_attempts=ui_retry_attempts
-        ))
+        ), use_celery=use_celery, table_name=vector_db_name)
         
         # Stateful resume: Fetch existing chunk IDs from Chroma
         from backend.services.chroma_service import get_existing_chunk_ids
@@ -798,8 +842,11 @@ async def _run_embedding_job(
             current_batch = (processed // batch_size) + 1
             job_service.update_progress(job_id, processed, current_batch, failed, skipped_documents=skipped_count)
             
-        client = get_chroma_client(chroma_path)
-        collection = client.get_or_create_collection(name=vector_db_name)
+        vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+        vector_db_provider_type = vs_settings.get("type", "qdrant")
+        
+        from backend.pipeline.vector_stores.factory import VectorStoreFactory
+        vector_store = VectorStoreFactory.get_provider(vector_db_provider_type, collection_name=vector_db_name)
         
         consecutive_failures = 0
         max_consecutive_failures = ui_max_consecutive_failures
@@ -835,13 +882,18 @@ async def _run_embedding_job(
             if ids:
                 for attempt in range(ui_retry_attempts):
                     try:
-                        await asyncio.to_thread(collection.upsert, ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+                        await vector_store.upsert_batch(
+                            ids=ids,
+                            documents=texts,
+                            embeddings=embeddings,
+                            metadatas=metadatas
+                        )
                         consecutive_failures = 0
                         break
                     except Exception as e:
                         consecutive_failures += 1
                         if consecutive_failures >= max_consecutive_failures:
-                            raise RuntimeError(f"ChromaDB circuit breaker: {consecutive_failures} consecutive failures. Last error: {e}")
+                            raise RuntimeError(f"Vector DB circuit breaker: {consecutive_failures} consecutive failures. Last error: {e}")
                         if attempt == ui_retry_attempts - 1:
                             raise
                         import random

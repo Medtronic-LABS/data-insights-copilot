@@ -400,6 +400,42 @@ class BulkAgentAssignment(BaseModel):
     role: str = "user"
 
 
+# --- Embedding Configuration Schemas ---
+class AgentEmbeddingConfigResponse(BaseModel):
+    agent_id: int
+    provider: str
+    model_name: str
+    model_path: Optional[str] = None
+    dimension: int
+    batch_size: int
+    collection_name: str
+    last_embedded_at: Optional[str] = None
+    document_count: int = 0
+    requires_reindex: bool = False
+
+
+class AgentEmbeddingConfigUpdate(BaseModel):
+    provider: str  # 'bge-m3', 'openai', 'sentence-transformers'
+    model_name: str  # e.g., 'BAAI/bge-m3', 'text-embedding-3-small'
+    dimension: int  # e.g., 1024, 1536
+    model_path: Optional[str] = None  # For local models
+    batch_size: int = 128
+
+
+class AgentEmbeddingHistoryResponse(BaseModel):
+    previous_provider: Optional[str]
+    previous_model: Optional[str]
+    previous_dimension: Optional[int]
+    new_provider: str
+    new_model: str
+    new_dimension: int
+    change_reason: Optional[str]
+    changed_by: Optional[str]
+    changed_at: str
+    reindex_triggered: bool
+    reindex_job_id: Optional[str]
+
+
 @router.post("/bulk-assign")
 async def bulk_assign_agents(assignment: BulkAgentAssignment, current_user: User = Depends(require_admin)):
     """
@@ -484,3 +520,196 @@ async def bulk_assign_agents(assignment: BulkAgentAssignment, current_user: User
         response["message"] += f" ({len(unauthorized)} skipped - no admin access)"
     
     return response
+
+
+# =============================================================================
+# Agent Embedding Configuration Endpoints
+# =============================================================================
+
+@router.get("/{agent_id}/embedding", response_model=AgentEmbeddingConfigResponse)
+async def get_agent_embedding_config(agent_id: int, current_user: User = Depends(require_admin)):
+    """
+    Get the embedding model configuration for an agent.
+    
+    Returns the agent's configured embedding provider, model, dimension,
+    and collection information.
+    
+    Requires admin access to the specific agent.
+    """
+    db = get_db_service()
+    
+    # Verify current user has admin access to this agent
+    if not check_agent_admin_access(db, agent_id, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have admin access to this agent"
+        )
+    
+    # Verify agent exists
+    agent = db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    try:
+        from backend.services.agent_embedding_service import get_agent_embedding_service
+        agent_embedding_svc = get_agent_embedding_service()
+        config = agent_embedding_svc.get_agent_embedding_config(agent_id)
+        return config
+    except Exception as e:
+        logger.error(f"Error getting embedding config for agent {agent_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{agent_id}/embedding", response_model=AgentEmbeddingConfigResponse)
+async def update_agent_embedding_config(
+    agent_id: int,
+    config: AgentEmbeddingConfigUpdate,
+    current_user: User = Depends(require_admin)
+):
+    """
+    Update the embedding model configuration for an agent.
+    
+    Changing the embedding model will:
+    - Create a new vector collection for the agent
+    - Mark the agent as requiring reindexing
+    - Log the change in embedding history
+    
+    **Important**: After changing the embedding model, you must reindex
+    the agent's documents to use the new model.
+    
+    Requires admin access to the specific agent.
+    """
+    db = get_db_service()
+    
+    # Verify current user has admin access to this agent
+    if not check_agent_admin_access(db, agent_id, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have admin access to this agent"
+        )
+    
+    # Verify agent exists
+    agent = db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Validate provider
+    valid_providers = ['bge-m3', 'openai', 'sentence-transformers']
+    if config.provider not in valid_providers:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid provider. Must be one of: {valid_providers}"
+        )
+    
+    try:
+        from backend.services.agent_embedding_service import get_agent_embedding_service
+        agent_embedding_svc = get_agent_embedding_service()
+        
+        result = agent_embedding_svc.set_agent_embedding_config(
+            agent_id=agent_id,
+            provider=config.provider,
+            model_name=config.model_name,
+            dimension=config.dimension,
+            model_path=config.model_path,
+            batch_size=config.batch_size,
+            updated_by=current_user.username
+        )
+        
+        # Log audit event
+        audit = get_audit_service()
+        audit.log(
+            action=AuditAction.AGENT_UPDATE,
+            actor_id=current_user.id,
+            actor_username=current_user.username,
+            actor_role=current_user.role,
+            resource_type="agent",
+            resource_id=str(agent_id),
+            resource_name=agent.get('name'),
+            details={
+                "action": "embedding_config_update",
+                "provider": config.provider,
+                "model_name": config.model_name,
+                "dimension": config.dimension,
+                "requires_reindex": result.get("requires_reindex", False)
+            }
+        )
+        
+        # Return updated config
+        return agent_embedding_svc.get_agent_embedding_config(agent_id)
+        
+    except Exception as e:
+        logger.error(f"Error updating embedding config for agent {agent_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{agent_id}/embedding/history", response_model=List[AgentEmbeddingHistoryResponse])
+async def get_agent_embedding_history(
+    agent_id: int,
+    limit: int = 10,
+    current_user: User = Depends(require_admin)
+):
+    """
+    Get the embedding model change history for an agent.
+    
+    Returns a list of past embedding model changes, including
+    when the model was changed, by whom, and whether reindexing was triggered.
+    
+    Requires admin access to the specific agent.
+    """
+    db = get_db_service()
+    
+    # Verify current user has admin access to this agent
+    if not check_agent_admin_access(db, agent_id, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have admin access to this agent"
+        )
+    
+    # Verify agent exists
+    agent = db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    try:
+        from backend.services.agent_embedding_service import get_agent_embedding_service
+        agent_embedding_svc = get_agent_embedding_service()
+        history = agent_embedding_svc.get_embedding_history(agent_id, limit=limit)
+        return history
+    except Exception as e:
+        logger.error(f"Error getting embedding history for agent {agent_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/embedding/reindex-required")
+async def list_agents_requiring_reindex(current_user: User = Depends(require_admin)):
+    """
+    List all agents that require reindexing due to embedding model changes.
+    
+    Returns agents where the embedding model was changed but documents
+    have not yet been reindexed with the new model.
+    
+    Super Admin sees all agents; Admin sees only their agents.
+    """
+    db = get_db_service()
+    
+    try:
+        from backend.services.agent_embedding_service import get_agent_embedding_service
+        agent_embedding_svc = get_agent_embedding_service()
+        
+        all_requiring_reindex = agent_embedding_svc.list_agents_requiring_reindex()
+        
+        # Filter based on user access
+        if current_user.role == Role.SUPER_ADMIN.value:
+            return {"agents": all_requiring_reindex}
+        
+        # For admin, filter to only agents they have access to
+        user_id = resolve_user_id(db, current_user)
+        user_agents = db.get_agents_for_admin(user_id) if user_id else []
+        user_agent_ids = {a['id'] for a in user_agents if a.get('user_role') == 'admin'}
+        
+        filtered = [a for a in all_requiring_reindex if a['agent_id'] in user_agent_ids]
+        return {"agents": filtered}
+        
+    except Exception as e:
+        logger.error(f"Error listing agents requiring reindex: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

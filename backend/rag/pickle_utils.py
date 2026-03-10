@@ -2,10 +2,10 @@
 import pickle
 import sys
 import importlib
-import logging
 
+from backend.core.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ModuleRemappingUnpickler(pickle.Unpickler):

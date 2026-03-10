@@ -1,7 +1,12 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { Agent } from '../types/agent';
-import { getActiveConfigMetadata, getPromptHistory, listEmbeddingJobs, getConnections, getVectorDbStatus, getSystemSettings } from '../services/api';
+import { getActiveConfigMetadata, getPromptHistory, listEmbeddingJobs, getConnections, getVectorDbStatus } from '../services/api';
+import { useSystemSettings } from './SystemSettingsContext';
+import type { AdvancedSettings } from './SystemSettingsContext';
+
+// Re-export AdvancedSettings type from SystemSettingsContext
+export type { AdvancedSettings } from './SystemSettingsContext';
 
 // Types for active config
 export interface ActiveConfig {
@@ -50,31 +55,6 @@ export interface VectorDbStatus {
     diagnostics: Array<{ level: string; message: string }>;
 }
 
-export interface AdvancedSettings {
-    embedding: {
-        model: string;
-        vectorDbName?: string;
-    };
-    llm: {
-        temperature: number;
-        maxTokens: number;
-        model?: string;
-    };
-    chunking: {
-        parentChunkSize: number;
-        parentChunkOverlap: number;
-        childChunkSize: number;
-        childChunkOverlap: number;
-    };
-    retriever: {
-        topKInitial: number;
-        topKFinal: number;
-        hybridWeights: [number, number];
-        rerankEnabled: boolean;
-        rerankerModel: string;
-    };
-}
-
 interface AgentContextType {
     // Selected agent
     selectedAgent: Agent | null;
@@ -99,37 +79,14 @@ interface AgentContextType {
     refreshConfig: () => Promise<void>;
     refreshHistory: () => Promise<void>;
     refreshVectorDbStatus: () => Promise<void>;
-
-    // Defaults
-    loadSystemDefaults: () => Promise<void>;
 }
-
-const defaultAdvancedSettings: AdvancedSettings = {
-    embedding: {
-        model: 'BAAI/bge-m3'
-    },
-    llm: {
-        temperature: 0.0,
-        maxTokens: 4096
-    },
-    chunking: {
-        parentChunkSize: 800,
-        parentChunkOverlap: 150,
-        childChunkSize: 200,
-        childChunkOverlap: 50
-    },
-    retriever: {
-        topKInitial: 50,
-        topKFinal: 10,
-        hybridWeights: [0.75, 0.25],
-        rerankEnabled: true,
-        rerankerModel: 'BAAI/bge-reranker-base'
-    }
-};
 
 const AgentContext = createContext<AgentContextType | null>(null);
 
 export function AgentProvider({ children }: { children: ReactNode }) {
+    // Get system settings from the centralized context (loaded from backend)
+    const { advancedSettings: systemSettings } = useSystemSettings();
+    
     const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
     const [activeConfig, setActiveConfig] = useState<ActiveConfig | null>(null);
     const [history, setHistory] = useState<PromptVersion[]>([]);
@@ -137,40 +94,18 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     const [connectionName, setConnectionName] = useState<string>('');
     const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
     const [isLoadingConfig, setIsLoadingConfig] = useState(false);
-    const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(defaultAdvancedSettings);
+    
+    // Initialize with system settings from backend
+    const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(systemSettings);
 
-    const loadSystemDefaults = useCallback(async () => {
-        try {
-            const [embSettings, ragSettings, llmSettings] = await Promise.all([
-                getSystemSettings('embedding').catch(() => null),
-                getSystemSettings('rag').catch(() => null),
-                getSystemSettings('llm').catch(() => null)
-            ]);
-
-            setAdvancedSettings(prev => {
-                const next = { ...prev };
-                if (embSettings && embSettings.model_name) {
-                    next.embedding = { ...next.embedding, model: embSettings.model_name };
-                }
-                if (ragSettings) {
-                    if (ragSettings.chunk_size) next.chunking = { ...next.chunking, parentChunkSize: ragSettings.chunk_size };
-                    if (ragSettings.chunk_overlap) next.chunking = { ...next.chunking, parentChunkOverlap: ragSettings.chunk_overlap };
-                    if (ragSettings.top_k_initial) next.retriever = { ...next.retriever, topKInitial: ragSettings.top_k_initial };
-                    if (ragSettings.top_k_final) next.retriever = { ...next.retriever, topKFinal: ragSettings.top_k_final };
-                    if (ragSettings.hybrid_weights) next.retriever = { ...next.retriever, hybridWeights: ragSettings.hybrid_weights };
-                    if (ragSettings.rerank_enabled !== undefined) next.retriever = { ...next.retriever, rerankEnabled: ragSettings.rerank_enabled };
-                    if (ragSettings.reranker_model) next.retriever = { ...next.retriever, rerankerModel: ragSettings.reranker_model };
-                }
-                if (llmSettings) {
-                    if (llmSettings.temperature !== undefined) next.llm = { ...next.llm, temperature: llmSettings.temperature };
-                    if (llmSettings.max_tokens) next.llm = { ...next.llm, maxTokens: llmSettings.max_tokens };
-                }
-                return next;
-            });
-        } catch (err) {
-            console.warn("Failed to load backend defaults", err);
-        }
-    }, []);
+    // Update local settings when system settings change (e.g., after initial load)
+    useEffect(() => {
+        setAdvancedSettings(prev => ({
+            ...systemSettings,
+            // Preserve any agent-specific overrides like vectorDbName
+            embedding: { ...systemSettings.embedding, vectorDbName: prev.embedding.vectorDbName }
+        }));
+    }, [systemSettings]);
 
     const refreshHistory = useCallback(async () => {
         if (!selectedAgent) return;
@@ -205,9 +140,9 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             if (config) {
                 setActiveConfig(config);
 
-                // Parse and set advanced settings from config
+                // Parse and set advanced settings from config (overrides system defaults)
                 const parseConf = (c: any) => c ? (typeof c === 'string' ? JSON.parse(c) : c) : null;
-                const newSettings = { ...advancedSettings };
+                const newSettings = { ...systemSettings };
                 const emb = parseConf(config.embedding_config);
                 const llm = parseConf(config.llm_config);
                 const chunk = parseConf(config.chunking_config);
@@ -271,7 +206,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         } finally {
             setIsLoadingConfig(false);
         }
-    }, [selectedAgent, advancedSettings, refreshHistory]);
+    }, [selectedAgent, systemSettings, refreshHistory]);
 
     // Load config when agent changes
     useEffect(() => {
@@ -301,7 +236,6 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         refreshConfig,
         refreshHistory,
         refreshVectorDbStatus,
-        loadSystemDefaults
     };
 
     return (

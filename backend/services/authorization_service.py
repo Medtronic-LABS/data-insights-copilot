@@ -10,7 +10,7 @@ from fastapi import HTTPException, status, Request
 
 from backend.models.schemas import User
 from backend.models.rag_models import RAGAuditAction
-from backend.core.roles import Role
+from backend.core.roles import Role, role_at_least
 from backend.core.logging import get_logger
 from backend.sqliteDb.db import get_db_service
 
@@ -41,7 +41,7 @@ class AuthorizationService:
         Raises:
             HTTPException: 403 Forbidden if user is not Admin
         """
-        if user.role != Role.ADMIN.value:
+        if not role_at_least(user.role, Role.ADMIN.value):
             # Log unauthorized attempt
             self._log_unauthorized_attempt(user, action or "rag_access")
             
@@ -82,7 +82,7 @@ class AuthorizationService:
         ]
         
         if action in rag_actions_requiring_admin:
-            return user.role == Role.ADMIN.value
+            return role_at_least(user.role, Role.ADMIN.value)
         
         # Read-only actions for Admin and above
         rag_read_actions = [
@@ -92,29 +92,29 @@ class AuthorizationService:
         ]
         
         if action in rag_read_actions:
-            return user.role == Role.ADMIN.value
+            return role_at_least(user.role, Role.ADMIN.value)
         
         return False
     
     def can_access_rag_wizard(self, user: User) -> bool:
         """Check if user can access the RAG configuration wizard."""
-        return user.role == Role.ADMIN.value
+        return role_at_least(user.role, Role.ADMIN.value)
     
     def can_generate_embeddings(self, user: User) -> bool:
         """Check if user can trigger embedding generation."""
-        return user.role == Role.ADMIN.value
+        return role_at_least(user.role, Role.ADMIN.value)
     
     def can_publish_config(self, user: User) -> bool:
         """Check if user can publish RAG configurations."""
-        return user.role == Role.ADMIN.value
+        return role_at_least(user.role, Role.ADMIN.value)
     
     def can_rollback_config(self, user: User) -> bool:
         """Check if user can rollback to previous configurations."""
-        return user.role == Role.ADMIN.value
+        return role_at_least(user.role, Role.ADMIN.value)
     
     def can_view_config_status(self, user: User) -> bool:
         """Check if user can view config status (read-only)."""
-        return user.role in [UserRole.SUPER_ADMIN.value, UserRole.EDITOR.value]
+        return role_at_least(user.role, Role.ADMIN.value)
     
     def _log_unauthorized_attempt(
         self, 

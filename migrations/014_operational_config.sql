@@ -100,18 +100,21 @@ INSERT OR IGNORE INTO system_settings (category, key, value, value_type, descrip
 
 -- ============================================================================
 -- Chunking Settings (Text Processing for Embedding Pipeline)
+-- Industry-standard defaults for medical/healthcare RAG:
+-- - Smaller chunks = more precise retrieval + faster processing
+-- - ~20% overlap maintains context between chunks
 -- ============================================================================
 INSERT OR IGNORE INTO system_settings (category, key, value, value_type, description) VALUES
-('chunking', 'parent_chunk_size', '800', 'number', 'Parent chunk size for hierarchical chunking');
+('chunking', 'parent_chunk_size', '512', 'number', 'Parent chunk size for hierarchical chunking (industry standard)');
 
 INSERT OR IGNORE INTO system_settings (category, key, value, value_type, description) VALUES
-('chunking', 'parent_chunk_overlap', '150', 'number', 'Overlap between parent chunks');
+('chunking', 'parent_chunk_overlap', '100', 'number', 'Overlap between parent chunks (~20% of size)');
 
 INSERT OR IGNORE INTO system_settings (category, key, value, value_type, description) VALUES
-('chunking', 'child_chunk_size', '200', 'number', 'Child chunk size for hierarchical chunking');
+('chunking', 'child_chunk_size', '128', 'number', 'Child chunk size for hierarchical chunking');
 
 INSERT OR IGNORE INTO system_settings (category, key, value, value_type, description) VALUES
-('chunking', 'child_chunk_overlap', '50', 'number', 'Overlap between child chunks');
+('chunking', 'child_chunk_overlap', '25', 'number', 'Overlap between child chunks (~20% of size)');
 
 INSERT OR IGNORE INTO system_settings (category, key, value, value_type, description) VALUES
 ('chunking', 'min_chunk_length', '50', 'number', 'Minimum chunk length to index');

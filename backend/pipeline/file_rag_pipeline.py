@@ -16,7 +16,7 @@ Example:
 
 import asyncio
 import hashlib
-import logging
+import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, AsyncIterator, Tuple
 from datetime import datetime
@@ -24,7 +24,9 @@ from datetime import datetime
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-logger = logging.getLogger(__name__)
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -35,10 +37,10 @@ class FileRAGConfig:
     # Columns to exclude from RAG
     exclude_columns: List[str] = field(default_factory=list)
     # Parent chunk settings
-    parent_chunk_size: int = 800
-    parent_chunk_overlap: int = 150
+    parent_chunk_size: int = 512
+    parent_chunk_overlap: int = 100
     # Child chunk settings  
-    child_chunk_size: int = 200
+    child_chunk_size: int = 128
     child_chunk_overlap: int = 50
     # Embedding settings
     embedding_batch_size: int = 128
@@ -142,7 +144,8 @@ class FileRAGPipeline:
         """
         Stream text documents from DuckDB table for RAG embedding.
         
-        Only extracts specified text columns, yielding batches for memory efficiency.
+        OPTIMIZED (Task 10): Uses DuckDB fetchdf() + pandas vectorized ops
+        instead of row-by-row Python loops.
         
         Args:
             table_name: DuckDB table name
@@ -171,58 +174,95 @@ class FileRAGPipeline:
             # Build column list for query
             columns_sql = ", ".join([id_column] + text_columns)
             
-            # Stream in batches using OFFSET/LIMIT
-            offset = 0
+            # Stream in batches using Keyset Pagination instead of OFFSET/LIMIT
+            last_cursor_val = None
             processed = 0
             
-            while offset < total_rows:
-                query = f"""
-                    SELECT {columns_sql}
-                    FROM {table_name}
-                    LIMIT {batch_size}
-                    OFFSET {offset}
-                """
+            while processed < total_rows:
+                if last_cursor_val is None:
+                    query = f"""
+                        SELECT {columns_sql}
+                        FROM {table_name}
+                        ORDER BY {id_column}
+                        LIMIT {batch_size}
+                    """
+                else:
+                    if isinstance(last_cursor_val, str):
+                        query = f"""
+                            SELECT {columns_sql}
+                            FROM {table_name}
+                            WHERE {id_column} > '{last_cursor_val}'
+                            ORDER BY {id_column}
+                            LIMIT {batch_size}
+                        """
+                    else:
+                        query = f"""
+                            SELECT {columns_sql}
+                            FROM {table_name}
+                            WHERE {id_column} > {last_cursor_val}
+                            ORDER BY {id_column}
+                            LIMIT {batch_size}
+                        """
                 
-                rows = conn.execute(query).fetchall()
-                if not rows:
+                # OPTIMIZATION: Use fetchdf() instead of fetchall() + row-by-row loop
+                df = conn.execute(query).fetchdf()
+                if df.empty:
                     break
-                
-                # Convert to RAGDocuments
-                batch_docs = []
-                for row in rows:
-                    row_id = str(row[0]) if row[0] else f"row_{offset + len(batch_docs)}"
                     
-                    # Process each text column
-                    for i, col in enumerate(text_columns):
-                        text_value = row[i + 1]  # +1 because id_column is first
-                        
-                        # Skip empty/null values
-                        if not text_value or str(text_value).strip() == "":
-                            continue
-                        
-                        text_str = str(text_value).strip()
-                        
-                        # Skip very short text (likely not useful for RAG)
-                        if len(text_str) < self.config.min_text_length:
-                            continue
-                        
-                        doc_id = self._generate_doc_id(row_id, col, text_str)
-                        
+                # Update cursor
+                last_cursor_val = df.iloc[-1][id_column]
+                
+                # Single timestamp for entire batch (not per-row datetime.now())
+                batch_timestamp = datetime.now().isoformat()
+                
+                # Process each text column using vectorized pandas operations
+                batch_docs = []
+                for col in text_columns:
+                    if col not in df.columns:
+                        continue
+                    
+                    # Vectorized null/length filtering
+                    col_series = df[col].astype(str).str.strip()
+                    valid_mask = (
+                        df[col].notna() & 
+                        (col_series != '') & 
+                        (col_series != 'None') &
+                        (col_series != 'nan') &
+                        (col_series.str.len() >= self.config.min_text_length)
+                    )
+                    
+                    valid_df = df[valid_mask]
+                    if valid_df.empty:
+                        continue
+                    
+                    # Vectorized row ID generation
+                    row_ids = valid_df[id_column].astype(str).fillna(
+                        "row_" + pd.Series(range(offset, offset + len(valid_df))).astype(str).values
+                    )
+                    valid_texts = col_series[valid_mask]
+                    
+                    # Vectorized doc_id: row_id + column + content_hash (first 8 chars)
+                    content_hashes = valid_texts.apply(
+                        lambda x: hashlib.sha256(x.encode()).hexdigest()[:8]
+                    )
+                    doc_ids = row_ids + "_" + col + "_" + content_hashes
+                    
+                    # Build RAGDocuments from vectorized results
+                    for row_id, text, doc_id in zip(row_ids.values, valid_texts.values, doc_ids.values):
                         batch_docs.append(RAGDocument(
                             doc_id=doc_id,
-                            content=text_str,
+                            content=text,
                             metadata={
                                 "source_table": table_name,
                                 "source_column": col,
                                 "row_id": row_id,
-                                "extraction_time": datetime.now().isoformat(),
+                                "extraction_time": batch_timestamp,
                             },
                             source_row_id=row_id,
                             source_column=col,
                         ))
                 
-                processed += len(rows)
-                offset += batch_size
+                processed += len(df)
                 
                 if on_progress:
                     on_progress(processed, total_rows)
@@ -245,8 +285,8 @@ class FileRAGPipeline:
         """
         Apply parent-child chunking to documents.
         
-        Parent chunks: Larger context windows for retrieval results
-        Child chunks: Smaller, precise chunks for vector search
+        OPTIMIZED (Task 11): Batches documents for splitter calls instead of
+        calling split_documents([single_doc]) per document.
         
         Args:
             documents: Source documents to chunk
@@ -257,73 +297,95 @@ class FileRAGPipeline:
         parent_chunks = []
         child_chunks = []
         
-        for doc in documents:
-            # Create LangChain document for splitting
-            lc_doc = Document(
-                page_content=doc.content,
-                metadata=doc.metadata.copy(),
-            )
+        # OPTIMIZATION: Batch documents for splitter calls
+        # Convert all RAGDocuments to LangChain Documents once, then split in bulk
+        SPLIT_BATCH_SIZE = 200
+        
+        for batch_start in range(0, len(documents), SPLIT_BATCH_SIZE):
+            batch = documents[batch_start:batch_start + SPLIT_BATCH_SIZE]
             
-            # Split into parent chunks
-            parent_docs = self._parent_splitter.split_documents([lc_doc])
-            
-            for p_idx, parent_doc in enumerate(parent_docs):
-                parent_id = f"{doc.doc_id}_p{p_idx}"
-                
-                # Store parent chunk
-                parent_chunk = ChunkedDocument(
-                    chunk_id=parent_id,
-                    content=parent_doc.page_content,
-                    parent_id=parent_id,  # Parent is its own parent
-                    metadata={
-                        **parent_doc.metadata,
-                        "chunk_type": "parent",
-                        "parent_idx": p_idx,
-                        "original_doc_id": doc.doc_id,
-                    },
-                    is_parent=True,
+            # Build LangChain documents for this batch with tracking metadata
+            lc_docs = []
+            for doc in batch:
+                lc_doc = Document(
+                    page_content=doc.content,
+                    metadata={**doc.metadata, "_rag_doc_id": doc.doc_id},
                 )
-                parent_chunks.append(parent_chunk)
-                
-                # Split parent into child chunks
-                child_docs = self._child_splitter.split_documents([parent_doc])
-                
-                for c_idx, child_doc in enumerate(child_docs):
-                    child_id = self._generate_chunk_id(parent_id, c_idx)
+                lc_docs.append(lc_doc)
+            
+            # Batch split into parent chunks
+            parent_docs = self._parent_splitter.split_documents(lc_docs)
+            
+            # Group parent docs by their original RAG doc ID
+            parent_groups = {}
+            for parent_doc in parent_docs:
+                rag_doc_id = parent_doc.metadata.get("_rag_doc_id", "unknown")
+                if rag_doc_id not in parent_groups:
+                    parent_groups[rag_doc_id] = []
+                parent_groups[rag_doc_id].append(parent_doc)
+            
+            # Process parent chunks and create children
+            for rag_doc_id, parent_doc_list in parent_groups.items():
+                for p_idx, parent_doc in enumerate(parent_doc_list):
+                    parent_id = f"{rag_doc_id}_p{p_idx}"
                     
-                    child_chunk = ChunkedDocument(
-                        chunk_id=child_id,
-                        content=child_doc.page_content,
+                    # Clean up tracking metadata before storing
+                    clean_metadata = {k: v for k, v in parent_doc.metadata.items() if k != "_rag_doc_id"}
+                    
+                    parent_chunk = ChunkedDocument(
+                        chunk_id=parent_id,
+                        content=parent_doc.page_content,
                         parent_id=parent_id,
                         metadata={
-                            **child_doc.metadata,
-                            "chunk_type": "child",
-                            "child_idx": c_idx,
-                            "parent_id": parent_id,
-                            "original_doc_id": doc.doc_id,
+                            **clean_metadata,
+                            "chunk_type": "parent",
+                            "parent_idx": p_idx,
+                            "original_doc_id": rag_doc_id,
                         },
-                        is_parent=False,
+                        is_parent=True,
                     )
-                    child_chunks.append(child_chunk)
+                    parent_chunks.append(parent_chunk)
+                    
+                    # Split this parent into child chunks
+                    child_docs = self._child_splitter.split_documents([parent_doc])
+                    
+                    for c_idx, child_doc in enumerate(child_docs):
+                        child_id = self._generate_chunk_id(parent_id, c_idx)
+                        child_chunk = ChunkedDocument(
+                            chunk_id=child_id,
+                            content=child_doc.page_content,
+                            parent_id=parent_id,
+                            metadata={
+                                **{k: v for k, v in child_doc.metadata.items() if k != "_rag_doc_id"},
+                                "chunk_type": "child",
+                                "child_idx": c_idx,
+                                "parent_id": parent_id,
+                                "original_doc_id": rag_doc_id,
+                            },
+                            is_parent=False,
+                        )
+                        child_chunks.append(child_chunk)
         
         return parent_chunks, child_chunks
     
     async def embed_chunks(
         self,
+        table_name: str,
         chunks: List[ChunkedDocument],
         batch_size: int = 128,
         on_progress: Optional[callable] = None,
     ) -> List[Tuple[str, List[float]]]:
         """
-        Embed chunks using local BGE-M3 model.
+        Embed chunks using local BGE-M3 model or push to Celery.
         
         Args:
+            table_name: Table being processed
             chunks: Chunks to embed
             batch_size: Embedding batch size
             on_progress: Callback(processed, total)
             
         Returns:
-            List of (chunk_id, embedding_vector) tuples
+            List of (chunk_id, embedding_vector) tuples, or empty list if using Celery
         """
         if not chunks:
             return []
@@ -331,7 +393,37 @@ class FileRAGPipeline:
         results = []
         total = len(chunks)
         
-        logger.info(f"Embedding {total:,} chunks with BGE-M3...")
+        import os
+        use_celery = os.getenv('USE_CELERY_FOR_EMBEDDINGS', 'false').lower() == 'true'
+        
+        if use_celery:
+            from backend.pipeline.workers.embedding_worker import process_embedding_batch
+            import time
+            batch_run_id = f"job_{int(time.time()*100)}"
+            logger.info(f"Dispatching {total:,} chunks to Celery queue in batches of {batch_size}...")
+            
+            for i in range(0, total, batch_size):
+                batch = chunks[i:i + batch_size]
+                serialized = [
+                    {
+                        "chunk_id": c.chunk_id,
+                        "content": c.content,
+                        "parent_id": c.parent_id,
+                        "metadata": c.metadata,
+                        "is_parent": c.is_parent
+                    } for c in batch
+                ]
+                # Push array of dicts to Redis queue for Celery worker
+                process_embedding_batch.delay(batch_run_id, table_name, serialized)
+                
+                if on_progress:
+                    on_progress(min(i + batch_size, total), total)
+                await asyncio.sleep(0)
+            
+            logger.info("Successfully dispatched all chunk batches to Celery.")
+            return []  # Return empty so caller skips synchronous DB insertion
+            
+        logger.info(f"Embedding {total:,} chunks synchronously with BGE-M3...")
         
         for i in range(0, total, batch_size):
             batch = chunks[i:i + batch_size]
@@ -420,6 +512,7 @@ class FileRAGPipeline:
                 on_progress("embedding", 0, len(all_child_chunks), "Embedding child chunks...")
             
             embeddings = await self.embed_chunks(
+                table_name=table_name,
                 chunks=all_child_chunks,
                 on_progress=lambda curr, total: on_progress("embedding", curr, total, f"Embedded {curr:,}/{total:,} chunks") if on_progress else None,
             )
@@ -482,34 +575,36 @@ class FileRAGPipeline:
         docstore.mset(parent_data)
         logger.info(f"Stored {len(parent_data)} parent documents in {docstore_path}")
         
-        # Store child embeddings in ChromaDB
+        # Store child embeddings in Vector DB if not using Celery
+        if not embeddings:
+            logger.info("Skipping synchronous vector DB storage (using Celery or no vectors generated)")
+            return
+            
         try:
-            import chromadb
-            from chromadb.config import Settings
+            from backend.pipeline.vector_stores.factory import VectorStoreFactory
+            from backend.services.settings_service import get_settings_service, SettingCategory
             
-            chroma_path = user_dir / "chroma_db"
-            chroma_client = chromadb.PersistentClient(
-                path=str(chroma_path),
-                settings=Settings(anonymized_telemetry=False),
-            )
-            
-            collection_name = f"file_rag_{table_name}"
-            
-            # Delete existing collection if exists
+            # Get provider from settings
             try:
-                chroma_client.delete_collection(collection_name)
+                settings_service = get_settings_service()
+                vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+                provider_type = vs_settings.get("type", "qdrant")
+            except Exception:
+                provider_type = "qdrant"
+                
+            collection_name = f"file_rag_{table_name}"
+            vector_store = VectorStoreFactory.get_provider(provider_type, collection_name=collection_name)
+            
+            # Delete existing collection if exists for a full refresh
+            try:
+                await vector_store.delete_collection()
             except Exception:
                 pass
-            
-            collection = chroma_client.create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"},
-            )
-            
+                
             # Build embedding lookup
             embedding_map = {chunk_id: emb for chunk_id, emb in embeddings}
             
-            # Batch insert to ChromaDB
+            # Upsert in batches
             batch_size = 1000
             for i in range(0, len(child_chunks), batch_size):
                 batch = child_chunks[i:i + batch_size]
@@ -519,17 +614,17 @@ class FileRAGPipeline:
                 metadatas = [c.metadata for c in batch]
                 embs = [embedding_map[c.chunk_id] for c in batch]
                 
-                collection.add(
+                await vector_store.upsert_batch(
                     ids=ids,
                     documents=documents,
-                    metadatas=metadatas,
                     embeddings=embs,
+                    metadatas=metadatas
                 )
             
-            logger.info(f"Stored {len(child_chunks)} child embeddings in ChromaDB collection: {collection_name}")
+            logger.info(f"Stored {len(child_chunks)} child embeddings in {provider_type} collection: {collection_name}")
             
-        except ImportError:
-            logger.warning("ChromaDB not installed, skipping vector storage")
+        except Exception as e:
+            logger.error(f"Failed to store vectors in DB: {e}", exc_info=True)
     
     async def semantic_search(
         self,
@@ -543,7 +638,7 @@ class FileRAGPipeline:
         
         Search Flow:
         1. Embed query using BGE-M3
-        2. Search child chunks in ChromaDB
+        2. Search child chunks in Vector DB (Qdrant or ChromaDB)
         3. Retrieve parent documents for full context
         
         Args:
@@ -555,34 +650,83 @@ class FileRAGPipeline:
         Returns:
             List of search results with scores and context
         """
-        import chromadb
-        from chromadb.config import Settings
         from backend.pipeline.docstore import SQLiteDocStore
         from backend.api.routes.ingestion import _get_user_data_dir
+        from backend.services.chroma_service import get_vector_store_type
         
         user_dir = _get_user_data_dir(self.user_id)
+        collection_name = f"file_rag_{table_name}"
         
         # Embed query
         query_embedding = await self.embedding_provider.aembed_query(query)
         
-        # Search ChromaDB
-        chroma_path = user_dir / "chroma_db"
-        chroma_client = chromadb.PersistentClient(
-            path=str(chroma_path),
-            settings=Settings(anonymized_telemetry=False),
-        )
+        # Get vector store type from settings
+        vector_store_type = get_vector_store_type()
         
-        collection_name = f"file_rag_{table_name}"
-        collection = chroma_client.get_collection(collection_name)
-        
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
-        
-        # Process results
         search_results = []
+        
+        if vector_store_type == 'qdrant':
+            # Search using Qdrant
+            try:
+                from backend.pipeline.vector_stores.factory import VectorStoreFactory
+                
+                vector_store = VectorStoreFactory.get_provider('qdrant', collection_name=collection_name)
+                results = await vector_store.search(
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                )
+                
+                for r in results:
+                    search_results.append({
+                        "chunk_id": r.get("id"),
+                        "child_content": r.get("document", ""),
+                        "similarity_score": round(r.get("score", 0), 4),
+                        "metadata": r.get("metadata", {}),
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Qdrant search failed, falling back to ChromaDB: {e}")
+                vector_store_type = 'chroma'
+        
+        if vector_store_type == 'chroma' and not search_results:
+            # Fallback to ChromaDB
+            import chromadb
+            from chromadb.config import Settings
+            
+            chroma_path = user_dir / "chroma_db"
+            chroma_client = chromadb.PersistentClient(
+                path=str(chroma_path),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            
+            collection = chroma_client.get_collection(collection_name)
+            
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
+            )
+            
+            # Process ChromaDB results
+            if results["ids"] and results["ids"][0]:
+                for i in range(len(results["ids"][0])):
+                    chunk_id = results["ids"][0][i]
+                    child_content = results["documents"][0][i]
+                    metadata = results["metadatas"][0][i]
+                    distance = results["distances"][0][i]
+                    
+                    # Convert distance to similarity score (ChromaDB uses L2 by default)
+                    similarity = 1 - distance
+                    
+                    search_results.append({
+                        "chunk_id": chunk_id,
+                        "child_content": child_content,
+                        "similarity_score": round(similarity, 4),
+                        "metadata": metadata,
+                    })
+        
+        # Process results and fetch parent documents
+        final_results = []
         seen_parents = set()
         
         if return_parents:
@@ -590,20 +734,13 @@ class FileRAGPipeline:
             docstore_path = user_dir / f"{table_name}_parents.db"
             docstore = SQLiteDocStore(str(docstore_path))
         
-        for i in range(len(results["ids"][0])):
-            chunk_id = results["ids"][0][i]
-            child_content = results["documents"][0][i]
-            metadata = results["metadatas"][0][i]
-            distance = results["distances"][0][i]
+        for result in search_results:
+            metadata = result.get("metadata", {})
             
-            # Convert distance to similarity score (ChromaDB uses L2 by default)
-            # For cosine distance: similarity = 1 - distance
-            similarity = 1 - distance
-            
-            result = {
-                "chunk_id": chunk_id,
-                "child_content": child_content,
-                "similarity_score": round(similarity, 4),
+            final_result = {
+                "chunk_id": result["chunk_id"],
+                "child_content": result["child_content"],
+                "similarity_score": result["similarity_score"],
                 "metadata": metadata,
             }
             
@@ -613,19 +750,19 @@ class FileRAGPipeline:
                 if parent_id not in seen_parents:
                     parent_docs = docstore.mget([parent_id])
                     if parent_docs and parent_docs[0]:
-                        result["parent_content"] = parent_docs[0].page_content
-                        result["parent_id"] = parent_id
+                        final_result["parent_content"] = parent_docs[0].page_content
+                        final_result["parent_id"] = parent_id
                     seen_parents.add(parent_id)
             
             # Include source row info for SQL join capability
             if "row_id" in metadata:
-                result["source_row_id"] = metadata["row_id"]
+                final_result["source_row_id"] = metadata["row_id"]
             if "source_column" in metadata:
-                result["source_column"] = metadata["source_column"]
+                final_result["source_column"] = metadata["source_column"]
             
-            search_results.append(result)
+            final_results.append(final_result)
         
-        return search_results
+        return final_results
 
 
 # Convenience function

@@ -1,4 +1,3 @@
-import logging
 import pickle
 import os
 import time
@@ -7,11 +6,11 @@ from datetime import datetime, timedelta
 from typing import List, Dict
 from langchain_core.documents import Document
 from langchain_core.stores import BaseStore
-from langchain_chroma import Chroma
-import chromadb
 from tqdm import tqdm
 
-logger = logging.getLogger(__name__)
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 class ProgressTracker:
     """Track and display progress for index building with checkpoints."""
@@ -105,24 +104,41 @@ class ProgressTracker:
         if os.path.exists(self.checkpoint_file):
             os.remove(self.checkpoint_file)
 
-def build_advanced_chroma_index(
+def build_advanced_vector_index(
     child_docs: List[Document],
     docstore: BaseStore,
     embedding_function,
     config: dict
 ):
-    chroma_path = config['vector_store']['chroma_path']
+    """
+    Build vector index using VectorStoreFactory.
+    Supports Qdrant (primary) and ChromaDB (fallback).
+    """
     collection_name = config['vector_store']['collection_name']
     batch_size = config['embedding'].get('batch_size', 128)
     
     total_docs = len(child_docs)
-    logger.info(f"Building Chroma index at '{chroma_path}' with {total_docs:,} documents.")
+    logger.info(f"Building Vector Index with {total_docs:,} documents.")
     
-    # Create directory
-    os.makedirs(chroma_path, exist_ok=True)
+    # Initialize VectorStore using factory
+    from backend.pipeline.vector_stores.factory import VectorStoreFactory
+    from backend.services.settings_service import get_settings_service, SettingCategory
     
-    # Initialize progress tracker
-    progress = ProgressTracker(total_docs, checkpoint_file=f"{chroma_path}/.build_progress.json")
+    try:
+        settings_service = get_settings_service()
+        vs_settings = settings_service.get_category_settings_raw(SettingCategory.VECTOR_STORE)
+        provider_type = vs_settings.get("type", "qdrant")
+    except Exception:
+        provider_type = "qdrant"
+        
+    vector_store = VectorStoreFactory.get_provider(provider_type, collection_name=collection_name)
+    
+    # Get storage path for docstore (always local)
+    storage_path = config['vector_store'].get('chroma_path', f"./data/indexes/{collection_name}")
+    os.makedirs(storage_path, exist_ok=True)
+    
+    # Progress tracker
+    progress = ProgressTracker(total_docs, checkpoint_file=f"{storage_path}/.build_progress.json")
     
     # Check if resuming
     start_idx = progress.processed_docs
@@ -131,32 +147,21 @@ def build_advanced_chroma_index(
         remaining_docs = child_docs[start_idx:]
     else:
         remaining_docs = child_docs
-    
-    # Disable telemetry
-    client_settings = chromadb.Settings(anonymized_telemetry=False)
-    
-    # Initialize or load existing collection
-    client = chromadb.PersistentClient(path=chroma_path, settings=client_settings)
-    
-    try:
-        collection = client.get_collection(name=collection_name)
-        logger.info(f"Found existing collection with {collection.count()} documents")
-    except:
-        collection = None
-        logger.info("Creating new collection")
-    
-    # Print initial status
+        
     print("\n" + "="*80)
     print(" STARTING INDEX BUILD")
     print("="*80)
-    print(f" Output Path: {chroma_path}")
+    print(f" Provider: {provider_type}")
+    print(f" Collection: {collection_name}")
     print(f" Total Documents: {total_docs:,}")
     print(f" Batch Size: {batch_size}")
     print(f" Starting Progress: {progress.get_percentage():.1f}%")
     print("="*80 + "\n")
     
-    # Process in batches with progress bar
     num_batches = (len(remaining_docs) + batch_size - 1) // batch_size
+    
+    import asyncio
+    import uuid
     
     with tqdm(total=len(remaining_docs), 
               desc="Building Index",
@@ -168,25 +173,20 @@ def build_advanced_chroma_index(
             batch = remaining_docs[i:i+batch_size]
             batch_num = i // batch_size + 1
             
-            # Add batch to collection
-            if collection is None:
-                # First batch - create collection
-                Chroma.from_documents(
-                    documents=batch,
-                    embedding=embedding_function,
-                    collection_name=collection_name,
-                    persist_directory=chroma_path,
-                    client_settings=client_settings
+            documents = [doc.page_content for doc in batch]
+            metadatas = [doc.metadata for doc in batch]
+            ids = [doc.metadata.get("_rag_doc_id", doc.metadata.get("doc_id", str(uuid.uuid4()))) for doc in batch]
+            
+            embeddings = embedding_function.embed_documents(documents)
+            
+            asyncio.run(
+                vector_store.upsert_batch(
+                    ids=ids,
+                    documents=documents,
+                    embeddings=embeddings,
+                    metadatas=metadatas
                 )
-                collection = client.get_collection(name=collection_name)
-            else:
-                # Subsequent batches - add to existing collection
-                vector_store = Chroma(
-                    client=client,
-                    collection_name=collection_name,
-                    embedding_function=embedding_function
-                )
-                vector_store.add_documents(batch)
+            )
             
             # Update progress
             progress.update(len(batch))
@@ -208,18 +208,35 @@ def build_advanced_chroma_index(
                     f"ETA: {progress.get_eta()}"
                 )
     
-    # Save docstore
-    docstore_path = f"{chroma_path}/parent_docstore.pkl"
+    # Save docstore locally (used for parent-child retrieval)
+    docstore_path = f"{storage_path}/parent_docstore.pkl"
     with open(docstore_path, "wb") as f:
         pickle.dump(docstore, f)
     
-    logger.info(f"Chroma index built and parent docstore saved to '{docstore_path}'.")
+    logger.info(f"Vector index built with {provider_type}. Parent docstore saved to '{docstore_path}'.")
     
     # Print final summary
     progress.print_summary()
 
+
+# Legacy alias for backward compatibility
+def build_advanced_chroma_index(
+    child_docs: List[Document],
+    docstore: BaseStore,
+    embedding_function,
+    config: dict
+):
+    """
+    DEPRECATED: Use build_advanced_vector_index instead.
+    This function is kept for backward compatibility.
+    """
+    logger.warning("build_advanced_chroma_index is deprecated. Use build_advanced_vector_index instead.")
+    return build_advanced_vector_index(child_docs, docstore, embedding_function, config)
+
+
 if __name__ == "__main__":
     import sys
+    import logging
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
     from backend.services.embeddings import get_embedding_model
     from backend.pipeline.extract import create_data_extractor
@@ -236,7 +253,7 @@ if __name__ == "__main__":
     )
 
     print("\n" + "="*80)
-    print("FHIR RAG INDEX BUILDER")
+    print("RAG INDEX BUILDER")
     print("="*80)
     print(f" Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80 + "\n")
@@ -254,7 +271,7 @@ if __name__ == "__main__":
         config = load_config("config/embedding_config.yaml")
     
     print(" Step 1/4: Extracting data from database...")
-    extractor = create_data_extractor()  # Will load config from database
+    extractor = create_data_extractor()
     import asyncio
     table_data = asyncio.run(extractor.extract_all_tables())
     
@@ -265,10 +282,10 @@ if __name__ == "__main__":
     print(f"\n Step 3/4: Applying parent-child chunking...")
     child_docs, docstore = transformer.perform_parent_child_chunking(documents)
 
-    print(f"\n Step 4/4: Building Chroma index with {len(child_docs):,} documents...")
+    print(f"\n Step 4/4: Building vector index with {len(child_docs):,} documents...")
     embedding_function = get_embedding_model()
     
-    build_advanced_chroma_index(
+    build_advanced_vector_index(
         child_docs=child_docs,
         docstore=docstore,
         embedding_function=embedding_function,
@@ -278,6 +295,6 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print(" INDEX BUILD PROCESS COMPLETED SUCCESSFULLY!")
     print("="*80)
-    print(f"Index Location: {config.get('vector_store', {}).get('chroma_path', 'N/A')}")
+    print(f"Collection: {config.get('vector_store', {}).get('collection_name', 'N/A')}")
     print(f"Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80 + "\n")

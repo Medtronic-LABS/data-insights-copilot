@@ -21,19 +21,19 @@ Step 3 (Synthesis): DuckDB executes instantly, LLM formats final response
 """
 
 import asyncio
-import logging
 import time
 import re
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
+from backend.core.logging import get_logger
 from backend.pipeline.ingestion.intent_router import (
     QueryIntent,
     get_intent_router,
 )
 from backend.services.file_sql_service import FileSQLService, get_file_sql_service
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -160,10 +160,35 @@ class FileQueryService:
         
         try:
             from backend.api.routes.ingestion import _get_user_data_dir
+            from backend.services.chroma_service import get_vector_store_type
+            import os
+            
+            user_dir = _get_user_data_dir(self.user_id)
+            vector_store_type = get_vector_store_type()
+            
+            if vector_store_type == 'qdrant':
+                # Query Qdrant for collections with file_rag_ prefix
+                try:
+                    import requests
+                    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+                    response = requests.get(f"{qdrant_url}/collections", timeout=5)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        collections = data.get('result', {}).get('collections', [])
+                        self._rag_tables = [
+                            c['name'].replace("file_rag_", "") 
+                            for c in collections 
+                            if c['name'].startswith("file_rag_")
+                        ]
+                        return self._rag_tables
+                except Exception as e:
+                    logger.warning(f"Failed to query Qdrant collections: {e}")
+            
+            # Fallback to ChromaDB
             import chromadb
             from chromadb.config import Settings
             
-            user_dir = _get_user_data_dir(self.user_id)
             chroma_path = user_dir / "chroma_db"
             
             if not chroma_path.exists():

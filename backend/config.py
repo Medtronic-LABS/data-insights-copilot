@@ -153,6 +153,18 @@ class Settings(BaseSettings):
     rag_config_path: str = Field(default="./config/embedding_config.yaml", description="Path to RAG config YAML (fallback defaults)")
     
     # ============================================
+    # Celery Configuration (message queue infrastructure)
+    # ============================================
+    celery_broker_url: str = Field(
+        default="amqp://guest:guest@localhost:5672//",
+        description="RabbitMQ broker URL for Celery task queue"
+    )
+    celery_result_backend: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis URL for Celery task results"
+    )
+    
+    # ============================================
     # Testing Configuration
     # ============================================
     test_database_url: Optional[str] = Field(default=None)
@@ -249,13 +261,13 @@ def get_embedding_settings() -> dict:
         from backend.services.settings_service import get_settings_service
         return get_settings_service().get_category_settings_raw('embedding')
     except Exception:
-        # Fallback defaults
+        # Fallback defaults - bge-base-en-v1.5 is faster than bge-m3
         return {
-            'provider': 'bge-m3',
-            'model_name': 'BAAI/bge-m3',
-            'model_path': './models/bge-m3',
+            'provider': 'sentence-transformers',
+            'model_name': 'BAAI/bge-base-en-v1.5',
+            'model_path': './models/bge-base-en-v1.5',
             'batch_size': 128,
-            'dimensions': 1024
+            'dimensions': 768
         }
 
 
@@ -271,15 +283,15 @@ def get_rag_settings() -> dict:
         from backend.services.settings_service import get_settings_service
         return get_settings_service().get_category_settings_raw('rag')
     except Exception:
-        # Fallback defaults
+        # Fallback defaults - industry standard for medical/healthcare RAG
         return {
             'top_k_initial': 50,
             'top_k_final': 10,
             'hybrid_weights': [0.75, 0.25],
             'rerank_enabled': True,
             'reranker_model': 'BAAI/bge-reranker-base',
-            'chunk_size': 800,
-            'chunk_overlap': 150
+            'chunk_size': 512,
+            'chunk_overlap': 100
         }
 
 
@@ -332,12 +344,12 @@ def get_chunking_settings() -> dict:
         from backend.services.settings_service import get_settings_service
         return get_settings_service().get_category_settings_raw('chunking')
     except Exception:
-        # Fallback defaults
+        # Fallback defaults - industry standard for medical/healthcare RAG
         return {
-            'parent_chunk_size': 800,
-            'parent_chunk_overlap': 150,
-            'child_chunk_size': 200,
-            'child_chunk_overlap': 50,
+            'parent_chunk_size': 512,
+            'parent_chunk_overlap': 100,
+            'child_chunk_size': 128,
+            'child_chunk_overlap': 25,
             'min_chunk_length': 50
         }
 

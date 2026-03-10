@@ -10,16 +10,16 @@ This service provides:
 IMPORTANT: This service reads configuration from the database (system_settings table),
 NOT from static YAML files. The database is the single source of truth.
 """
-import logging
 from typing import Optional, Dict, Any, List
 import json
 from langchain.prompts import ChatPromptTemplate
+from backend.core.logging import get_logger
 from backend.services.settings_service import get_settings_service, SettingsService
 from backend.sqliteDb.db import get_db_service
 import os
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Categories that ConfigService cares about for hot-reload
@@ -377,10 +377,15 @@ class ConfigService:
         
         Args:
             data_dictionary: A string containing schema info, selected tables, and user notes.
-                             (Constructed by the frontend wizard)
+                             This can include detailed persona, rules, and format specifications
+                             that should be preserved in the output.
             data_source_type: The type of data source ('database' or 'file').
         """
-        system_role = "You are a Data Architect and AI System Prompt Engineer."
+        system_role = "You are a Data Architect and AI System Prompt Engineer specializing in creating precise, production-ready system prompts."
+        
+        # IMPORTANT: Escape curly braces in data_dictionary to prevent format string errors
+        safe_data_dictionary = data_dictionary.replace("{", "{{").replace("}", "}}")
+        
         # Standard Chart Rules to append (Single Source of Truth)
         standard_chart_rules = """
         CHART GENERATION RULES:
@@ -407,54 +412,97 @@ class ConfigService:
         IMPORTANT: DO NOT use Chart.js structure (datasets). Use simple "values" array matching the "labels" array.
         """
 
+        # Check if user provided structured input with sections
+        has_role_section = any(marker in data_dictionary.upper() for marker in ['ROLE AND PERSONA', 'PERSONA:', 'YOU ARE'])
+        has_rules_section = any(marker in data_dictionary.upper() for marker in ['RULES', 'CONSTRAINTS', 'INSTRUCTIONS'])
+        has_schema_section = any(marker in data_dictionary.upper() for marker in ['SCHEMA', 'DATA DICTIONARY', 'TABLE', 'COLUMNS'])
+        has_format_section = any(marker in data_dictionary.upper() for marker in ['RESPONSE FORMAT', 'OUTPUT FORMAT', 'FORMAT:'])
+        
+        user_provided_detailed_input = has_role_section and has_schema_section
+
         if data_source_type == 'file':
             instruction = (
-                "Your task is to write a comprehensive SYSTEM PROMPT for an AI assistant that will answer questions based on a set of provided documents.\\n\\n"
-                "DOCUMENT CONTENT PROVIDED:\\n"
-                f"{data_dictionary}\\n\\n"
-                "INSTRUCTIONS:\\n"
-                "1. Define a suitable persona based strictly on the content provided in the context above.\\n"
-                "2. Summarize the key topics and types of information available in the documents.\\n"
-                "3. Define strict rules for answering questions.\\n"
-                "   - Instruct the assistant to only answer based on the provided text.\\n"
-                "   - If the answer is not in the text, instruct the assistant to say it does not know.\\n"
-                "4. **OUTPUT FORMAT:**\\n"
-                "   - Do NOT include generic chart generation rules or JSON formats in your output (these will be appended automatically).\\n"
+                "Your task is to write a comprehensive SYSTEM PROMPT for an AI assistant that will answer questions based on a set of provided documents.\n\n"
+                "DOCUMENT CONTENT PROVIDED:\n"
+                f"{safe_data_dictionary}\n\n"
+                "INSTRUCTIONS:\n"
+                "1. Define a suitable persona based strictly on the content provided in the context above.\n"
+                "2. Summarize the key topics and types of information available in the documents.\n"
+                "3. Define strict rules for answering questions.\n"
+                "   - Instruct the assistant to only answer based on the provided text.\n"
+                "   - If the answer is not in the text, instruct the assistant to say it does not know.\n"
+                "4. **OUTPUT FORMAT:**\n"
+                "   - Do NOT include generic chart generation rules or JSON formats in your output (these will be appended automatically).\n"
                 "5. Return ONLY the prompt text (Persona + Extraction Rules), no markdown formatting."
             )
-        else:
+        elif user_provided_detailed_input:
+            # User has provided a detailed, structured input - preserve it with minimal modification
             instruction = (
-                "Your task is to write a comprehensive SYSTEM PROMPT for an AI assistant that will query a structured database.\\n\\n"
-                "CONTEXT PROVIDED:\\n"
-                f"{data_dictionary}\\n\\n"
-                "INSTRUCTIONS:\\n"
-                "1. Define a suitable persona based strictly on the table names and column definitions provided in the context.\\n"
-                "2. List the KEY tables and columns available based on the context above.\\n"
-                "3. Define strict rules for SQL generation (e.g., joins, filters).\\n"
-                "   - When multiple specific entities are mentioned (e.g., 'at Site A and Site B'), Use 'GROUP BY' to provide a breakdown/comparison, NOT a single total sum.\\n"
-                "4. **OUTPUT FORMAT:**\\n"
-                "   - Do NOT include generic chart generation rules or JSON formats in your output (these will be appended automatically).\\n"
-                "   - Focus on domain-specific examples and logic.\\n"
+                "The user has provided a detailed, well-structured system prompt specification. "
+                "Your task is to REFINE and FORMAT it into a production-ready system prompt while PRESERVING all the user's specifications.\n\n"
+                "USER-PROVIDED SPECIFICATION:\n"
+                f"{safe_data_dictionary}\n\n"
+                "CRITICAL INSTRUCTIONS:\n"
+                "1. **PRESERVE THE USER'S CONTENT**: Keep ALL the following from the user's input:\n"
+                "   - The exact persona/role description they specified\n"
+                "   - ALL column/field descriptions from their data dictionary\n"
+                "   - ALL SQL generation rules and constraints they defined\n"
+                "   - The response format they specified\n"
+                "   - Any domain-specific thresholds or business logic (e.g., clinical thresholds)\n\n"
+                "2. **STRUCTURE THE OUTPUT** in this order:\n"
+                "   a) PERSONA: Use the user's role description verbatim or with minimal enhancement\n"
+                "   b) DATA DICTIONARY: Include the COMPLETE schema/field definitions from the user's input\n"
+                "   c) RULES & CONSTRAINTS: Include ALL the user's SQL/query rules exactly as specified\n"
+                "   d) RESPONSE FORMAT: Use the user's specified format\n\n"
+                "3. **DO NOT**:\n"
+                "   - Summarize or abbreviate the data dictionary - include ALL fields\n"
+                "   - Remove or simplify the user's specific rules\n"
+                "   - Add generic rules that contradict the user's specifications\n"
+                "   - Include chart generation rules (these are appended automatically)\n\n"
+                "4. **YOU MAY**:\n"
+                "   - Improve formatting and organization\n"
+                "   - Add clarifying language where helpful\n"
+                "   - Fix grammatical issues\n"
+                "   - Add a brief 'Answer only based on retrieved data' rule if not present\n\n"
+                "Return ONLY the refined system prompt text, no markdown code blocks."
+            )
+        else:
+            # Standard database schema input - generate from scratch
+            instruction = (
+                "Your task is to write a comprehensive SYSTEM PROMPT for an AI assistant that will query a structured database.\n\n"
+                "CONTEXT PROVIDED:\n"
+                f"{safe_data_dictionary}\n\n"
+                "INSTRUCTIONS:\n"
+                "1. Define a suitable persona based strictly on the table names and column definitions provided in the context.\n"
+                "2. List the KEY tables and columns available based on the context above.\n"
+                "3. Define strict rules for SQL generation (e.g., joins, filters).\n"
+                "   - When multiple specific entities are mentioned (e.g., 'at Site A and Site B'), Use 'GROUP BY' to provide a breakdown/comparison, NOT a single total sum.\n"
+                "4. **OUTPUT FORMAT:**\n"
+                "   - Do NOT include generic chart generation rules or JSON formats in your output (these will be appended automatically).\n"
+                "   - Focus on domain-specific examples and logic.\n"
                 "5. Return ONLY the prompt text (Persona + SQL Rules), no markdown formatting."
             )
 
-        # Construct the prompt template
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", system_role),
-            ("user", instruction)
-        ])
-
-        # Invoke the LLM
-        # We want the LLM to explain WHY it prioritized certain tables/documents
+        # Add reasoning request to instruction
         instruction += (
-            "\n\nAlso, at the end of your response, strictly separated by '---REASONING---', "
-            "provide a JSON object with two keys: \n"
-            "1. 'selection_reasoning': mapping key schema/document elements to the reason they were selected.\n"
-            "2. 'example_questions': a list of 3-5 representative questions this agent could answer.\n"
+            "\n\n---\n"
+            "ADDITIONALLY, after your system prompt, add a separator '---REASONING---' followed by a JSON object with:\n"
+            "1. 'selection_reasoning': A dict mapping key schema elements to why they're important for queries.\n"
+            "2. 'example_questions': A list of 5 representative questions this agent could answer based on the data.\n"
+            "\nExample format after ---REASONING---:\n"
+            '{"selection_reasoning": {"field_name": "reason"}, "example_questions": ["Question 1?", "Question 2?"]}'
         )
 
-        chain = prompt_template | self.llm
-        response = chain.invoke({})
+        # Use direct message objects to avoid format string issues with ChatPromptTemplate
+        from langchain.schema import HumanMessage, SystemMessage
+        
+        messages = [
+            SystemMessage(content=system_role),
+            HumanMessage(content=instruction)
+        ]
+
+        # Invoke the LLM directly with messages
+        response = self.llm.invoke(messages)
         full_text = response.content
         
         # Parse output

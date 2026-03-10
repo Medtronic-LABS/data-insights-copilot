@@ -19,7 +19,7 @@ import { getActiveConfigMetadata, getPromptHistory, listEmbeddingJobs, getConnec
 const defaultAdvancedSettings: AdvancedSettings = {
     embedding: { model: 'BAAI/bge-m3' },
     llm: { temperature: 0.0, maxTokens: 4096 },
-    chunking: { parentChunkSize: 800, parentChunkOverlap: 150, childChunkSize: 200, childChunkOverlap: 50 },
+    chunking: { parentChunkSize: 512, parentChunkOverlap: 100, childChunkSize: 128, childChunkOverlap: 25 },
     retriever: { topKInitial: 50, topKFinal: 10, hybridWeights: [0.75, 0.25], rerankEnabled: true, rerankerModel: 'BAAI/bge-reranker-base' }
 };
 
@@ -137,10 +137,20 @@ const AgentDashboardPage: React.FC = () => {
                     // Fetch Vector DB Status
                     try {
                         const embConf = config.embedding_config ? JSON.parse(config.embedding_config) : {};
-                        const vDbName = embConf.vectorDbName || (config.data_source_type === 'database' && config.connection_id ? `db_connection_${config.connection_id}_data` : 'default_vector_db');
-                        if (vDbName) {
+                        // Use agent-specific vector DB name, not just connection-based
+                        // This prevents different agents using the same connection from sharing vector DBs
+                        const vDbName = embConf.vectorDbName || 
+                            (agent.id ? `agent_${agent.id}_vectors` : 
+                                (config.data_source_type === 'database' && config.connection_id 
+                                    ? `db_connection_${config.connection_id}_data` 
+                                    : 'default_vector_db'));
+                        if (vDbName && embConf.vectorDbName) {
+                            // Only fetch status if a vectorDbName was explicitly set (embedding was run)
                             const status = await getVectorDbStatus(vDbName);
                             if (isMounted) setVectorDbStatus(status);
+                        } else {
+                            // No embedding has been run for this agent yet
+                            if (isMounted) setVectorDbStatus(null);
                         }
                     } catch (e) {
                         console.log("Could not load Vector DB status");

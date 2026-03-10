@@ -9,8 +9,18 @@ import asyncio
 import time
 
 from backend.core.logging import get_logger
+from collections import OrderedDict
 
 logger = get_logger(__name__)
+
+# =============================================================================
+# Query Embedding Cache (Task 7)
+# =============================================================================
+# embed_query() is deterministic: same text → same embedding.
+# Queries repeat frequently (follow-ups, retries, similar phrasing).
+# 512 entries ≈ 2MB for 1024-dim embeddings.
+_QUERY_EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
+_QUERY_CACHE_MAX = 512
 
 
 # =============================================================================
@@ -58,6 +68,37 @@ class EmbeddingProvider(ABC):
             Embedding vector
         """
         pass
+    
+    def embed_query_cached(self, text: str) -> List[float]:
+        """
+        Embed a query with LRU caching.
+        
+        CPU Bottleneck Fix (Task 7):
+        - embed_query is deterministic and queries repeat frequently
+        - Caching avoids re-computing embeddings (~50-200ms per query)
+        - 512 entries ≈ 2MB for 1024-dim vectors
+        
+        Args:
+            text: Query text to embed
+            
+        Returns:
+            Embedding vector (from cache or freshly computed)
+        """
+        cache_key = text.strip()
+        
+        if cache_key in _QUERY_EMBEDDING_CACHE:
+            _QUERY_EMBEDDING_CACHE.move_to_end(cache_key)
+            logger.debug(f"Query embedding cache HIT")
+            return _QUERY_EMBEDDING_CACHE[cache_key]
+        
+        # Cache miss — compute embedding
+        embedding = self.embed_query(text)
+        
+        _QUERY_EMBEDDING_CACHE[cache_key] = embedding
+        if len(_QUERY_EMBEDDING_CACHE) > _QUERY_CACHE_MAX:
+            _QUERY_EMBEDDING_CACHE.popitem(last=False)  # Remove oldest
+        
+        return embedding
     
     @property
     @abstractmethod
@@ -705,7 +746,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
     Generic SentenceTransformer provider for any HuggingFace model.
     
     Supports models like:
-    - all-MiniLM-L6-v2 (384 dims, fast)
+    - BAAI/bge-m3 (1024 dims, multilingual, default)
     - all-mpnet-base-v2 (768 dims, balanced)
     - instructor-xl (768 dims, instruction-tuned)
     
@@ -714,7 +755,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
     
     def __init__(
         self,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = "BAAI/bge-m3",
         batch_size: int = 128,
         normalize: bool = True,
         models_dir: Optional[str] = None,

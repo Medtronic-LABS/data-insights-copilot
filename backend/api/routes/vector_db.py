@@ -7,13 +7,41 @@ from backend.core.logging import get_logger
 from backend.services.scheduler_service import (
     get_scheduler_service, SchedulerService, ScheduleType
 )
+from backend.services.chroma_service import (
+    get_vector_store_type, VectorStoreManager
+)
 import os
-import chromadb
-from chromadb.config import Settings
+import sqlite3 as sqlite3_stdlib
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/vector-db", tags=["Vector Database"])
+
+
+# ============================================
+# Helper function to get parent docstore count
+# ============================================
+
+def get_parent_docstore_count(vector_db_name: str) -> int:
+    """
+    Get document count from the parent_docstore.db SQLite file.
+    This is the actual document count used for RAG retrieval.
+    """
+    indexes_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
+    docstore_path = os.path.join(indexes_base_path, vector_db_name, "parent_docstore.db")
+    
+    if not os.path.exists(docstore_path):
+        return 0
+    
+    try:
+        conn = sqlite3_stdlib.connect(docstore_path)
+        cursor = conn.execute("SELECT COUNT(*) FROM documents")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+    except Exception as e:
+        logger.warning(f"Could not read parent_docstore.db for {vector_db_name}: {e}")
+        return 0
 
 
 # ============================================
@@ -41,6 +69,68 @@ def format_size(size_bytes: int) -> str:
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024.0
     return f"{size_bytes:.2f} PB"
+
+
+def get_qdrant_vector_count_sync(collection_name: str) -> tuple[int, bool]:
+    """
+    Get vector count from Qdrant (synchronous version for compatibility).
+    Returns (vector_count, exists).
+    """
+    try:
+        import requests
+        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        response = requests.get(f"{qdrant_url}/collections/{collection_name}", timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            result = data.get('result', {})
+            points_count = result.get('points_count', 0)
+            return points_count, True
+        elif response.status_code == 404:
+            return 0, False
+        else:
+            logger.warning(f"Qdrant returned status {response.status_code} for collection {collection_name}")
+            return 0, False
+    except Exception as e:
+        logger.warning(f"Could not connect to Qdrant: {e}")
+        return 0, False
+
+
+def get_chroma_vector_count_sync(collection_name: str, chroma_path: str) -> tuple[int, bool]:
+    """
+    Get vector count from ChromaDB (synchronous version for compatibility).
+    Returns (vector_count, exists).
+    """
+    import chromadb
+    from chromadb.config import Settings
+    
+    if not os.path.exists(chroma_path):
+        return 0, False
+    
+    try:
+        client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
+        try:
+            collection = client.get_collection(name=collection_name)
+            return collection.count(), True
+        except ValueError:
+            return 0, False
+    except Exception as e:
+        logger.warning(f"Could not connect to ChromaDB at {chroma_path}: {e}")
+        return 0, False
+
+
+def get_vector_count_for_collection(collection_name: str) -> tuple[int, bool]:
+    """
+    Get vector count using the configured provider.
+    Returns (vector_count, exists).
+    """
+    vector_store_type = get_vector_store_type()
+    
+    if vector_store_type == 'qdrant':
+        return get_qdrant_vector_count_sync(collection_name)
+    else:
+        chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../data/indexes/{collection_name}"))
+        return get_chroma_vector_count_sync(collection_name, chroma_path)
 
 
 # ============================================
@@ -85,6 +175,7 @@ async def get_vector_db_status(
 ):
     """
     Get detailed statistics for a Vector Database including index count, vectors, and schedule info.
+    Supports both Qdrant (primary) and ChromaDB (fallback) based on configuration.
     Requires Admin role or above.
     """
     try:
@@ -120,25 +211,15 @@ async def get_vector_db_status(
         
         conn.close()
 
-        # 2. Get vector count directly from ChromaDB
-        chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../data/indexes/{vector_db_name}"))
-        vector_count = 0
-        chroma_exists = False
-        
-        if os.path.exists(chroma_path):
-            try:
-                client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
-                try:
-                    collection = client.get_collection(name=vector_db_name)
-                    vector_count = collection.count()
-                    chroma_exists = True
-                except ValueError:
-                    # Collection doesn't exist
-                    pass
-            except Exception as e:
-                logger.warning(f"Could not connect to ChromaDB at {chroma_path}: {e}")
+        # 2. Get vector count based on configured vector store type (using unified service)
+        vector_store_type = get_vector_store_type()
+        vector_count, vector_store_exists = get_vector_count_for_collection(vector_db_name)
+        logger.debug(f"{vector_store_type.capitalize()} vector count for {vector_db_name}: {vector_count}")
 
-        # 3. Get schedule information
+        # 3. Get parent docstore count (actual documents for RAG)
+        parent_docstore_count = get_parent_docstore_count(vector_db_name)
+
+        # 4. Get schedule information
         schedule = scheduler_service.get_schedule(vector_db_name)
         schedule_info = None
         if schedule:
@@ -151,27 +232,33 @@ async def get_vector_db_status(
                 "last_run_status": schedule.get('last_run_status')
             }
 
-        # 4. Diagnostics & Monitoring (T06)
-        diagnostics = []
-        if chroma_exists and document_count > 0 and vector_count == 0:
-            diagnostics.append({"level": "error", "message": "ChromaDB collection exists but is empty despite indexed documents."})
-        elif chroma_exists and vector_count > 0 and document_count == 0:
-            diagnostics.append({"level": "warning", "message": "Vectors exist in ChromaDB but no documents found in SQLite index."})
+        # 5. Diagnostics & Monitoring
+        # Use parent_docstore_count as the primary document count indicator
+        effective_doc_count = parent_docstore_count if parent_docstore_count > 0 else document_count
         
-        if not chroma_exists and document_count > 0:
-            diagnostics.append({"level": "error", "message": "SQLite index exists but ChromaDB directory is missing."})
+        diagnostics = []
+        if vector_store_exists and effective_doc_count > 0 and vector_count == 0:
+            diagnostics.append({"level": "error", "message": f"{vector_store_type.capitalize()} collection exists but is empty despite indexed documents."})
+        elif vector_store_exists and vector_count > 0 and effective_doc_count == 0:
+            diagnostics.append({"level": "warning", "message": f"Vectors exist in {vector_store_type.capitalize()} but no documents found in docstore."})
+        
+        if not vector_store_exists and effective_doc_count > 0:
+            diagnostics.append({"level": "error", "message": f"Documents exist but {vector_store_type.capitalize()} collection is missing."})
 
         return {
             "name": vector_db_name,
-            "exists": document_count > 0 or chroma_exists,
-            "total_documents_indexed": document_count,
+            "exists": effective_doc_count > 0 or vector_store_exists,
+            "total_documents_indexed": effective_doc_count,  # Use parent docstore count as primary
             "total_vectors": vector_count,
+            "parent_docstore_count": parent_docstore_count,
+            "document_index_count": document_count,  # Keep for debugging
             "last_updated_at": last_updated,
             "embedding_model": registry_metadata["embedding_model"],
             "llm": registry_metadata["llm"],
             "last_full_run": registry_metadata["last_full_run"],
             "last_incremental_run": registry_metadata["last_incremental_run"],
             "version": registry_metadata["version"],
+            "vector_store_type": vector_store_type,
             "diagnostics": diagnostics,
             "schedule": schedule_info
         }
@@ -369,7 +456,7 @@ async def list_all_vector_databases(
 ):
     """
     List all Vector Databases with their disk sizes, document counts, and sync status.
-    Provides a centralized registry view for IT admins.
+    Supports both Qdrant (primary) and ChromaDB (fallback).
     Requires Super Admin role.
     """
     try:
@@ -406,7 +493,10 @@ async def list_all_vector_databases(
         
         conn.close()
         
-        # Base path for ChromaDB indexes
+        # Get configured vector store type
+        vector_store_type = get_vector_store_type()
+        
+        # Base path for ChromaDB indexes (fallback)
         indexes_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
         vector_stores_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../vector_stores"))
         
@@ -416,35 +506,25 @@ async def list_all_vector_databases(
         for row in registry_rows:
             name = row['name']
             
-            # Calculate disk size from ChromaDB folder
+            # Get vector count using unified service
+            vector_count, vector_store_exists = get_vector_count_for_collection(name)
+            
+            # Calculate disk size (for ChromaDB or local storage)
             chroma_path = os.path.join(indexes_base_path, name)
             alt_chroma_path = os.path.join(vector_stores_path, name)
             
             disk_size_bytes = 0
-            chroma_exists = False
-            vector_count = 0
+            local_storage_exists = False
             
             # Check primary path
             if os.path.exists(chroma_path):
                 disk_size_bytes = get_directory_size(chroma_path)
-                chroma_exists = True
+                local_storage_exists = True
             # Check alternate path
             elif os.path.exists(alt_chroma_path):
                 disk_size_bytes = get_directory_size(alt_chroma_path)
                 chroma_path = alt_chroma_path
-                chroma_exists = True
-            
-            # Get vector count from ChromaDB
-            if chroma_exists:
-                try:
-                    client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
-                    try:
-                        collection = client.get_collection(name=name)
-                        vector_count = collection.count()
-                    except ValueError:
-                        pass
-                except Exception as e:
-                    logger.warning(f"Could not read ChromaDB for {name}: {e}")
+                local_storage_exists = True
             
             total_disk_size += disk_size_bytes
             
@@ -465,7 +545,7 @@ async def list_all_vector_databases(
             
             # Determine health status
             health_status = "healthy"
-            if not chroma_exists:
+            if not vector_store_exists and not local_storage_exists:
                 health_status = "missing"
             elif vector_count == 0 and doc_info['count'] > 0:
                 health_status = "error"
@@ -488,49 +568,45 @@ async def list_all_vector_databases(
                 "document_count": doc_info['count'],
                 "vector_count": vector_count,
                 "last_updated": doc_info['last_updated'],
-                "chroma_exists": chroma_exists,
+                "vector_store_exists": vector_store_exists,
+                "vector_store_type": vector_store_type,
                 "schedule": schedule_info,
                 "health_status": health_status
             })
         
-        # Also scan for orphaned ChromaDB folders (exist on disk but not in registry)
+        # Scan for orphaned local storage folders (if using ChromaDB)
         orphaned_dbs = []
-        registered_names = {row['name'] for row in registry_rows}
-        
-        for scan_path in [indexes_base_path, vector_stores_path]:
-            if os.path.exists(scan_path):
-                for folder_name in os.listdir(scan_path):
-                    folder_path = os.path.join(scan_path, folder_name)
-                    if os.path.isdir(folder_path) and folder_name not in registered_names:
-                        # Check if it's a valid ChromaDB folder
-                        if os.path.exists(os.path.join(folder_path, "chroma.sqlite3")):
-                            disk_size_bytes = get_directory_size(folder_path)
-                            total_disk_size += disk_size_bytes
-                            
-                            vector_count = 0
-                            try:
-                                client = chromadb.PersistentClient(path=folder_path, settings=Settings(anonymized_telemetry=False))
-                                collections = client.list_collections()
-                                for coll in collections:
-                                    vector_count += coll.count()
-                            except Exception:
-                                pass
-                            
-                            orphaned_dbs.append({
-                                "name": folder_name,
-                                "path": folder_path,
-                                "disk_size_bytes": disk_size_bytes,
-                                "disk_size_formatted": format_size(disk_size_bytes),
-                                "vector_count": vector_count,
-                                "health_status": "orphaned"
-                            })
-                            registered_names.add(folder_name)  # Avoid duplicates
+        if vector_store_type == 'chroma':
+            registered_names = {row['name'] for row in registry_rows}
+            
+            for scan_path in [indexes_base_path, vector_stores_path]:
+                if os.path.exists(scan_path):
+                    for folder_name in os.listdir(scan_path):
+                        folder_path = os.path.join(scan_path, folder_name)
+                        if os.path.isdir(folder_path) and folder_name not in registered_names:
+                            # Check if it's a valid ChromaDB folder
+                            if os.path.exists(os.path.join(folder_path, "chroma.sqlite3")):
+                                disk_size_bytes = get_directory_size(folder_path)
+                                total_disk_size += disk_size_bytes
+                                
+                                vector_count_orphan, _ = get_chroma_vector_count_sync(folder_name, folder_path)
+                                
+                                orphaned_dbs.append({
+                                    "name": folder_name,
+                                    "path": folder_path,
+                                    "disk_size_bytes": disk_size_bytes,
+                                    "disk_size_formatted": format_size(disk_size_bytes),
+                                    "vector_count": vector_count_orphan,
+                                    "health_status": "orphaned"
+                                })
+                                registered_names.add(folder_name)  # Avoid duplicates
         
         return {
             "status": "success",
             "total_vector_dbs": len(vector_dbs),
             "total_disk_size_bytes": total_disk_size,
             "total_disk_size_formatted": format_size(total_disk_size),
+            "vector_store_type": vector_store_type,
             "vector_dbs": vector_dbs,
             "orphaned_dbs": orphaned_dbs
         }
@@ -552,7 +628,8 @@ async def delete_vector_database(
     scheduler_service: SchedulerService = Depends(get_scheduler_service)
 ):
     """
-    Delete a Vector Database from the registry and optionally remove its files.
+    Delete a Vector Database from the registry and optionally remove its data.
+    Supports both Qdrant and ChromaDB cleanup.
     Requires Super Admin role.
     """
     import shutil
@@ -587,28 +664,49 @@ async def delete_vector_database(
         except Exception:
             pass
         
-        # Delete files if requested
+        # Delete data if requested
         files_deleted = False
+        vector_store_deleted = False
+        vector_store_type = get_vector_store_type()
+        
         if delete_files:
+            # Delete from Qdrant if configured
+            if vector_store_type == 'qdrant':
+                try:
+                    import requests
+                    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+                    response = requests.delete(f"{qdrant_url}/collections/{vector_db_name}", timeout=10)
+                    if response.status_code in [200, 404]:
+                        vector_store_deleted = True
+                        logger.info(f"Deleted Qdrant collection: {vector_db_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete Qdrant collection {vector_db_name}: {e}")
+            
+            # Delete local ChromaDB folders (for both providers - cleanup)
             indexes_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
             vector_stores_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../vector_stores"))
             
             for base_path in [indexes_base_path, vector_stores_path]:
-                chroma_path = os.path.join(base_path, vector_db_name)
-                if os.path.exists(chroma_path):
+                local_path = os.path.join(base_path, vector_db_name)
+                if os.path.exists(local_path):
                     try:
-                        shutil.rmtree(chroma_path)
+                        shutil.rmtree(local_path)
                         files_deleted = True
-                        logger.info(f"Deleted ChromaDB folder: {chroma_path}")
+                        logger.info(f"Deleted local storage folder: {local_path}")
                     except Exception as e:
-                        logger.error(f"Failed to delete ChromaDB folder {chroma_path}: {e}")
+                        logger.error(f"Failed to delete local folder {local_path}: {e}")
+        
+        # Clear vector store cache
+        VectorStoreManager.clear_cache(vector_db_name)
         
         logger.info(f"Vector DB '{vector_db_name}' deleted by {current_user.username}")
         
         return {
             "status": "success",
             "message": f"Vector DB '{vector_db_name}' deleted successfully",
-            "files_deleted": files_deleted
+            "files_deleted": files_deleted,
+            "vector_store_deleted": vector_store_deleted,
+            "vector_store_type": vector_store_type
         }
         
     except HTTPException:

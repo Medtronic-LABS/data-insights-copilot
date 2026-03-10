@@ -11,14 +11,15 @@ Services can register as listeners to be notified when settings change.
 This enables immediate cache invalidation without waiting for TTL expiration.
 """
 import json
-import logging
 import time
 import threading
 from typing import Optional, Dict, Any, List, Literal, Callable, Set
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -83,12 +84,12 @@ class AuthSettings(BaseModel):
 
 class EmbeddingSettings(BaseModel):
     """Embedding model configuration settings."""
-    provider: Literal["bge-m3", "openai", "sentence-transformers", "cohere"] = "bge-m3"
-    model_name: str = "BAAI/bge-m3"
-    model_path: str = "./models/bge-m3"
+    provider: Literal["bge-m3", "openai", "sentence-transformers", "cohere"] = "sentence-transformers"
+    model_name: str = "BAAI/bge-base-en-v1.5"
+    model_path: str = "./models/bge-base-en-v1.5"
     batch_size: int = Field(default=128, ge=1, le=1024)
     max_concurrent: int = Field(default=5, ge=1, le=50)
-    dimensions: int = Field(default=1024, ge=64, le=4096)
+    dimensions: int = Field(default=768, ge=64, le=4096)
 
 
 class LLMSettings(BaseModel):
@@ -107,8 +108,9 @@ class RAGSettings(BaseModel):
     hybrid_weights: List[float] = Field(default=[0.75, 0.25])
     rerank_enabled: bool = True
     reranker_model: str = "BAAI/bge-reranker-base"
-    chunk_size: int = Field(default=800, ge=100, le=4000)
-    chunk_overlap: int = Field(default=150, ge=0, le=500)
+    # Use industry-standard defaults for medical/healthcare RAG
+    chunk_size: int = Field(default=512, ge=100, le=4000)
+    chunk_overlap: int = Field(default=100, ge=0, le=500)
     
     @field_validator('hybrid_weights')
     @classmethod
@@ -185,11 +187,16 @@ class MedicalContextSettings(BaseModel):
 
 
 class ChunkingSettings(BaseModel):
-    """Chunking strategy settings for embedding pipeline."""
-    parent_chunk_size: int = Field(default=800, ge=100, le=4000, description="Parent chunk size")
-    parent_chunk_overlap: int = Field(default=150, ge=0, le=500, description="Parent chunk overlap")
-    child_chunk_size: int = Field(default=200, ge=50, le=1000, description="Child chunk size")
-    child_chunk_overlap: int = Field(default=50, ge=0, le=200, description="Child chunk overlap")
+    """Chunking strategy settings for embedding pipeline.
+    
+    Industry best practices for medical/healthcare RAG:
+    - Smaller chunks = more precise retrieval + faster processing
+    - ~20% overlap maintains context between chunks
+    """
+    parent_chunk_size: int = Field(default=512, ge=100, le=4000, description="Parent chunk size for context")
+    parent_chunk_overlap: int = Field(default=100, ge=0, le=500, description="Parent chunk overlap (~20%)")
+    child_chunk_size: int = Field(default=128, ge=50, le=1000, description="Child chunk size for precise matching")
+    child_chunk_overlap: int = Field(default=25, ge=0, le=200, description="Child chunk overlap (~20%)")
     min_chunk_length: int = Field(default=50, ge=10, le=500, description="Minimum chunk length to index")
 
 

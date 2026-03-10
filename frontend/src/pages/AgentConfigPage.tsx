@@ -44,7 +44,7 @@ const steps = [
 const defaultAdvancedSettings: AdvancedSettings = {
     embedding: { model: 'BAAI/bge-m3' },
     llm: { temperature: 0.0, maxTokens: 4096 },
-    chunking: { parentChunkSize: 800, parentChunkOverlap: 150, childChunkSize: 200, childChunkOverlap: 50 },
+    chunking: { parentChunkSize: 512, parentChunkOverlap: 100, childChunkSize: 128, childChunkOverlap: 25 },
     retriever: { topKInitial: 50, topKFinal: 10, hybridWeights: [0.75, 0.25], rerankEnabled: true, rerankerModel: 'BAAI/bge-reranker-base' }
 };
 
@@ -302,7 +302,7 @@ const AgentConfigPage: React.FC = () => {
         setPublishing(true);
         setError(null);
 
-        // Derive vector db name if missing
+        // Derive vector db name if missing - ALWAYS include agent ID for isolation
         const finalEmbeddingConfig = { ...advancedSettings.embedding } as any;
         if (!finalEmbeddingConfig.vectorDbName) {
             let baseName = '';
@@ -314,7 +314,8 @@ const AgentConfigPage: React.FC = () => {
 
             if (baseName) {
                 const formatted = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-                finalEmbeddingConfig.vectorDbName = `${formatted}_data`;
+                // IMPORTANT: Always include agent ID to ensure isolation between agents
+                finalEmbeddingConfig.vectorDbName = `agent_${agent.id}_${formatted}_data`;
             } else {
                 finalEmbeddingConfig.vectorDbName = `agent_${agent.id}_data`;
             }

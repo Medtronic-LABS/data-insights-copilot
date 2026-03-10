@@ -596,6 +596,38 @@ export interface ModelInfo {
   parameters?: Record<string, any>;
   created_at?: string;
   updated_at?: string;
+  catalog_info?: CatalogModelInfo;
+  is_catalog_model?: boolean;
+}
+
+/** Catalog model information with detailed specs */
+export interface CatalogModelInfo {
+  provider: string;
+  model_name: string;
+  display_name: string;
+  dimensions: number;
+  max_tokens: number;
+  category: 'general' | 'multilingual' | 'fast' | 'medical' | 'code';
+  description: string;
+  speed_rating: number;  // 1-5, 5 fastest
+  quality_rating: number;  // 1-5, 5 best
+  local: boolean;
+  requires_api_key: boolean;
+  recommended_batch_size: number;
+  model_size_mb?: number;
+  catalog_key: string;
+  is_registered: boolean;
+}
+
+/** Response when activating an embedding model */
+export interface ModelActivationResponse {
+  model: ModelInfo;
+  dimension_changed: boolean;
+  previous_dimensions: number | null;
+  new_dimensions: number;
+  requires_rebuild: boolean;
+  rebuild_warning: string | null;
+  system_settings_updated: boolean;
 }
 
 /** List all registered embedding models from the DB */
@@ -616,8 +648,11 @@ export const getCompatibleLLMs = async (): Promise<ModelInfo[]> => {
   return response.data;
 };
 
-/** Activate an embedding model by ID */
-export const activateEmbeddingModel = async (modelId: number): Promise<ModelInfo> => {
+/** 
+ * Activate an embedding model by ID 
+ * Returns detailed info including rebuild warnings if dimensions change
+ */
+export const activateEmbeddingModel = async (modelId: number): Promise<ModelActivationResponse> => {
   const response = await apiClient.put(`/api/v1/settings/embedding/models/${modelId}/activate`);
   return response.data;
 };
@@ -637,6 +672,59 @@ export const registerEmbeddingModel = async (data: Partial<ModelInfo>): Promise<
 /** Register a new custom LLM model */
 export const registerLLMModel = async (data: Partial<ModelInfo>): Promise<ModelInfo> => {
   const response = await apiClient.post('/api/v1/settings/llm/models', data);
+  return response.data;
+};
+
+// ============================================================================
+// MODEL CATALOG API (NEW)
+// ============================================================================
+
+/**
+ * Get the curated model catalog with pre-validated embedding models.
+ * Each model includes dimensions, quality/speed ratings, and recommendations.
+ */
+export const getModelCatalog = async (options?: {
+  category?: 'general' | 'multilingual' | 'fast' | 'medical';
+  localOnly?: boolean;
+}): Promise<CatalogModelInfo[]> => {
+  const params: Record<string, any> = {};
+  if (options?.category) params.category = options.category;
+  if (options?.localOnly) params.local_only = options.localOnly;
+  
+  const response = await apiClient.get('/api/v1/settings/embedding/catalog', { params });
+  return response.data;
+};
+
+/**
+ * Add a model from the curated catalog to the registry.
+ * Ensures correct dimensions and settings are used automatically.
+ */
+export const addModelFromCatalog = async (modelName: string): Promise<ModelInfo> => {
+  const response = await apiClient.post('/api/v1/settings/embedding/catalog/add', {
+    model_name: modelName,
+  });
+  return response.data;
+};
+
+/**
+ * Validate that a model can be used.
+ * For local models: checks if model can be downloaded
+ * For API models: checks if API key is configured
+ */
+export const validateModelAvailability = async (modelName: string): Promise<{
+  model_name: string;
+  available: boolean;
+  message: string;
+}> => {
+  const response = await apiClient.get(`/api/v1/settings/embedding/catalog/${encodeURIComponent(modelName)}/validate`);
+  return response.data;
+};
+
+/**
+ * Get the currently active embedding model with full details.
+ */
+export const getActiveEmbeddingModel = async (): Promise<ModelInfo> => {
+  const response = await apiClient.get('/api/v1/settings/embedding/models/active');
   return response.data;
 };
 
@@ -934,14 +1022,18 @@ export const classifyTableColumns = async (tableName: string): Promise<ColumnCla
 /**
  * Start RAG embedding for selected text columns in a table.
  * Processing runs in background for large datasets.
+ * 
+ * NOTE: chunk sizes should come from system settings, not hardcoded.
+ * The backend will use system_settings defaults if not provided.
  */
 export const startRAGEmbedding = async (config: RAGConfig): Promise<RAGProcessingResult> => {
   const response = await apiClient.post('/api/v1/ingestion/rag/embed', {
     table_name: config.table_name,
     text_columns: config.text_columns,
     id_column: config.id_column || 'patient_id',
-    parent_chunk_size: config.parent_chunk_size || 800,
-    child_chunk_size: config.child_chunk_size || 200,
+    // Don't hardcode - let backend use system_settings defaults
+    parent_chunk_size: config.parent_chunk_size,
+    child_chunk_size: config.child_chunk_size,
   });
   return response.data;
 };
