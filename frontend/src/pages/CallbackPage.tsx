@@ -5,11 +5,28 @@ import { useAuth } from '../contexts/AuthContext';
 import { roleAtLeast } from '../utils/permissions';
 
 /**
+ * Check if the URL contains OIDC error response (e.g., from silent auth failure)
+ * This happens when silent authentication with prompt=none fails
+ */
+function getOidcError(): { error: string; description?: string } | null {
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get('error');
+  if (error) {
+    return {
+      error,
+      description: params.get('error_description') || undefined,
+    };
+  }
+  return null;
+}
+
+/**
  * OIDC Callback Page
  * 
  * Handles the redirect from Keycloak after successful authentication.
  * For new tab flow: processes the callback, signals main window, and closes tab.
  * For redirect flow (fallback): shows success message.
+ * Also handles error responses from failed silent auth (prompt=none).
  */
 export default function CallbackPage() {
   const navigate = useNavigate();
@@ -32,6 +49,23 @@ export default function CallbackPage() {
       callbackProcessed.current = true;
       
       try {
+        // Check if this is an error response (e.g., from silent auth failure)
+        const oidcError = getOidcError();
+        if (oidcError) {
+          // Handle expected silent auth errors silently - just redirect to login
+          if (oidcError.error === 'login_required' || 
+              oidcError.error === 'interaction_required' ||
+              oidcError.error === 'consent_required') {
+            // This is normal when user isn't logged in and silent auth is attempted
+            // Redirect to login without showing an error
+            navigate('/login', { replace: true });
+            return;
+          }
+          // For other errors, show them to the user
+          setError(oidcError.description || `Authentication error: ${oidcError.error}`);
+          return;
+        }
+        
         // Check if this is a callback (has auth code in URL)
         if (oidcService.isTabCallback()) {
           // Process callback - stores tokens, signals main window, and closes tab
@@ -41,8 +75,8 @@ export default function CallbackPage() {
           return;
         }
         
-        // Fallback: If not a callback, show error
-        setError('Invalid callback. Please try logging in again.');
+        // Fallback: If not a callback, redirect to login
+        navigate('/login', { replace: true });
       } catch (err) {
         console.error('OIDC callback error:', err);
         setError(err instanceof Error ? err.message : 'Authentication failed');
@@ -50,7 +84,7 @@ export default function CallbackPage() {
     };
 
     handleCallback();
-  }, [isAuthenticated]);
+  }, [isAuthenticated, navigate]);
 
   // If already authenticated (e.g., user pressed back button), redirect immediately
   if (isAuthenticated && user) {

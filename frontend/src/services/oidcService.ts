@@ -13,7 +13,11 @@ const userManager = new UserManager({
   scope: OIDC_CONFIG.scope,
   response_type: OIDC_CONFIG.response_type,
   userStore: new WebStorageStateStore({ store: window.localStorage }),
+  // Enable automatic silent renewal - uses refresh_token via token endpoint
   automaticSilentRenew: true,
+  // Fire accessTokenExpiring event 60 seconds before token expires
+  accessTokenExpiringNotificationTimeInSeconds: 60,
+  // Timeout for silent renew attempts
   silentRequestTimeoutInSeconds: 30,
 });
 
@@ -155,11 +159,28 @@ export const oidcService = {
 
   /**
    * Get the access token for API calls
-   * @returns Access token string or null if not authenticated
+   * Checks expiration and attempts renewal if needed
+   * @returns Access token string or null if not authenticated/renewal failed
    */
   getAccessToken: async (): Promise<string | null> => {
     const user = await userManager.getUser();
-    return user?.access_token || null;
+    if (!user) {
+      return null;
+    }
+    
+    // If token is expired or expiring soon, try to renew
+    if (user.expired) {
+      // Token is expired - automaticSilentRenew should handle this,
+      // but let's try manual renewal as fallback
+      try {
+        const renewedUser = await userManager.signinSilent();
+        return renewedUser?.access_token || null;
+      } catch {
+        return null;
+      }
+    }
+    
+    return user.access_token;
   },
 
   /**
@@ -172,14 +193,24 @@ export const oidcService = {
   },
 
   /**
-   * Silent token renewal
+   * Silent token renewal using refresh token
+   * Note: We avoid iframe-based signinSilent() as it often times out.
+   * Instead, we use the refresh token directly if available.
    * @returns Renewed OidcUser or null if renewal fails
    */
   renewToken: async (): Promise<OidcUser | null> => {
     try {
+      const currentUser = await userManager.getUser();
+      // Only attempt renewal if we have a user with a refresh token
+      if (!currentUser?.refresh_token) {
+        return null;
+      }
+      // Use signinSilent with refresh token - this should work without iframe
+      // if the IDP supports refresh tokens
       return await userManager.signinSilent();
     } catch (error) {
       console.error('Silent token renewal failed:', error);
+      // Don't spam console with expected errors
       return null;
     }
   },
