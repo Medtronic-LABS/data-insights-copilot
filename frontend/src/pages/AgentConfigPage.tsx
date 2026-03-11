@@ -339,7 +339,8 @@ const AgentConfigPage: React.FC = () => {
                 dataSourceType,
                 fileUploadResult ? JSON.stringify(fileUploadResult.documents) : undefined,
                 fileUploadResult?.file_name,
-                fileUploadResult?.file_type
+                fileUploadResult?.file_type,
+                selectedFileColumns
             );
             setSuccessMessage(`Prompt published successfully! Version: ${result.version}`);
             // Refresh history

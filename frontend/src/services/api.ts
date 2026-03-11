@@ -170,7 +170,8 @@ export const publishSystemPrompt = async (
   dataSourceType: string = 'database',
   ingestionDocuments?: string,
   ingestionFileName?: string,
-  ingestionFileType?: string
+  ingestionFileType?: string,
+  selectedFileColumns?: string[]
 ): Promise<{ status: string; version: number }> => {
   // We need to fetch the user_id from the token or some auth context.
   // For now, let's decode the token or just send a dummy ID if the backend parses the token.
@@ -188,11 +189,16 @@ export const publishSystemPrompt = async (
     }
   }
 
+  // For file sources, the schema_selection is actually the selected columns
+  const finalSchemaSelection = dataSourceType === 'file' && selectedFileColumns
+    ? JSON.stringify(selectedFileColumns)
+    : (window as any).__config_schema ? JSON.stringify((window as any).__config_schema) : null;
+
   const response = await apiClient.post('/api/v1/config/publish', {
     prompt_text: promptText,
     user_id: userId,
     connection_id: (window as any).__config_connectionId,
-    schema_selection: (window as any).__config_schema ? JSON.stringify((window as any).__config_schema) : null,
+    schema_selection: finalSchemaSelection,
     data_dictionary: (window as any).__config_dictionary,
     reasoning: reasoning ? JSON.stringify(reasoning) : null,
     example_questions: exampleQuestions ? JSON.stringify(exampleQuestions) : null,
@@ -345,12 +351,12 @@ export const getVectorDbStatus = async (vectorDbName: string): Promise<{
 }> => {
   const now = Date.now();
   const cached = vectorDbStatusCache.get(vectorDbName);
-  
+
   // Return cached promise if still valid (within TTL)
   if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
     return cached.promise;
   }
-  
+
   // Create new request and cache it
   const promise = apiClient.get(`/api/v1/vector-db/status/${vectorDbName}`)
     .then(response => response.data)
@@ -363,7 +369,7 @@ export const getVectorDbStatus = async (vectorDbName: string): Promise<{
         }
       }, 100);
     });
-  
+
   vectorDbStatusCache.set(vectorDbName, { promise, timestamp: now });
   return promise;
 };
@@ -824,12 +830,12 @@ const vectorDbScheduleCache: Map<string, { promise: Promise<any>; timestamp: num
 export const getVectorDbSchedule = async (vectorDbName: string): Promise<VectorDbSchedule> => {
   const now = Date.now();
   const cached = vectorDbScheduleCache.get(vectorDbName);
-  
+
   // Return cached promise if still valid (within 1s TTL)
   if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
     return cached.promise;
   }
-  
+
   // Create new request and cache it
   const promise = apiClient.get(`/api/v1/vector-db/schedule/${vectorDbName}`)
     .then(response => response.data)
@@ -841,7 +847,7 @@ export const getVectorDbSchedule = async (vectorDbName: string): Promise<VectorD
         }
       }, 100);
     });
-  
+
   vectorDbScheduleCache.set(vectorDbName, { promise, timestamp: now });
   return promise;
 };
