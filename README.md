@@ -48,6 +48,24 @@ Production-ready FastAPI backend service for the Data Insights AI-Copilot, provi
 
 ---
 
+## 📊 Latest Evaluation Results (March 11, 2026)
+
+Based on the standalone `eval/` framework running against the Golden Dataset:
+
+- **1. Retrieval Performance:** 
+  - **Hit Rate @ 5:** `80.0%`
+  - **Mean Reciprocal Rank (MRR @ 5):** `0.44`
+- **2. Intent Routing Accuracy:** `72.5%` (Avg Latency: ~155ms)
+- **3. SQL Generative Accuracy:** `80.0%` (Execution Equivalence)
+- **4. Clinical Safety Guardrails:** `100% Pass Rate` (Average Agent Safety Score: 4.5/5)
+- **5. End-to-End Pipeline Performance:** 
+  - **Total Latency:** `~501ms` 
+  - **Response ROUGE-L:** `0.28`
+
+For full details on the testing methodology, see [eval/README.md](eval/README.md).
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
