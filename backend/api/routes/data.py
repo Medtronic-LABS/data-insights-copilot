@@ -13,6 +13,91 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/data", tags=["Data Configuration"])
 
+
+def _normalize_db_uri(uri: str) -> str:
+    """
+    Normalize database URIs for SQLAlchemy compatibility.
+    
+    Converts common URI formats to SQLAlchemy-compatible formats:
+    - postgres:// -> postgresql://
+    - postgres+psycopg2:// -> postgresql+psycopg2://
+    - MySQL CLI syntax -> mysql+pymysql:// URL
+    
+    Args:
+        uri: The original database URI or CLI command
+        
+    Returns:
+        Normalized URI compatible with SQLAlchemy
+    """
+    import re
+    
+    # Handle postgres:// -> postgresql://
+    if uri.startswith('postgres://'):
+        uri = uri.replace('postgres://', 'postgresql://', 1)
+    elif uri.startswith('postgres+'):
+        uri = uri.replace('postgres+', 'postgresql+', 1)
+    
+    # Handle MySQL CLI syntax: mysql --user X --host Y --port Z --database D
+    if uri.strip().startswith('mysql ') and '--' in uri:
+        # Parse CLI arguments
+        user_match = re.search(r'--user[=\s]+(\S+)', uri)
+        host_match = re.search(r'--host[=\s]+(\S+)', uri)
+        port_match = re.search(r'--port[=\s]+(\S+)', uri)
+        db_match = re.search(r'--database[=\s]+(\S+)', uri)
+        password_match = re.search(r'--password[=\s]+(\S+)', uri)
+        
+        # Also support short flags
+        if not user_match:
+            user_match = re.search(r'-u[=\s]*(\S+)', uri)
+        if not host_match:
+            host_match = re.search(r'-h[=\s]*(\S+)', uri)
+        if not port_match:
+            port_match = re.search(r'-P[=\s]*(\S+)', uri)
+        if not password_match:
+            password_match = re.search(r'-p[=\s]*(\S+)', uri)
+        
+        user = user_match.group(1) if user_match else 'root'
+        host = host_match.group(1) if host_match else 'localhost'
+        port = port_match.group(1) if port_match else '3306'
+        database = db_match.group(1) if db_match else ''
+        password = password_match.group(1) if password_match else ''
+        
+        # Build URL
+        if password:
+            uri = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
+        else:
+            uri = f"mysql+pymysql://{user}@{host}:{port}/{database}"
+        
+        logger.info(f"Converted MySQL CLI syntax to URL format")
+    
+    # Handle psql CLI syntax: psql --host X --port Y --username Z --dbname D
+    elif uri.strip().startswith('psql ') and '--' in uri:
+        user_match = re.search(r'--username[=\s]+(\S+)', uri)
+        host_match = re.search(r'--host[=\s]+(\S+)', uri)
+        port_match = re.search(r'--port[=\s]+(\S+)', uri)
+        db_match = re.search(r'--dbname[=\s]+(\S+)', uri)
+        
+        # Short flags
+        if not user_match:
+            user_match = re.search(r'-U[=\s]*(\S+)', uri)
+        if not host_match:
+            host_match = re.search(r'-h[=\s]*(\S+)', uri)
+        if not port_match:
+            port_match = re.search(r'-p[=\s]*(\S+)', uri)
+        if not db_match:
+            db_match = re.search(r'-d[=\s]*(\S+)', uri)
+        
+        user = user_match.group(1) if user_match else 'postgres'
+        host = host_match.group(1) if host_match else 'localhost'
+        port = port_match.group(1) if port_match else '5432'
+        database = db_match.group(1) if db_match else ''
+        
+        uri = f"postgresql://{user}@{host}:{port}/{database}"
+        logger.info(f"Converted psql CLI syntax to URL format")
+    
+    return uri
+
+
 @router.get("/connections", response_model=List[DbConnectionResponse])
 async def list_connections(
     db_service: DatabaseService = Depends(get_db_service)
@@ -112,7 +197,7 @@ async def get_connection_schema(
         raise HTTPException(status_code=404, detail="Connection not found")
     
     try:
-        uri = conn["uri"]
+        uri = _normalize_db_uri(conn["uri"])
         # Connect directly to the database to fetch schema
         # Don't use SQLService which requires global config
         schema_info = _get_schema_for_uri(uri)
