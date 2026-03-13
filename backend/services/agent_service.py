@@ -28,6 +28,12 @@ from backend.sqliteDb.db import get_db_service
 from backend.models.schemas import (
     ChatResponse, ChartData, ReasoningStep, EmbeddingInfo
 )
+from backend.core.cancellation import check_cancelled, RequestCancelled
+
+# Type hint import for Request (only used in type annotations)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from fastapi import Request
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -440,7 +446,8 @@ Rewritten Query:""")
         self,
         query: str,
         user_id: Optional[str] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        request: Optional["Request"] = None
     ) -> Dict[str, Any]:
         """
         Process a user query through the RAG pipeline with conversation memory.
@@ -449,6 +456,7 @@ Rewritten Query:""")
             query: User question
             user_id: Optional user identifier
             session_id: Session ID for conversation tracking (enables multi-turn)
+            request: Optional FastAPI Request for cancellation detection
         
         Returns:
             Dictionary containing answer, charts, suggestions, and metadata
@@ -460,6 +468,9 @@ Rewritten Query:""")
         
         # Use the handler passed during initialization
         callbacks = [self.langfuse_trace] if self.langfuse_trace else []
+        
+        # Initialize followup_task for cleanup in exception handlers
+        followup_task = None
         
         try:
             # Rewrite query with context
@@ -490,6 +501,9 @@ Rewritten Query:""")
             final_prompt = f"{active_prompt}\n{formatted_examples}"
 
             # Step 1: Classify Intent
+            # Check if client disconnected before intent classification
+            await check_cancelled(request)
+            
             schema_context = self.sql_service.cached_schema if self.sql_service.cached_schema else ""
             classification = self.intent_router.classify(query=query, schema_context=schema_context)
             
@@ -502,6 +516,8 @@ Rewritten Query:""")
             if classification.intent == "A":
                 # Strict SQL Route
                 logger.info(f"Routing intent A (SQL Only) for trace_id={trace_id}")
+                # Check if client disconnected before SQL query
+                await check_cancelled(request)
                 sql_used = True
                 full_response = self.sql_service.query(query)
                 intermediate_steps.append((type('obj', (object,), {'tool': 'sql_query_tool', 'tool_input': query}), full_response))
@@ -509,9 +525,14 @@ Rewritten Query:""")
             elif classification.intent == "B":
                 # Strict Vector Route
                 logger.info(f"Routing intent B (Vector Only) for trace_id={trace_id}")
+                # Check if client disconnected before RAG search
+                await check_cancelled(request)
                 rag_used = True
                 context = self._rag_search(query)
                 intermediate_steps.append((type('obj', (object,), {'tool': 'rag_document_search_tool', 'tool_input': query}), context))
+                
+                # Check if client disconnected before LLM synthesis
+                await check_cancelled(request)
                 
                 # Synthesize Response using LLM
                 synthesis_prompt = ChatPromptTemplate.from_messages([
@@ -525,6 +546,8 @@ Rewritten Query:""")
             elif classification.intent == "C" and classification.sql_filter:
                 # Hybrid Route (C)
                 logger.info(f"Routing intent C (Hybrid) for trace_id={trace_id}. Executing SQL filter: {classification.sql_filter}")
+                # Check if client disconnected before hybrid processing
+                await check_cancelled(request)
                 sql_used = True
                 rag_used = True
                 
@@ -558,10 +581,16 @@ Rewritten Query:""")
                         # Note: You might need to adjust 'patient_id' to match your exact metadata schema
                         vector_filter = {"patient_id": {"$in": valid_ids}}
                         
+                        # Check if client disconnected before RAG search
+                        await check_cancelled(request)
+                        
                         context = self._rag_search(query, filter=vector_filter)
                         
                         intermediate_steps.append((type('obj', (object,), {'tool': 'sql_query_tool_filter', 'tool_input': classification.sql_filter}), str(valid_ids)))
                         intermediate_steps.append((type('obj', (object,), {'tool': 'rag_document_search_tool_filtered', 'tool_input': query}), context))
+                        
+                        # Check if client disconnected before LLM synthesis
+                        await check_cancelled(request)
                         
                         synthesis_prompt = ChatPromptTemplate.from_messages([
                             ("system", "{system_prompt}\n\nUse the provided unstructured document context (filtered by your numerical criteria) to answer the user's question. If the context does not contain the answer, state that you do not know based on the available information."),
@@ -577,6 +606,8 @@ Rewritten Query:""")
             else:
                 # Fallback Route
                 logger.warning(f"Routing Intent {classification.intent} fallback triggered for trace_id={trace_id}")
+                # Check if client disconnected before agent executor
+                await check_cancelled(request)
                 result = await self.agent_with_history.ainvoke(
                     {"input": query, "system_prompt": final_prompt},
                     config={
@@ -722,6 +753,13 @@ Rewritten Query:""")
             asyncio.create_task(_track_and_flush())
             
             return response.model_dump()
+        
+        except RequestCancelled:
+            # Client disconnected - cancel any background tasks and re-raise
+            logger.info(f"Request cancelled by client (trace_id={trace_id})")
+            if followup_task and not followup_task.done():
+                followup_task.cancel()
+            raise
             
         except Exception as e:
             logger.error(f"Query processing failed (trace_id={trace_id}): {e}", exc_info=True)

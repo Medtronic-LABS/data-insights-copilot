@@ -10,6 +10,7 @@ from backend.services.agent_service import get_agent_service
 from backend.core.permissions import require_user
 from backend.core.logging import get_logger
 from backend.core.tracing import get_langfuse_handler
+from backend.core.cancellation import RequestCancelled
 from backend.config import get_settings
 
 settings = get_settings()
@@ -94,8 +95,15 @@ async def chat(
         result = await agent_service.process_query(
             query=request.query,
             user_id=user_id,
-            session_id=session_id
+            session_id=session_id,
+            request=fastapi_req
         )
+        
+        # Add agent_id to the result dict for frontend validation
+        if isinstance(result, dict):
+            result['agent_id'] = request.agent_id
+        else:
+            result.agent_id = request.agent_id
         
         logger.info(f"Chat request completed: trace_id={trace_id}")
         
@@ -107,6 +115,19 @@ async def chat(
                 logger.debug(f"Langfuse flush: {e}")
         
         return result
+    
+    except RequestCancelled:
+        # Client disconnected - log and return 499 (client closed request)
+        logger.info(f"Chat request cancelled by client: session={session_id}, trace_id={trace_id}")
+        if langfuse_handler:
+            try:
+                langfuse_handler.flush()
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=499,
+            detail="Client closed request"
+        )
         
     except Exception as e:
         # Flush even on error
