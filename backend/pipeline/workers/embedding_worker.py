@@ -332,6 +332,15 @@ def execute_vector_db_sync(self, vector_db_name: str, is_manual: bool = False):
         manager.update_run_status(vector_db_name, manager.ScheduleStatus.SUCCESS, job_id=job_id)
         logger.info(f"{job_source.capitalize()} sync completed for {vector_db_name}, job_id={job_id}")
         
+        # INVALIDATE SQL CACHE ON SUCCESSFUL SYNC
+        try:
+            from backend.services.sql_service import invalidate_sql_cache
+            invalidate_sql_cache()
+            logger.info("Invalidated SQL query cache following database sync.")
+        except Exception as e:
+            logger.warning(f"Failed to invalidate SQL cache after sync: {e}")
+            
+        
     except Exception as e:
         logger.error(f"Scheduled sync failed for {vector_db_name}: {e}")
         import traceback
