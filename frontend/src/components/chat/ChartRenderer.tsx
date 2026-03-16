@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { 
   LineChart, Line, BarChart, Bar, PieChart, Pie, AreaChart, Area, 
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, 
@@ -48,9 +48,33 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
   const { type, data: rawData, xKey, yKey, title, colors = COLORS, metrics } = chartData;
   const chartRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   // Debug logging
   console.log('ChartRenderer received:', { type, title, rawData, metrics });
+
+  // Force re-render on window resize to fix ResponsiveContainer stuck size issue
+  useEffect(() => {
+    const handleResize = () => {
+      setContainerWidth(window.innerWidth);
+    };
+    
+    // Set initial width
+    handleResize();
+    
+    // Add debounced resize listener
+    let timeoutId: NodeJS.Timeout;
+    const debouncedResize = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(handleResize, 150);
+    };
+    
+    window.addEventListener('resize', debouncedResize);
+    return () => {
+      window.removeEventListener('resize', debouncedResize);
+      clearTimeout(timeoutId);
+    };
+  }, []);
 
   // ============================================
   // EXPORT FUNCTION - Capture rendered chart as PNG
@@ -216,16 +240,16 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
     });
 
     return (
-      <div className="relative group">
+      <div className="relative group w-full">
         <ExportToolbar />
-        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm w-full min-w-0">
           {title && <h4 className="text-sm font-bold mb-4 text-gray-800 border-b pb-2">{title}</h4>}
           <div className="flex">
             <div className="flex-1">
-              <ResponsiveContainer width="100%" height={300}>
+              <ResponsiveContainer key={`funnel-${containerWidth}`} width="100%" height={300}>
                 <FunnelChart>
                   <Tooltip formatter={(value: any) => [Number(value).toLocaleString()]} />
-                  <Funnel dataKey="value" data={withDropoff} isAnimationActive>
+                  <Funnel dataKey="value" data={withDropoff} isAnimationActive={false}>
                     {withDropoff.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.fill} />
                     ))}
@@ -333,9 +357,9 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
     const maxValue = Math.max(...allValues, ...ranges, 100);
 
     return (
-      <div className="relative group">
+      <div className="relative group w-full">
         <ExportToolbar />
-        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm w-full min-w-0">
           {title && <h4 className="text-sm font-bold mb-4 text-gray-800 border-b pb-2">{title}</h4>}
           <div className="space-y-4 max-h-96 overflow-y-auto">
             {bulletData.map((item, index) => {
@@ -414,18 +438,18 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
     barData = [...barData].sort((a, b) => b.value - a.value);
 
     return (
-      <div className="relative group">
+      <div className="relative group w-full">
         <ExportToolbar />
-        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm w-full min-w-0">
           {title && <h4 className="text-sm font-bold mb-4 text-gray-800 border-b pb-2">{title}</h4>}
-          <ResponsiveContainer width="100%" height={Math.max(200, barData.length * 35)}>
-            <BarChart data={barData} layout="vertical" margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
+          <ResponsiveContainer key={`hbar-${containerWidth}`} width="100%" height={Math.max(200, barData.length * 35)}>
+            <BarChart data={barData} layout="vertical" margin={{ top: 5, right: 10, left: 60, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={90} />
+              <XAxis type="number" tick={{ fontSize: 10 }} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={55} />
               <Tooltip />
-              <Bar dataKey="value" fill={colors[0]} radius={[0, 4, 4, 0]}>
-                <LabelList dataKey="value" position="right" style={{ fontSize: '11px' }} />
+              <Bar dataKey="value" fill={colors[0]} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                <LabelList dataKey="value" position="right" style={{ fontSize: '9px' }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -457,9 +481,9 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
     }
 
     return (
-      <div className="relative group">
+      <div className="relative group w-full">
         <ExportToolbar />
-        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+        <div ref={chartRef} className="my-3 p-4 bg-white rounded-lg border border-gray-200 shadow-sm w-full min-w-0">
           {title && <h4 className="text-sm font-bold mb-4 text-gray-800 border-b pb-2">{title}</h4>}
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
             {displayMetrics && displayMetrics.length > 0 ? (
@@ -551,11 +575,11 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
     switch (type) {
       case 'line':
         return (
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+          <ResponsiveContainer key={`line-${containerWidth}`} width="100%" height={300}>
+            <LineChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey || 'name'} tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
+              <XAxis dataKey={xKey || 'name'} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={60} />
+              <YAxis tick={{ fontSize: 10 }} width={40} />
               <Tooltip />
               <Legend wrapperStyle={{ fontSize: '12px' }} />
               {isMultiSeries ? (
@@ -566,13 +590,14 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
                     dataKey={key}
                     stroke={colors[index % colors.length]}
                     strokeWidth={2}
+                    isAnimationActive={false}
                   >
-                    <LabelList dataKey={key} position="top" style={{ fontSize: '10px' }} />
+                    <LabelList dataKey={key} position="top" style={{ fontSize: '9px' }} />
                   </Line>
                 ))
               ) : (
-                <Line type="monotone" dataKey="value" stroke={colors[0]} strokeWidth={2}>
-                  <LabelList dataKey="value" position="top" style={{ fontSize: '10px' }} />
+                <Line type="monotone" dataKey="value" stroke={colors[0]} strokeWidth={2} isAnimationActive={false}>
+                  <LabelList dataKey="value" position="top" style={{ fontSize: '9px' }} />
                 </Line>
               )}
             </LineChart>
@@ -581,13 +606,13 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
 
       case 'bar':
         return (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+          <ResponsiveContainer key={`bar-${containerWidth}`} width="100%" height={300}>
+            <BarChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey || 'name'} tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
+              <XAxis dataKey={xKey || 'name'} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={60} />
+              <YAxis tick={{ fontSize: 10 }} width={40} />
               <Tooltip cursor={{ fill: 'transparent' }} />
-              <Legend wrapperStyle={{ fontSize: '12px' }} />
+              <Legend wrapperStyle={{ fontSize: '11px' }} />
               {isMultiSeries ? (
                 dataKeys.map((key, index) => (
                   <Bar
@@ -595,14 +620,15 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
                     dataKey={key}
                     stackId="a" // Enable stacking
                     fill={colors[index % colors.length]}
+                    isAnimationActive={false}
                   >
                     {/* For stacked bars, position 'inside' keeps labels within the segments */}
-                    <LabelList dataKey={key} position="inside" style={{ fill: '#fff', fontSize: '10px', textShadow: '0px 0px 2px rgba(0,0,0,0.5)' }} />
+                    <LabelList dataKey={key} position="inside" style={{ fill: '#fff', fontSize: '9px', textShadow: '0px 0px 2px rgba(0,0,0,0.5)' }} />
                   </Bar>
                 ))
               ) : (
-                <Bar dataKey="value" fill={colors[0]}>
-                  <LabelList dataKey="value" position="top" style={{ fontSize: '12px' }} />
+                <Bar dataKey="value" fill={colors[0]} isAnimationActive={false}>
+                  <LabelList dataKey="value" position="top" style={{ fontSize: '10px' }} />
                 </Bar>
               )}
             </BarChart>
@@ -612,16 +638,17 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
       case 'pie':
         // Pie charts use the transformed data format: [{name: "Label", value: Number}, ...]
         return (
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
+          <ResponsiveContainer key={`pie-${containerWidth}`} width="100%" height={300}>
+            <PieChart margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
               <Pie
                 data={data}
                 dataKey="value" // Always use 'value' for single-series pie charts
                 nameKey={xKey || 'name'}
                 cx="50%"
                 cy="50%"
-                outerRadius={80}
+                outerRadius="60%"
                 label={({ name, value }) => `${name}: ${value}`}
+                isAnimationActive={false}
               >
                 {data.map((_, index) => (
                   <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
@@ -635,11 +662,11 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
 
       case 'area':
         return (
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+          <ResponsiveContainer key={`area-${containerWidth}`} width="100%" height={300}>
+            <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey || 'name'} tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
+              <XAxis dataKey={xKey || 'name'} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={60} />
+              <YAxis tick={{ fontSize: 10 }} width={40} />
               <Tooltip />
               <Legend wrapperStyle={{ fontSize: '12px' }} />
               {isMultiSeries ? (
@@ -652,13 +679,14 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
                     stroke={colors[index % colors.length]}
                     fill={colors[index % colors.length]}
                     fillOpacity={0.6}
+                    isAnimationActive={false}
                   >
-                    <LabelList dataKey={key} position="top" style={{ fontSize: '10px' }} />
+                    <LabelList dataKey={key} position="top" style={{ fontSize: '9px' }} />
                   </Area>
                 ))
               ) : (
-                <Area type="monotone" dataKey="value" stroke={colors[0]} fill={colors[0]} fillOpacity={0.6}>
-                  <LabelList dataKey="value" position="top" style={{ fontSize: '10px' }} />
+                <Area type="monotone" dataKey="value" stroke={colors[0]} fill={colors[0]} fillOpacity={0.6} isAnimationActive={false}>
+                  <LabelList dataKey="value" position="top" style={{ fontSize: '9px' }} />
                 </Area>
               )}
             </AreaChart>
@@ -668,13 +696,13 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
       case 'radar':
         // Requires data in specific format, usually provided correctly by agent
         return (
-          <ResponsiveContainer width="100%" height={300}>
+          <ResponsiveContainer key={`radar-${containerWidth}`} width="100%" height={300}>
             <RadarChart cx="50%" cy="50%" outerRadius="80%" data={data}>
               <PolarGrid />
               <PolarAngleAxis dataKey={xKey || 'name'} tick={{ fontSize: 11 }} />
               <PolarRadiusAxis />
               <Tooltip />
-              <Legend wrapperStyle={{ fontSize: '12px' }} />
+              <Legend wrapperStyle={{ fontSize: '11px' }} />
               {isMultiSeries ? (
                 dataKeys.map((key, index) => (
                   <Radar
@@ -684,10 +712,11 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
                     stroke={colors[index % colors.length]}
                     fill={colors[index % colors.length]}
                     fillOpacity={0.3}
+                    isAnimationActive={false}
                   />
                 ))
               ) : (
-                <Radar name="Value" dataKey="value" stroke={colors[0]} fill={colors[0]} fillOpacity={0.5} />
+                <Radar name="Value" dataKey="value" stroke={colors[0]} fill={colors[0]} fillOpacity={0.5} isAnimationActive={false} />
               )}
             </RadarChart>
           </ResponsiveContainer>
@@ -696,7 +725,7 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
       case 'treemap':
         // Treemap needs nested data structure or flat list with weights
         return (
-          <ResponsiveContainer width="100%" height={300}>
+          <ResponsiveContainer key={`treemap-${containerWidth}`} width="100%" height={300}>
             <Treemap
               data={data}
               dataKey={yKey || 'value'}
@@ -717,9 +746,9 @@ export default function ChartRenderer({ chartData }: ChartRendererProps) {
   };
 
   return (
-    <div className="relative group">
+    <div className="relative group w-full">
       <ExportToolbar />
-      <div ref={chartRef} className="my-3 p-3 bg-white rounded-lg border border-gray-200">
+      <div ref={chartRef} className="my-3 p-3 bg-white rounded-lg border border-gray-200 w-full min-w-0">
         {title && <h4 className="text-sm font-semibold mb-2 text-gray-700">{title}</h4>}
         {renderChart()}
       </div>
