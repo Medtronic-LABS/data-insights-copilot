@@ -30,7 +30,7 @@ from backend.models.rag_models import (
     EmbeddingJobStatus, RAGAuditAction, ChunkingConfig, ParallelizationConfig,
     MedicalContextConfig
 )
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.services.embedding_job_service import get_embedding_job_service, EmbeddingJobService, JobCancelledError
 from backend.services.authorization_service import get_authorization_service, AuthorizationService
 from backend.services.notification_service import get_notification_service
@@ -109,7 +109,7 @@ async def start_embedding_job(
     Requires Admin role or above.
     """
     try:
-        from backend.sqliteDb.db import get_db_service
+        from backend.database.db import get_db_service
         db_service = get_db_service()
         config = db_service.get_config_by_id(request.config_id)
         if not config:

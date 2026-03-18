@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from backend.core.permissions import require_super_admin, User
 from backend.core.logging import get_logger
 from backend.services.schema_drift_service import get_drift_detector, DriftSeverity
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 
 logger = get_logger(__name__)
 
@@ -329,7 +329,7 @@ async def get_drift_history(
 def _create_drift_notification(user_id: int, vector_db_name: str, count: int, severity: str):
     """Create a notification for detected schema drift."""
     try:
-        from backend.sqliteDb.db import get_db_service
+        from backend.database.db import get_db_service
         db_service = get_db_service()
         conn = db_service.get_connection()
         cursor = conn.cursor()

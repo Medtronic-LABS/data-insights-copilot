@@ -24,7 +24,7 @@ from backend.services.embeddings import get_embedding_model
 from backend.services.followup_service import FollowUpService
 from backend.services.llm_registry import get_llm_registry
 from backend.services.intent_router import IntentClassifier
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.models.schemas import (
     ChatResponse, ChartData, ReasoningStep, EmbeddingInfo
 )

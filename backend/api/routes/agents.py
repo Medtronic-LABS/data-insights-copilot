@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from backend.core.permissions import require_user, get_current_user, require_admin, require_super_admin
 from backend.core.roles import Role
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.models.schemas import User
 from backend.services.audit_service import get_audit_service, AuditAction
 

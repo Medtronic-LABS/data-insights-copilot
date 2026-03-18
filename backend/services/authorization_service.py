@@ -12,7 +12,7 @@ from backend.models.schemas import User
 from backend.models.rag_models import RAGAuditAction
 from backend.core.roles import Role, role_at_least
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 logger = get_logger(__name__)
 

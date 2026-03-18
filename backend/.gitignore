@@ -17,8 +17,9 @@ data/indexes/*
 # Logs
 logs/
 
-#Sqlite DB
-sqliteDb/app.db
+#Sqlite DB - ignore database files in both locations
+sqliteDb/*.db
+database/*.db
 
 # Legacy paths (can be removed if no longer needed)
 /chroma_db_index

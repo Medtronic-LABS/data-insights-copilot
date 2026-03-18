@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 
 from backend.services.config_service import ConfigService, get_config_service
 from backend.models.config import PromptGenerationRequest, PromptPublishRequest, PromptResponse
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 from backend.core.logging import get_logger
 from backend.core.permissions import require_editor, require_admin, get_current_user, User
 from backend.services.sql_service import get_sql_service

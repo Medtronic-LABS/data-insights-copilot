@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # ============================================
     # This is the internal database for storing users, settings, prompts, etc.
     # NOT the clinical data database (that comes from db_connections table)
+    # NOTE: Physical folder path kept as './sqliteDb/' for backward compatibility
+    # even though Python module is at backend.database
     sqlite_db_path: str = Field(
         default="./sqliteDb/copilot.db",
         description="Path to internal SQLite database for app configuration"

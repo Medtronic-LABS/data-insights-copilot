@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 from backend.core.permissions import require_admin, require_super_admin, User
 from backend.core.logging import get_logger
 from backend.core.roles import get_all_roles, is_valid_role, Role, role_at_least

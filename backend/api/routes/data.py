@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 
 from sqlalchemy import create_engine, inspect
 
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 from backend.models.data import DbConnectionCreate, DbConnectionResponse
 from backend.core.logging import get_logger
 from backend.core.permissions import require_admin, require_at_least, UserRole, get_current_user, User

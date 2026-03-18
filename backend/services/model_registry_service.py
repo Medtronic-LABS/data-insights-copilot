@@ -284,7 +284,7 @@ class ModelRegistryService:
 
     def __init__(self, db_service=None):
         if db_service is None:
-            from backend.sqliteDb.db import get_db_service
+            from backend.database.db import get_db_service
             db_service = get_db_service()
         self.db = db_service
         logger.info("ModelRegistryService initialized")

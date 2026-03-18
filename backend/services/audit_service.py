@@ -7,7 +7,7 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 import json
 
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.core.logging import get_logger
 
 logger = get_logger(__name__)

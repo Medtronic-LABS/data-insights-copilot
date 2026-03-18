@@ -14,7 +14,7 @@ from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 logger = get_logger(__name__)
 

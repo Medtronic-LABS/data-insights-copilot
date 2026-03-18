@@ -11,7 +11,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from backend.config import get_settings
 from backend.core.logging import get_logger
 from backend.core.security import decode_keycloak_token
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 logger = get_logger(__name__)
 settings = get_settings()

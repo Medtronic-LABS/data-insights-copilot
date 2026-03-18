@@ -100,7 +100,7 @@ def _get_active_database_url(agent_id: Optional[int] = None, connection_id: Opti
         Database URI string, or None if no connection is configured.
     """
     try:
-        from backend.sqliteDb.db import get_db_service
+        from backend.database.db import get_db_service
         db_service = get_db_service()
         
         # If direct connection_id provided, use it
@@ -430,7 +430,7 @@ class SQLService:
         Extracts key rules from the published system prompt.
         """
         try:
-            from backend.sqliteDb.db import get_db_service
+            from backend.database.db import get_db_service
             db_service = get_db_service()
             
             # Get the active system prompt

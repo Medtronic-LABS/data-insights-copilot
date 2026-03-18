@@ -14,7 +14,7 @@ from backend.models.rag_models import (
 )
 from backend.models.schemas import User
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 class JobCancelledError(Exception):
     """Exception raised when an embedding job is explicitly cancelled."""

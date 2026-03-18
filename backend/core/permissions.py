@@ -34,7 +34,7 @@ from backend.core.roles import (
     get_all_roles,
     is_valid_role,
 )
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.models.schemas import User
 from backend.services.audit_service import AuditService, AuditAction
 

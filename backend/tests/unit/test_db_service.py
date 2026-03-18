@@ -1,5 +1,5 @@
 """
-Unit tests for backend/sqliteDb/db.py DatabaseService
+Unit tests for backend/database/db.py DatabaseService
 
 Tests user management (OIDC), prompt management, and connection management.
 """
@@ -25,7 +25,7 @@ def temp_db():
 @pytest.fixture
 def db_service(temp_db):
     """Create a DatabaseService instance with temporary database."""
-    from backend.sqliteDb.db import DatabaseService
+    from backend.database.db import DatabaseService
     
     service = DatabaseService(db_path=temp_db)
     
@@ -37,7 +37,7 @@ class TestDatabaseServiceInitialization:
     
     def test_init_creates_database_file(self, temp_db):
         """Test that initialization creates database file."""
-        from backend.sqliteDb.db import DatabaseService
+        from backend.database.db import DatabaseService
         
         os.unlink(temp_db)  # Remove file so we can test creation
         assert not os.path.exists(temp_db)
@@ -443,7 +443,7 @@ class TestSingletonPattern:
     
     def test_get_db_service_returns_same_instance(self):
         """Test that get_db_service returns singleton."""
-        from backend.sqliteDb.db import get_db_service
+        from backend.database.db import get_db_service
         
         service1 = get_db_service()
         service2 = get_db_service()
@@ -452,6 +452,6 @@ class TestSingletonPattern:
     
     def test_global_db_service_exists(self):
         """Test that global db_service is initialized."""
-        from backend.sqliteDb.db import db_service
+        from backend.database.db import db_service
         
         assert db_service is not None

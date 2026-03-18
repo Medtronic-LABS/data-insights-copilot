@@ -223,7 +223,7 @@ def run_migrations(db_path: str = None) -> List[str]:
     Returns:
         List of applied migration filenames
     """
-    from backend.sqliteDb.db import DB_PATH
+    from backend.database.db import DB_PATH
     
     if db_path is None:
         db_path = str(DB_PATH)

@@ -14,7 +14,7 @@ from backend.core.logging import get_logger
 logger = get_logger(__name__)
 
 # Database path
-DB_DIR = Path(__file__).parent
+DB_DIR = Path(__file__).parent.parent / "sqliteDb"
 DB_PATH = DB_DIR / "app.db"
 
 
@@ -58,7 +58,7 @@ class DatabaseService:
         except ImportError:
             # Fallback for when running from different contexts
             try:
-                from backend.sqliteDb.migrations import MigrationRunner
+                from backend.database.migrations import MigrationRunner
                 runner = MigrationRunner(self.db_path)
                 applied = runner.run_pending_migrations()
                 if applied:

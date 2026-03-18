@@ -23,7 +23,7 @@ def temp_db():
 @pytest.fixture
 def mock_db_service(temp_db):
     """Create a mock database service with embedding job tables."""
-    from backend.sqliteDb.db import DatabaseService
+    from backend.database.db import DatabaseService
     
     service = DatabaseService(db_path=temp_db)
     

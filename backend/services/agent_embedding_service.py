@@ -11,7 +11,7 @@ import hashlib
 from typing import Dict, Any, Optional, List
 
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.services.embedding_registry import get_embedding_registry
 
 logger = get_logger(__name__)

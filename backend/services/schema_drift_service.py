@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 from dataclasses import dataclass
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 logger = get_logger(__name__)
 

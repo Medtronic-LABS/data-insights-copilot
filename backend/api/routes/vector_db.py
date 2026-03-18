@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 from backend.core.permissions import require_admin, User
 from backend.core.logging import get_logger
 from backend.services.scheduler_service import (

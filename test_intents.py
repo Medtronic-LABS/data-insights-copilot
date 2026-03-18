@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 load_dotenv('.env')
 
 from backend.services.agent_service import get_agent_service
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 async def main():
     print("Initializing Database and AgentService...")

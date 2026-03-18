@@ -245,11 +245,11 @@ class SettingsService:
         
         Args:
             db_service: Optional DatabaseService instance. If not provided,
-                       will use the singleton from sqliteDb.db
+                       will use the singleton from database.db
             cache_ttl: Time-to-live for cache in seconds
         """
         if db_service is None:
-            from backend.sqliteDb.db import get_db_service
+            from backend.database.db import get_db_service
             db_service = get_db_service()
         
         self.db = db_service
