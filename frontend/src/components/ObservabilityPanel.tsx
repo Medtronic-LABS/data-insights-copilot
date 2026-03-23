@@ -181,57 +181,37 @@ const ObservabilityPanel: React.FC = () => {
                         <p className="mt-1 text-xs text-gray-500">Controls backend log verbosity.</p>
                     </div>
 
-                    {/* Tracing Provider */}
+                    {/* Langfuse Tracing Toggle */}
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Tracing Provider</label>
-                        <div className="flex gap-4 mt-2">
-                            <label className="inline-flex items-center">
-                                <input
-                                    type="radio"
-                                    className="form-radio text-purple-600 focus:ring-purple-500"
-                                    name="tracing"
-                                    value="none"
-                                    checked={config.tracing_provider === 'none'}
-                                    onChange={() => handleConfigChange('tracing_provider', 'none')}
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Langfuse Tracing</label>
+                        <div className="flex items-center gap-3 mt-2">
+                            <button
+                                onClick={() => handleConfigChange('tracing_provider', config.tracing_provider === 'langfuse' ? 'none' : 'langfuse')}
+                                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 ${
+                                    config.tracing_provider === 'langfuse' ? 'bg-purple-600' : 'bg-gray-200'
+                                }`}
+                            >
+                                <span
+                                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                        config.tracing_provider === 'langfuse' ? 'translate-x-5' : 'translate-x-0'
+                                    }`}
                                 />
-                                <span className="ml-2 text-sm text-gray-700">None</span>
-                            </label>
-                            <label className="inline-flex items-center">
-                                <input
-                                    type="radio"
-                                    className="form-radio text-purple-600 focus:ring-purple-500"
-                                    name="tracing"
-                                    value="langfuse"
-                                    checked={config.tracing_provider === 'langfuse'}
-                                    onChange={() => handleConfigChange('tracing_provider', 'langfuse')}
-                                />
-                                <span className="ml-2 text-sm text-gray-700">Langfuse</span>
-                            </label>
-                            <label className="inline-flex items-center">
-                                <input
-                                    type="radio"
-                                    className="form-radio text-purple-600 focus:ring-purple-500"
-                                    name="tracing"
-                                    value="opentelemetry"
-                                    checked={config.tracing_provider === 'opentelemetry'}
-                                    onChange={() => handleConfigChange('tracing_provider', 'opentelemetry')}
-                                />
-                                <span className="ml-2 text-sm text-gray-700">OpenTelemetry</span>
-                            </label>
-                            <label className="inline-flex items-center">
-                                <input
-                                    type="radio"
-                                    className="form-radio text-purple-600 focus:ring-purple-500"
-                                    name="tracing"
-                                    value="both"
-                                    checked={config.tracing_provider === 'both'}
-                                    onChange={() => handleConfigChange('tracing_provider', 'both')}
-                                />
-                                <span className="ml-2 text-sm text-gray-700">Both</span>
-                            </label>
+                            </button>
+                            <span className="text-sm text-gray-700">
+                                {config.tracing_provider === 'langfuse' ? 'Enabled' : 'Disabled'}
+                            </span>
                         </div>
-                        <p className="mt-1 text-xs text-gray-500">
-                            {stats?.langfuse_enabled ? 'Langfuse connected' : 'Destination for RAG pipeline traces.'}
+                        <p className="mt-2 text-xs text-gray-500">
+                            {stats?.langfuse_enabled ? (
+                                <span className="flex items-center gap-1 text-green-600">
+                                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                    </svg>
+                                    Connected to Langfuse
+                                </span>
+                            ) : (
+                                'Traces queries, feedback, and LLM calls'
+                            )}
                         </p>
                     </div>
                 </div>
@@ -336,6 +316,7 @@ const ObservabilityPanel: React.FC = () => {
                             <thead className="bg-gray-50">
                                 <tr>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Calls</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input Tokens</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output Tokens</th>
@@ -347,6 +328,15 @@ const ObservabilityPanel: React.FC = () => {
                                 {stats.by_model.map((model, idx) => (
                                     <tr key={idx} className="hover:bg-gray-50">
                                         <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.model}</td>
+                                        <td className="px-4 py-3 text-sm">
+                                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                model.type === 'LLM' 
+                                                    ? 'bg-purple-100 text-purple-800' 
+                                                    : 'bg-blue-100 text-blue-800'
+                                            }`}>
+                                                {model.type || 'LLM'}
+                                            </span>
+                                        </td>
                                         <td className="px-4 py-3 text-sm text-gray-500 text-right">{model.calls.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-sm text-gray-500 text-right">{model.input_tokens.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-sm text-gray-500 text-right">{model.output_tokens.toLocaleString()}</td>
