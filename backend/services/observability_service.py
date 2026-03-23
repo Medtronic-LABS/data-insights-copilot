@@ -194,6 +194,8 @@ class LangfuseClient:
                 "total_tokens": 0,
                 "total_cost": 0.0,
                 "avg_latency_ms": 0,
+                "input_price_per_1m": 0.0,
+                "output_price_per_1m": 0.0,
                 "latencies": []
             }
             
@@ -206,6 +208,8 @@ class LangfuseClient:
                 "total_tokens": 0,
                 "total_cost": 0.0,
                 "avg_latency_ms": 0,
+                "input_price_per_1m": 0.0,
+                "output_price_per_1m": 0.0,
                 "latencies": []
             }
             
@@ -254,17 +258,27 @@ class LangfuseClient:
                 obs_model = (obs.get("model") or "").lower()
                 
                 if obs_type == "GENERATION":
+                    # Extract pricing info (convert from per-token to per-1M tokens)
+                    input_price = obs.get("inputPrice", 0) or 0
+                    output_price = obs.get("outputPrice", 0) or 0
+                    
                     if "embed" in obs_model or "bge" in obs_model:
                         embedding_stats["calls"] += 1
                         embedding_stats["input_tokens"] += input_tokens
                         embedding_stats["total_tokens"] += total_tokens
                         embedding_stats["total_cost"] += cost
+                        if input_price > 0:
+                            embedding_stats["input_price_per_1m"] = input_price * 1_000_000
                     else:
                         llm_stats["calls"] += 1
                         llm_stats["input_tokens"] += input_tokens
                         llm_stats["output_tokens"] += output_tokens
                         llm_stats["total_tokens"] += total_tokens
                         llm_stats["total_cost"] += cost
+                        if input_price > 0:
+                            llm_stats["input_price_per_1m"] = input_price * 1_000_000
+                        if output_price > 0:
+                            llm_stats["output_price_per_1m"] = output_price * 1_000_000
                         if latency_ms > 0:
                             llm_stats["latencies"].append(latency_ms)
                             
@@ -498,28 +512,63 @@ class ObservabilityService:
             
         return stats
 
-    async def get_recent_traces(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get recent traces for display in UI."""
+    async def get_recent_traces(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent traces with user query and final output for display in UI."""
         if not self.langfuse_client.enabled:
             return []
             
         try:
-            data = await self.langfuse_client.get_traces(limit=limit)
+            # Fetch parent traces (these contain the user's original query)
+            traces_data = await self.langfuse_client.get_traces(limit=limit)
             traces = []
-            for trace in data.get("data", []):
+            
+            for trace in traces_data.get("data", []):
+                # Extract user query from trace input (can be string directly)
+                user_query = ""
+                raw_input = trace.get("input")
+                if isinstance(raw_input, str):
+                    user_query = raw_input[:200]
+                elif isinstance(raw_input, dict):
+                    user_query = str(raw_input.get("query", raw_input.get("question", raw_input.get("content", ""))))[:200]
+                
+                # Extract final answer from trace output (usually {"answer": "..."})
+                final_answer = ""
+                raw_output = trace.get("output")
+                if isinstance(raw_output, dict):
+                    final_answer = str(raw_output.get("answer", raw_output.get("content", "")))[:200]
+                elif isinstance(raw_output, str):
+                    final_answer = raw_output[:200]
+                
+                # Get metadata (already a dict from API)
+                metadata = trace.get("metadata") or {}
+                
+                # Get latency directly from trace
+                latency = trace.get("latency", 0) or 0
+                
+                # Get cost directly from trace
+                total_cost = trace.get("totalCost", 0) or 0
+                
+                # Skip traces without user query (system traces)
+                if not user_query:
+                    continue
+                
                 traces.append({
                     "id": trace.get("id"),
-                    "name": trace.get("name"),
+                    "trace_id": trace.get("id"),
+                    "name": trace.get("name", "Query"),
+                    "model": "gpt-3.5-turbo",  # Default, actual model is in observations
                     "timestamp": trace.get("timestamp"),
-                    "latency": trace.get("latency"),
-                    "input_tokens": trace.get("usage", {}).get("input", 0),
-                    "output_tokens": trace.get("usage", {}).get("output", 0),
-                    "total_cost": trace.get("totalCost", 0),
-                    "status": trace.get("status"),
-                    "user_id": trace.get("userId"),
-                    "session_id": trace.get("sessionId"),
-                    "metadata": trace.get("metadata")
+                    "latency": latency,
+                    "user_query": user_query,
+                    "final_answer": final_answer,
+                    "input_tokens": 0,  # Not available at trace level
+                    "output_tokens": 0,
+                    "total_cost": total_cost,
+                    "user_id": metadata.get("user_id"),
+                    "session_id": metadata.get("session_id"),
+                    "status": "success" if metadata.get("success", True) else "error",
                 })
+            
             return traces
         except Exception as e:
             logger.error(f"Failed to get recent traces: {e}")

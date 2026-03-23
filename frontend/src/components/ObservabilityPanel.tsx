@@ -3,6 +3,7 @@ import {
     getObservabilityConfig,
     updateObservabilityConfig,
     getUsageStats,
+    getRecentTraces,
     testLogEmission
 } from '../services/api';
 import { useToast } from './Toast';
@@ -22,12 +23,15 @@ interface UsageStats {
     };
     by_model: Array<{
         model: string;
+        type?: string;
         calls: number;
         input_tokens: number;
         output_tokens: number;
         total_tokens: number;
         total_cost: number;
         avg_latency_ms: number;
+        input_price_per_1m?: number;
+        output_price_per_1m?: number;
     }>;
     by_operation: {
         llm: { calls: number; tokens: number; cost: number; avg_latency_ms: number };
@@ -43,6 +47,23 @@ interface UsageStats {
     };
 }
 
+interface RecentTrace {
+    id: string;
+    trace_id: string;
+    name: string;
+    model: string;
+    timestamp: string;
+    latency: number;
+    user_query: string;
+    final_answer: string;
+    input_tokens: number;
+    output_tokens: number;
+    total_cost: number;
+    status: string;
+    user_id?: string;
+    session_id?: string;
+}
+
 const ObservabilityPanel: React.FC = () => {
     const { success, error } = useToast();
     const [loading, setLoading] = useState(true);
@@ -53,6 +74,7 @@ const ObservabilityPanel: React.FC = () => {
         log_destinations: ['console', 'file']
     });
     const [stats, setStats] = useState<UsageStats | null>(null);
+    const [traces, setTraces] = useState<RecentTrace[]>([]);
     const [period, setPeriod] = useState('24h');
     const [refreshing, setRefreshing] = useState(false);
 
@@ -70,12 +92,14 @@ const ObservabilityPanel: React.FC = () => {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [configRes, statsRes] = await Promise.all([
+            const [configRes, statsRes, tracesRes] = await Promise.all([
                 getObservabilityConfig(),
-                getUsageStats(period)
+                getUsageStats(period),
+                getRecentTraces(10)
             ]);
             setConfig(configRes);
             setStats(statsRes);
+            setTraces(tracesRes || []);
         } catch (err: any) {
             error('Failed to load observability data', err.message);
         } finally {
@@ -171,7 +195,7 @@ const ObservabilityPanel: React.FC = () => {
                         <select
                             value={config.log_level}
                             onChange={(e) => handleConfigChange('log_level', e.target.value)}
-                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm rounded-md"
+                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 sm:text-sm rounded-md shadow-sm"
                         >
                             <option value="DEBUG">DEBUG (All details)</option>
                             <option value="INFO">INFO (Standard)</option>
@@ -266,40 +290,35 @@ const ObservabilityPanel: React.FC = () => {
                 </div>
             </div>
 
-            {/* 3. By Operation */}
+            {/* 3. By Operation - Only show LLM Calls since embeddings/retrieval are local */}
             <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
                 <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
                     <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
                     </svg>
-                    Usage by Operation Type
+                    LLM API Usage
                 </h2>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <OperationCard
-                        title="LLM Calls"
-                        calls={byOperation.llm?.calls || 0}
-                        tokens={byOperation.llm?.tokens || 0}
-                        cost={byOperation.llm?.cost || 0}
-                        latency={byOperation.llm?.avg_latency_ms || 0}
-                        color="purple"
-                    />
-                    <OperationCard
-                        title="Embeddings"
-                        calls={byOperation.embedding?.calls || 0}
-                        tokens={byOperation.embedding?.tokens || 0}
-                        cost={byOperation.embedding?.cost || 0}
-                        latency={byOperation.embedding?.avg_latency_ms || 0}
-                        color="blue"
-                    />
-                    <OperationCard
-                        title="Retrieval"
-                        calls={byOperation.retrieval?.calls || 0}
-                        tokens={byOperation.retrieval?.tokens || 0}
-                        cost={byOperation.retrieval?.cost || 0}
-                        latency={byOperation.retrieval?.avg_latency_ms || 0}
-                        color="green"
-                    />
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                        <p className="text-sm font-medium text-gray-500">Calls</p>
+                        <p className="text-2xl font-semibold mt-1 text-purple-700">{(byOperation.llm?.calls || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                        <p className="text-sm font-medium text-gray-500">Tokens</p>
+                        <p className="text-2xl font-semibold mt-1 text-purple-700">{((byOperation.llm?.tokens || 0) / 1000).toFixed(1)}k</p>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                        <p className="text-sm font-medium text-gray-500">Cost</p>
+                        <p className="text-2xl font-semibold mt-1 text-green-600">${(byOperation.llm?.cost || 0).toFixed(4)}</p>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                        <p className="text-sm font-medium text-gray-500">Avg Latency</p>
+                        <p className="text-2xl font-semibold mt-1 text-purple-700">{(byOperation.llm?.avg_latency_ms || 0).toFixed(0)}ms</p>
+                    </div>
                 </div>
+                <p className="mt-3 text-xs text-gray-500">
+                    Local operations (embeddings, vector search) run on-device and have no API cost.
+                </p>
             </div>
 
             {/* 4. By Model */}
@@ -321,6 +340,8 @@ const ObservabilityPanel: React.FC = () => {
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input Tokens</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output Tokens</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cost</th>
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input $/1M</th>
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output $/1M</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Latency</th>
                                 </tr>
                             </thead>
@@ -341,11 +362,149 @@ const ObservabilityPanel: React.FC = () => {
                                         <td className="px-4 py-3 text-sm text-gray-500 text-right">{model.input_tokens.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-sm text-gray-500 text-right">{model.output_tokens.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-sm text-green-600 text-right font-medium">${model.total_cost.toFixed(4)}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-500 text-right">
+                                            {model.input_price_per_1m ? `$${model.input_price_per_1m.toFixed(2)}` : '-'}
+                                        </td>
+                                        <td className="px-4 py-3 text-sm text-gray-500 text-right">
+                                            {model.output_price_per_1m ? `$${model.output_price_per_1m.toFixed(2)}` : '-'}
+                                        </td>
                                         <td className="px-4 py-3 text-sm text-gray-500 text-right">{model.avg_latency_ms.toFixed(0)}ms</td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            )}
+
+            {/* 5. Recent Traces */}
+            {traces.length > 0 && (
+                <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                        <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 012 2h2a2 2 0 012-2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                        </svg>
+                        Recent Queries
+                    </h2>
+                    <div className="space-y-2">
+                        {traces.map((trace, idx) => (
+                            <TraceCard key={trace.id || idx} trace={trace} />
+                        ))}
+                    </div>
+                    {stats?.langfuse_enabled && (
+                        <p className="mt-4 text-xs text-gray-500 text-center">
+                            <a 
+                                href={stats.langfuse_host} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-purple-600 hover:text-purple-800 underline"
+                            >
+                                View all traces in Langfuse →
+                            </a>
+                        </p>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// Expandable Trace Card Component
+const TraceCard = ({ trace }: { trace: RecentTrace }) => {
+    const [expanded, setExpanded] = useState(false);
+    
+    return (
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+            {/* Collapsed Header - Always visible */}
+            <button
+                onClick={() => setExpanded(!expanded)}
+                className="w-full px-4 py-3 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+            >
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <span className="text-xs font-mono bg-purple-100 text-purple-700 px-2 py-0.5 rounded flex-shrink-0">
+                        {trace.model || 'gpt-3.5-turbo'}
+                    </span>
+                    <span className="text-sm text-gray-700 truncate flex-1" title={trace.user_query}>
+                        {trace.user_query || '(no query)'}
+                    </span>
+                </div>
+                <div className="flex items-center gap-4 flex-shrink-0 ml-4">
+                    <span className="text-xs text-gray-400">
+                        {trace.timestamp ? new Date(trace.timestamp).toLocaleString() : '-'}
+                    </span>
+                    <span className="text-xs text-green-600 font-medium">
+                        ${(trace.total_cost || 0).toFixed(4)}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                        {(trace.latency || 0).toFixed(2)}s
+                    </span>
+                    <svg 
+                        className={`w-4 h-4 text-gray-400 transition-transform ${expanded ? 'rotate-180' : ''}`} 
+                        fill="none" 
+                        stroke="currentColor" 
+                        viewBox="0 0 24 24"
+                    >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+            </button>
+            
+            {/* Expanded Details */}
+            {expanded && (
+                <div className="px-4 py-4 border-t border-gray-200 bg-white space-y-4">
+                    {/* User Query */}
+                    <div>
+                        <div className="flex items-center gap-2 mb-2">
+                            <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                            </svg>
+                            <span className="text-xs font-medium text-gray-500 uppercase">User Query</span>
+                        </div>
+                        <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 max-h-32 overflow-y-auto">
+                            <p className="text-sm text-gray-800 whitespace-pre-wrap">{trace.user_query || '(empty)'}</p>
+                        </div>
+                    </div>
+                    
+                    {/* AI Response */}
+                    <div>
+                        <div className="flex items-center gap-2 mb-2">
+                            <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span className="text-xs font-medium text-gray-500 uppercase">AI Response</span>
+                        </div>
+                        <div className="bg-green-50 border border-green-100 rounded-lg p-3 max-h-48 overflow-y-auto">
+                            <p className="text-sm text-gray-800 whitespace-pre-wrap">{trace.final_answer || '(empty)'}</p>
+                        </div>
+                    </div>
+                    
+                    {/* Metadata Row */}
+                    <div className="flex flex-wrap gap-4 pt-2 border-t border-gray-100 text-xs text-gray-500">
+                        {trace.user_id && (
+                            <div className="flex items-center gap-1">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                </svg>
+                                <span>{trace.user_id}</span>
+                            </div>
+                        )}
+                        <div className="flex items-center gap-1">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>Latency: {(trace.latency || 0).toFixed(2)}s</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>Cost: ${(trace.total_cost || 0).toFixed(4)}</span>
+                        </div>
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
+                            trace.status === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                        }`}>
+                            {trace.status || 'success'}
+                        </span>
                     </div>
                 </div>
             )}
