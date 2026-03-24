@@ -94,10 +94,10 @@ class CachedSQLDatabase(SQLDatabase):
     to inject Redis query result caching. This ensures both optimized
     and Agent executions benefit from the same cache.
     """
-    def run(self, command: str, fetch: str = "all", include_columns: bool = False) -> str:
+    def run(self, command: str, fetch: str = "all", include_columns: bool = False, **kwargs) -> str:
         # 1. Skip caching for non-SELECT commands (though Langchain agent should only SELECT)
         if not command.strip().lower().startswith('select') or not _redis_client:
-            return super().run(command, fetch, include_columns)
+            return super().run(command, fetch, include_columns, **kwargs)
         
         # 2. Key Structure 
         # Adding fetch & include_columns to hash just in case, though they are usually default
@@ -114,7 +114,7 @@ class CachedSQLDatabase(SQLDatabase):
         # 3. Cache MISS, execute DB
         logger.info(" Cache MISS in CachedSQLDatabase, executing DB run")
         run_start = time.time()
-        result = super().run(command, fetch, include_columns)
+        result = super().run(command, fetch, include_columns, **kwargs)
         logger.info(f"  DB Execution Time: {(time.time() - run_start)*1000:.0f}ms")
         
         # 4. Save to Cache
@@ -340,10 +340,11 @@ class SQLService:
 
             # Initialize database connection with explicit include_tables
             # This avoids full metadata reflection that requires pg_collation access
+            # Note: engine_args is NOT passed here since we already have a configured engine
+            # from get_cached_engine() with pool settings applied
             db_kwargs = {
                 'view_support': True,
                 'include_tables': include_tables,
-                'engine_args': {'pool_size': 20, 'max_overflow': 50, 'pool_timeout': 60}
             }
             
             # If we detected a non-public schema, we need to set it

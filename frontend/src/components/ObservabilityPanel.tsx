@@ -519,37 +519,4 @@ const StatCard = ({ label, value, subtext, color = "text-gray-900" }: { label: s
         <p className="text-xs text-gray-400 mt-1">{subtext}</p>
     </div>
 );
-
-const OperationCard = ({ title, calls, tokens, cost, latency, color }: { title: string; calls: number; tokens: number; cost: number; latency: number; color: string }) => {
-    const colorClasses: Record<string, string> = {
-        purple: 'border-purple-200 bg-purple-50',
-        blue: 'border-blue-200 bg-blue-50',
-        green: 'border-green-200 bg-green-50',
-    };
-    
-    return (
-        <div className={`p-4 rounded-lg border ${colorClasses[color] || 'border-gray-200 bg-gray-50'}`}>
-            <h3 className="font-medium text-gray-900 mb-3">{title}</h3>
-            <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                    <span className="text-gray-500">Calls</span>
-                    <span className="font-medium">{calls.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between">
-                    <span className="text-gray-500">Tokens</span>
-                    <span className="font-medium">{(tokens / 1000).toFixed(1)}k</span>
-                </div>
-                <div className="flex justify-between">
-                    <span className="text-gray-500">Cost</span>
-                    <span className="font-medium text-green-600">${cost.toFixed(4)}</span>
-                </div>
-                <div className="flex justify-between">
-                    <span className="text-gray-500">Avg Latency</span>
-                    <span className="font-medium">{latency.toFixed(0)}ms</span>
-                </div>
-            </div>
-        </div>
-    );
-};
-
 export default ObservabilityPanel;
