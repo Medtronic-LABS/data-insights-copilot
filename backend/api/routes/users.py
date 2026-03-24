@@ -124,8 +124,8 @@ async def get_user(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    columns = [desc[0] for desc in cursor.description]
-    return dict(zip(columns, row))
+    # RealDictCursor already returns dict-like objects
+    return dict(row)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -153,8 +153,8 @@ async def update_user(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    columns = [desc[0] for desc in cursor.description]
-    existing_user = dict(zip(columns, row))
+    # RealDictCursor already returns dict-like objects
+    existing_user = dict(row)
     
     # Prevent editing other super_admins
     if existing_user['role'] == Role.SUPER_ADMIN.value:
@@ -251,7 +251,9 @@ async def deactivate_user(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    username, role = row
+    # RealDictCursor returns dict-like objects, access by key
+    username = row['username']
+    role = row['role']
     
     # Prevent self-deactivation
     if current_user.username == username:
@@ -303,7 +305,9 @@ async def activate_user(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    username, is_active = row
+    # RealDictCursor returns dict-like objects, access by key
+    username = row['username']
+    is_active = row['is_active']
     
     if is_active:
         return {"status": "success", "message": f"User '{username}' is already active"}
@@ -351,7 +355,10 @@ async def get_user_agents(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    target_user_id, username, role = row
+    # RealDictCursor returns dict-like objects, access by key
+    target_user_id = row['id']
+    username = row['username']
+    role = row['role']
     
     # Super admin has access to all agents
     if role == Role.SUPER_ADMIN.value:

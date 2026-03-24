@@ -615,7 +615,11 @@ async def rollback_to_version(
         if not row:
             raise HTTPException(status_code=404, detail="Version not found")
         
-        prompt_id, version_num, prompt_text, agent_id = row
+        # RealDictCursor returns dict-like objects, access by key
+        prompt_id = row['id']
+        version_num = row['version']
+        prompt_text = row['prompt_text']
+        agent_id = row['agent_id']
         
         # Deactivate all existing prompts for THIS AGENT (or global if agent_id is None)
         if agent_id:

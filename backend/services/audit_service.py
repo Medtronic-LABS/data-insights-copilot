@@ -196,12 +196,12 @@ class AuditService:
         params.extend([limit, offset])
         
         cursor.execute(query, params)
-        columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         
         result = []
         for row in rows:
-            entry = dict(zip(columns, row))
+            # RealDictCursor already returns dict-like objects
+            entry = dict(row)
             if entry.get('details'):
                 try:
                     entry['details'] = json.loads(entry['details'])
@@ -221,7 +221,7 @@ class AuditService:
         conn = self.db.get_connection()
         cursor = conn.cursor()
         
-        query = "SELECT COUNT(*) FROM audit_logs WHERE 1=1"
+        query = "SELECT COUNT(*) as count FROM audit_logs WHERE 1=1"
         params = []
         
         if actor_username:
@@ -237,7 +237,8 @@ class AuditService:
             params.append(resource_type)
         
         cursor.execute(query, params)
-        return cursor.fetchone()[0]
+        result = cursor.fetchone()
+        return result['count'] if result else 0
 
 
 # Singleton instance

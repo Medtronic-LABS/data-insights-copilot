@@ -283,13 +283,13 @@ class AuthorizationService:
         params.extend([limit, offset])
         
         cursor.execute(query, params)
-        columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         conn.close()
         
         result = []
         for row in rows:
-            entry = dict(zip(columns, row))
+            # RealDictCursor already returns dict-like objects
+            entry = dict(row)
             if entry.get('changes'):
                 try:
                     entry['changes'] = json.loads(entry['changes'])

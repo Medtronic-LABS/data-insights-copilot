@@ -846,10 +846,11 @@ class ModelRegistryService:
 
             # Get next version number
             cursor.execute(
-                "SELECT COALESCE(MAX(version), 0) FROM model_config_versions WHERE config_type = %s",
+                "SELECT COALESCE(MAX(version), 0) as max_version FROM model_config_versions WHERE config_type = %s",
                 (config_type,),
             )
-            next_version = cursor.fetchone()[0] + 1
+            result = cursor.fetchone()
+            next_version = result['max_version'] + 1
 
             # Build snapshot
             if config_type == "embedding":
