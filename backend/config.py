@@ -170,8 +170,36 @@ class Settings(BaseSettings):
     log_file: str = Field(default="./logs/backend.log")
     embedding_log_file: str = Field(default="./logs/embedding.log")
     models_path: str = Field(default="./models", description="Path to local ML models")
-    data_path: str = Field(default="./data", description="Path to data directory")
     rag_config_path: str = Field(default="./config/embedding_config.yaml", description="Path to RAG config YAML (fallback defaults)")
+    
+    # ============================================
+    # Data Storage Paths (centralized)
+    # All data files should be stored under the project root's /data directory
+    # ============================================
+    data_base_path: str = Field(
+        default="../data",  # Relative to backend/, points to project_root/data/
+        description="Base path for all data storage (relative to backend/)"
+    )
+    
+    @property
+    def data_path(self) -> Path:
+        """Get absolute path to data directory."""
+        return (Path(__file__).parent / self.data_base_path).resolve()
+    
+    @property
+    def duckdb_path(self) -> Path:
+        """Get absolute path to DuckDB files directory."""
+        return self.data_path / "duckdb_files"
+    
+    @property
+    def indexes_path(self) -> Path:
+        """Get absolute path to vector indexes directory."""
+        return self.data_path / "indexes"
+    
+    @property
+    def feedback_log_path(self) -> Path:
+        """Get absolute path to feedback log file."""
+        return self.data_path / "feedback_log.csv"
     
     # ============================================
     # Celery Configuration (message queue infrastructure)

@@ -11,6 +11,7 @@ import json
 import hashlib
 
 from backend.core.logging import get_logger
+from backend.config import get_settings
 from backend.database.queries import (
     UserQueries,
     AgentQueries,
@@ -30,7 +31,7 @@ from backend.database.base_repository import BaseRepository
 
 logger = get_logger(__name__)
 
-# Database directory for data storage
+# Database directory for data storage (legacy - use get_settings().indexes_path instead)
 DB_DIR = Path(__file__).parent.parent / "data"
 
 
@@ -640,13 +641,15 @@ class DatabaseService(BaseRepository):
         """Delete an agent and all related records (cascade deletion).
         
         Deletion order (child tables first):
-        1. Get all vector_db_names from prompt_configs (embedded in embedding_config JSON)
+        1. Get all vector_db_names and file info from prompt_configs
         2. Delete prompt_configs (via system_prompts)
         3. Delete system_prompts
         4. Delete user_agents
         5. Delete vector_db related records for each vector_db_name
-        6. Nullify audit_logs resource_id
-        7. Delete agents
+        6. Delete vector store data (Qdrant collections + local index files)
+        7. Delete DuckDB data for file-based sources
+        8. Nullify audit_logs resource_id
+        9. Delete agents
         
         Args:
             agent_id: The ID of the agent to delete
@@ -655,16 +658,27 @@ class DatabaseService(BaseRepository):
             True if agent was deleted, False if not found
         """
         with self.transaction() as (conn, cursor):
-            # Check if agent exists
-            cursor.execute(AgentQueries.CHECK_EXISTS, (agent_id,))
-            if not cursor.fetchone():
+            # Check if agent exists and get its name
+            cursor.execute("SELECT id, name FROM agents WHERE id = %s", (agent_id,))
+            agent_row = cursor.fetchone()
+            if not agent_row:
                 return False
             
-            # Get all vector_db_names associated with this agent from prompt_configs
-            cursor.execute(PromptConfigQueries.GET_EMBEDDING_CONFIGS_BY_AGENT, (agent_id,))
+            agent_name = agent_row.get('name', '')
+            
+            # Get all configs associated with this agent
+            cursor.execute("""
+                SELECT pc.embedding_config, pc.ingestion_file_name, pc.data_source_type, sp.created_by
+                FROM prompt_configs pc
+                JOIN system_prompts sp ON pc.prompt_id = sp.id
+                WHERE sp.agent_id = %s
+            """, (agent_id,))
             
             vector_db_names = set()
+            file_table_names = set()
+            
             for row in cursor.fetchall():
+                # Collect vector DB names
                 if row['embedding_config']:
                     try:
                         config = json.loads(row['embedding_config']) if isinstance(row['embedding_config'], str) else row['embedding_config']
@@ -672,6 +686,12 @@ class DatabaseService(BaseRepository):
                             vector_db_names.add(config['vectorDbName'])
                     except (json.JSONDecodeError, TypeError):
                         pass
+                
+                # Collect file-based data source info
+                if row['data_source_type'] == 'file' and row['ingestion_file_name']:
+                    from backend.api.routes.ingestion import _sanitize_table_name
+                    table_name = _sanitize_table_name(row['ingestion_file_name'])
+                    file_table_names.add((table_name, row['ingestion_file_name']))
             
             # 1. Delete prompt_configs for prompts belonging to this agent
             cursor.execute(PromptConfigQueries.DELETE_BY_PROMPT_AGENT, (agent_id,))
@@ -682,30 +702,68 @@ class DatabaseService(BaseRepository):
             # 3. Delete user_agents
             cursor.execute(UserAgentQueries.DELETE_BY_AGENT, (agent_id,))
             
-            # 4. Delete vector_db related records and ChromaDB folders for each vector_db_name
-            chroma_base_path = DB_DIR.parent / "data" / "indexes"
+            # 4. Delete vector_db related records and storage for each vector_db_name
+            settings = get_settings()
+            indexes_path = settings.indexes_path
+            duckdb_path = settings.duckdb_path
+            
             for vdb_name in vector_db_names:
+                # Delete from database tables
                 cursor.execute(VectorDBQueries.DELETE_SCHEDULES_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_DOCUMENT_INDEX_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_SCHEMA_DRIFT_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_BY_NAME, (vdb_name,))
                 
-                # Delete ChromaDB folder on disk
-                chroma_path = chroma_base_path / vdb_name
-                if chroma_path.exists() and chroma_path.is_dir():
+                # Delete from Qdrant if configured
+                try:
+                    import requests
+                    qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+                    response = requests.delete(f"{qdrant_url}/collections/{vdb_name}", timeout=10)
+                    if response.status_code in [200, 404]:
+                        logger.info(f"Deleted Qdrant collection: {vdb_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete Qdrant collection {vdb_name}: {e}")
+                
+                # Delete local index folder (ChromaDB files, docstore, checkpoints)
+                local_path = indexes_path / vdb_name
+                if local_path.exists() and local_path.is_dir():
                     try:
-                        shutil.rmtree(chroma_path)
-                        logger.info(f"Deleted ChromaDB folder: {chroma_path}")
+                        shutil.rmtree(local_path)
+                        logger.info(f"Deleted local index folder: {local_path}")
                     except Exception as e:
-                        logger.warning(f"Failed to delete ChromaDB folder {chroma_path}: {e}")
+                        logger.warning(f"Failed to delete local index folder {local_path}: {e}")
             
-            # 5. Nullify audit_logs resource_id for this agent
+            # 5. Delete agent's data folders (pattern: agent_{id}_* for both indexes and duckdb)
+            # This handles the agent_{id}_{name} naming convention
+            agent_folder_prefix = f"agent_{agent_id}_"
+            
+            # Clean up indexes folder
+            if indexes_path.exists():
+                for folder in indexes_path.iterdir():
+                    if folder.is_dir() and (folder.name == f"agent_{agent_id}" or folder.name.startswith(agent_folder_prefix)):
+                        try:
+                            shutil.rmtree(folder)
+                            logger.info(f"Deleted agent index folder: {folder}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete agent index folder {folder}: {e}")
+            
+            # Clean up duckdb folder
+            if duckdb_path.exists():
+                for folder in duckdb_path.iterdir():
+                    if folder.is_dir() and (folder.name == f"agent_{agent_id}" or folder.name.startswith(agent_folder_prefix)):
+                        try:
+                            shutil.rmtree(folder)
+                            logger.info(f"Deleted agent DuckDB folder: {folder}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete agent DuckDB folder {folder}: {e}")
+            
+            # 6. Nullify audit_logs resource_id for this agent
             cursor.execute(AuditLogQueries.NULLIFY_AGENT_RESOURCE, (str(agent_id),))
             
-            # 6. Delete the agent itself
+            # 7. Delete the agent itself
             cursor.execute(AgentQueries.DELETE, (agent_id,))
             
-            logger.info(f"Successfully deleted agent {agent_id} and all related records (vector_dbs: {vector_db_names})")
+            logger.info(f"Successfully deleted agent {agent_id} ({agent_name}) and all related records (vector_dbs: {vector_db_names}, file_tables: {file_table_names})")
             return True
 
 # Global database instance (Singleton pattern)

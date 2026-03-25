@@ -11,12 +11,18 @@ from backend.services.schedule_manager import (
 from backend.services.chroma_service import (
     get_vector_store_type, VectorStoreManager
 )
+from backend.config import get_settings
 import os
+import shutil
 import sqlite3 as sqlite3_stdlib
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/vector-db", tags=["Vector Database"])
+
+# Get centralized data paths from config
+_settings = get_settings()
+_indexes_path = _settings.indexes_path
 
 
 # ============================================
@@ -28,14 +34,13 @@ def get_parent_docstore_count(vector_db_name: str) -> int:
     Get document count from the parent_docstore.db SQLite file.
     This is the actual document count used for RAG retrieval.
     """
-    indexes_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
-    docstore_path = os.path.join(indexes_base_path, vector_db_name, "parent_docstore.db")
+    docstore_path = _indexes_path / vector_db_name / "parent_docstore.db"
     
-    if not os.path.exists(docstore_path):
+    if not docstore_path.exists():
         return 0
     
     try:
-        conn = sqlite3_stdlib.connect(docstore_path)
+        conn = sqlite3_stdlib.connect(str(docstore_path))
         cursor = conn.execute("SELECT COUNT(*) FROM documents")
         count = cursor.fetchone()[0]
         conn.close()
@@ -516,8 +521,9 @@ async def list_all_vector_databases(
         # Get configured vector store type
         vector_store_type = get_vector_store_type()
         
-        # Base path for ChromaDB indexes (fallback)
-        indexes_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
+        # Use centralized indexes path
+        indexes_base_path = str(_indexes_path)
+        # Legacy path for backward compatibility
         vector_stores_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../vector_stores"))
         
         vector_dbs = []
@@ -529,21 +535,20 @@ async def list_all_vector_databases(
             # Get vector count using unified service
             vector_count, vector_store_exists = get_vector_count_for_collection(name)
             
-            # Calculate disk size (for ChromaDB or local storage)
-            chroma_path = os.path.join(indexes_base_path, name)
-            alt_chroma_path = os.path.join(vector_stores_path, name)
+            # Calculate disk size using centralized path
+            local_path = _indexes_path / name
+            alt_path = os.path.join(vector_stores_path, name)
             
             disk_size_bytes = 0
             local_storage_exists = False
             
-            # Check primary path
-            if os.path.exists(chroma_path):
-                disk_size_bytes = get_directory_size(chroma_path)
+            # Check primary path (centralized)
+            if local_path.exists():
+                disk_size_bytes = get_directory_size(str(local_path))
                 local_storage_exists = True
-            # Check alternate path
-            elif os.path.exists(alt_chroma_path):
-                disk_size_bytes = get_directory_size(alt_chroma_path)
-                chroma_path = alt_chroma_path
+            # Check legacy path
+            elif os.path.exists(alt_path):
+                disk_size_bytes = get_directory_size(alt_path)
                 local_storage_exists = True
             
             total_disk_size += disk_size_bytes
@@ -652,8 +657,6 @@ async def delete_vector_database(
     Supports both Qdrant and ChromaDB cleanup.
     Requires Super Admin role.
     """
-    import shutil
-    
     try:
         conn = db_service.get_connection()
         cursor = conn.cursor()
@@ -702,19 +705,25 @@ async def delete_vector_database(
                 except Exception as e:
                     logger.warning(f"Failed to delete Qdrant collection {vector_db_name}: {e}")
             
-            # Delete local ChromaDB folders (for both providers - cleanup)
-            indexes_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
-            vector_stores_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../vector_stores"))
+            # Delete local storage folder using centralized path
+            local_path = _indexes_path / vector_db_name
+            if local_path.exists():
+                try:
+                    shutil.rmtree(local_path)
+                    files_deleted = True
+                    logger.info(f"Deleted local storage folder: {local_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete local folder {local_path}: {e}")
             
-            for base_path in [indexes_base_path, vector_stores_path]:
-                local_path = os.path.join(base_path, vector_db_name)
-                if os.path.exists(local_path):
-                    try:
-                        shutil.rmtree(local_path)
-                        files_deleted = True
-                        logger.info(f"Deleted local storage folder: {local_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete local folder {local_path}: {e}")
+            # Also check legacy path (backend/vector_stores) for cleanup
+            legacy_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../vector_stores", vector_db_name))
+            if os.path.exists(legacy_path):
+                try:
+                    shutil.rmtree(legacy_path)
+                    files_deleted = True
+                    logger.info(f"Deleted legacy storage folder: {legacy_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete legacy folder {legacy_path}: {e}")
         
         # Clear vector store cache
         VectorStoreManager.clear_cache(vector_db_name)
