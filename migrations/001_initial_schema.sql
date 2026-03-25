@@ -515,10 +515,10 @@ CREATE TABLE IF NOT EXISTS embedding_llm_compatibility (
 -- ============================================
 -- Vector DB Schedules
 -- ============================================
-CREATE TABLE IF NOT EXISTS vector_db_schedules (
+  CREATE TABLE IF NOT EXISTS vector_db_schedules (
     id SERIAL PRIMARY KEY,
     vector_db_name TEXT NOT NULL UNIQUE,
-    enabled INTEGER DEFAULT 0,
+    enabled BOOLEAN DEFAULT FALSE,
     schedule_type TEXT DEFAULT 'daily',
     schedule_hour INTEGER DEFAULT 2,
     schedule_minute INTEGER DEFAULT 0,
@@ -528,8 +528,8 @@ CREATE TABLE IF NOT EXISTS vector_db_schedules (
     next_run_at TIMESTAMP,
     last_run_status TEXT,
     last_run_job_id TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
     created_by TEXT
 );
 

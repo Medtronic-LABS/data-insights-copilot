@@ -189,7 +189,7 @@ def dispatch_vector_db_syncs(self):
     """
     logger.info("Celery Beat Tick: Dispatching Vector DB Syncs...")
     from backend.services.schedule_manager import get_schedule_manager
-    from backend.sqliteDb.db import get_db_service
+    from backend.database.db import get_db_service
     
     manager = get_schedule_manager()
     db = get_db_service()
@@ -201,7 +201,7 @@ def dispatch_vector_db_syncs(self):
         cursor.execute('''
             SELECT vector_db_name, schedule_cron
             FROM vector_db_schedules
-            WHERE enabled = 1 AND next_run_at <= ?
+            WHERE enabled = 1 AND next_run_at <= %s
         ''', (now_iso,))
         
         due_jobs = cursor.fetchall()
