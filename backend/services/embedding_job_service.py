@@ -511,7 +511,7 @@ class EmbeddingJobService:
     
     def list_jobs(
         self,
-        user_id: Optional[int] = None,
+        user_id: Optional[str] = None,
         config_id: Optional[int] = None,
         status: Optional[EmbeddingJobStatus] = None,
         limit: int = 10,

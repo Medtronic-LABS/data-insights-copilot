@@ -27,7 +27,7 @@ from backend.database.db import get_db_service
 logger = get_logger(__name__)
 
 
-def _get_database_uri(agent_id: Optional[int] = None, connection_id: Optional[int] = None) -> Optional[str]:
+def _get_database_uri(agent_id: Optional[str] = None, connection_id: Optional[int] = None) -> Optional[str]:  # agent_id is UUID
     """
     Get database URI from the active published RAG configuration.
     

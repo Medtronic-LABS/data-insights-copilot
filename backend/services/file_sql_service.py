@@ -45,11 +45,11 @@ class FileQueryCache:
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
     
-    def _hash_key(self, user_id: int, question: str) -> str:
+    def _hash_key(self, user_id: str, question: str) -> str:
         normalized = f"{user_id}:{question.lower().strip()}"
         return hashlib.md5(normalized.encode()).hexdigest()
     
-    def get(self, user_id: int, question: str) -> Optional[Dict]:
+    def get(self, user_id: str, question: str) -> Optional[Dict]:
         key = self._hash_key(user_id, question)
         if key in self.cache:
             result, timestamp = self.cache[key]
@@ -60,7 +60,7 @@ class FileQueryCache:
             del self.cache[key]
         return None
     
-    def set(self, user_id: int, question: str, result: Dict) -> None:
+    def set(self, user_id: str, question: str, result: Dict) -> None:
         key = self._hash_key(user_id, question)
         self.cache[key] = (result, time.time())
         while len(self.cache) > self.max_size:
@@ -81,7 +81,7 @@ class FileSQLService:
     DuckDB queries CSV files directly from disk without loading into RAM.
     """
     
-    def __init__(self, user_id: int, callbacks: list = None, trace_id: str = None, 
+    def __init__(self, user_id: str, callbacks: list = None, trace_id: str = None, 
                  allowed_tables: List[str] = None):
         """
         Initialize File SQL service for a specific user.
@@ -651,6 +651,6 @@ Response:"""
             }
 
 
-def get_file_sql_service(user_id: int) -> FileSQLService:
+def get_file_sql_service(user_id: str) -> FileSQLService:
     """Get FileSQLService instance for a user."""
     return FileSQLService(user_id)

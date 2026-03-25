@@ -94,7 +94,7 @@ class AuditService:
     def log(
         self,
         action: AuditAction,
-        actor_id: Optional[int] = None,
+        actor_id: Optional[str] = None,  # UUID as string
         actor_username: Optional[str] = None,
         actor_role: Optional[str] = None,
         resource_type: Optional[str] = None,

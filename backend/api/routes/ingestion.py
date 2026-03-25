@@ -57,19 +57,19 @@ def _sanitize_column_name(col: str, index: int = 0) -> str:
     return normalize_column_name(col, index)
 
 
-def _get_user_data_dir(user_id: int) -> Path:
+def _get_user_data_dir(user_id: str) -> Path:  # UUID as string
     """Get the directory for a user's data files."""
     user_dir = DATA_STORAGE_DIR / f"user_{user_id}"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
 
-def _get_user_duckdb_path(user_id: int) -> Path:
+def _get_user_duckdb_path(user_id: str) -> Path:  # UUID as string
     """Get the path to a user's DuckDB file."""
     return _get_user_data_dir(user_id) / "database.duckdb"
 
 
-def _get_user_csv_path(user_id: int, table_name: str) -> Path:
+def _get_user_csv_path(user_id: str, table_name: str) -> Path:  # UUID as string
     """Get the path where a user's CSV file will be stored."""
     return _get_user_data_dir(user_id) / f"{table_name}.csv"
 
@@ -139,7 +139,7 @@ def _stream_excel_to_csv(
 
 
 def _register_csv_in_duckdb(
-    user_id: int,
+    user_id: str,  # UUID as string
     table_name: str,
     csv_path: str,
     original_filename: str,
@@ -192,7 +192,7 @@ def _register_csv_in_duckdb(
 
 
 def _process_large_file_background(
-    user_id: int,
+    user_id: str,  # UUID as string
     table_name: str,
     source_path: str,
     file_type: str,
@@ -1320,7 +1320,7 @@ async def embed_text_columns_for_rag(
 
 
 def _store_rag_config(
-    user_id: int,
+    user_id: str,  # UUID as string
     table_name: str,
     text_columns: List[str],
     id_column: str,

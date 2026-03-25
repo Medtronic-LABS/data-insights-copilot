@@ -25,7 +25,7 @@ class VectorStoreFactory:
             return QdrantStore(collection_name=collection_name)
     
     @staticmethod
-    def get_provider_for_agent(agent_id: int, provider_type: str = "qdrant") -> BaseVectorStore:
+    def get_provider_for_agent(agent_id: str, provider_type: str = "qdrant") -> BaseVectorStore:  # agent_id is UUID
         """
         Get a vector store configured for a specific agent.
         
@@ -48,7 +48,7 @@ class VectorStoreFactory:
         return VectorStoreFactory.get_provider(provider_type, collection_name)
     
     @staticmethod
-    def get_collection_name_for_agent(agent_id: int) -> str:
+    def get_collection_name_for_agent(agent_id: str) -> str:  # agent_id is UUID
         """
         Get the collection name for a specific agent.
         

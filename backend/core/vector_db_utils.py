@@ -21,7 +21,7 @@ def validate_vector_db_name(name: str) -> tuple[bool, str]:
     return True, "Name is valid"
 
 def derive_vector_db_name(
-    agent_id: Optional[int] = None, 
+    agent_id: Optional[str] = None,  # UUID as string 
     connection_id: Optional[int] = None, 
     source_name: Optional[str] = None
 ) -> str:

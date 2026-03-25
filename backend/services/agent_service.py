@@ -46,7 +46,7 @@ Please contact the administrator to configure the active system prompt in the da
 class AgentService:
     """Main RAG agent service for processing user queries."""
     
-    def __init__(self, agent_config: Optional[Dict[str, Any]] = None, user_id: Optional[int] = None, langfuse_trace: Optional[Any] = None):
+    def __init__(self, agent_config: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None, langfuse_trace: Optional[Any] = None):
         """Initialize the agent with tools and LLM."""
         logger.info(f"Initializing AgentService (Config: {agent_config.get('name') if agent_config else 'Default'})")
         
@@ -999,7 +999,7 @@ _agent_service: Optional[AgentService] = None
 _agent_cache: Dict[int, AgentService] = {}
 
 
-def clear_agent_cache(agent_id: Optional[int] = None):
+def clear_agent_cache(agent_id: Optional[str] = None):  # UUID as string
     """
     Clear cached agent instances to force re-initialization.
     
@@ -1023,7 +1023,7 @@ def clear_agent_cache(agent_id: Optional[int] = None):
         logger.info("Cleared all agent caches")
 
 
-def get_agent_service(agent_id: Optional[int] = None, user_id: Optional[int] = None, langfuse_trace: Optional[Any] = None, is_super_admin: bool = False) -> AgentService:
+def get_agent_service(agent_id: Optional[str] = None, user_id: Optional[str] = None, langfuse_trace: Optional[Any] = None, is_super_admin: bool = False) -> AgentService:  # Both UUIDs as strings
     """Get agent service instance with proper data isolation.
     
     SECURITY: Each agent is completely isolated:

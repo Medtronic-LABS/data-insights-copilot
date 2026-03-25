@@ -326,7 +326,7 @@ async def get_drift_history(
 # Helper Functions
 # ============================================
 
-def _create_drift_notification(user_id: int, vector_db_name: str, count: int, severity: str):
+def _create_drift_notification(user_id: str, vector_db_name: str, count: int, severity: str):  # user_id is UUID
     """Create a notification for detected schema drift."""
     try:
         from backend.database.db import get_db_service

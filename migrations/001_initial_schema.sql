@@ -9,7 +9,7 @@
 -- Core User Management
 -- ============================================
 CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username TEXT UNIQUE NOT NULL,
     email TEXT UNIQUE,
     password_hash TEXT NOT NULL,
@@ -36,51 +36,20 @@ CREATE TABLE IF NOT EXISTS db_connections (
 );
 
 -- ============================================
--- RAG Configurations (Versioning)
--- ============================================
-CREATE TABLE IF NOT EXISTS rag_configurations (
-    id SERIAL PRIMARY KEY,
-    version TEXT NOT NULL UNIQUE,
-    version_number INTEGER NOT NULL,
-    schema_snapshot TEXT NOT NULL,
-    data_dictionary TEXT,
-    prompt_template TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    created_by INTEGER NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    published_at TIMESTAMP,
-    published_by INTEGER,
-    parent_version_id INTEGER,
-    change_summary TEXT,
-    config_hash TEXT NOT NULL,
-    connection_id INTEGER REFERENCES db_connections(id),
-    is_active INTEGER DEFAULT 0,
-    FOREIGN KEY (created_by) REFERENCES users(id),
-    FOREIGN KEY (published_by) REFERENCES users(id),
-    FOREIGN KEY (parent_version_id) REFERENCES rag_configurations(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_rag_config_status ON rag_configurations(status);
-CREATE INDEX IF NOT EXISTS idx_rag_config_version ON rag_configurations(version_number DESC);
-CREATE INDEX IF NOT EXISTS idx_rag_config_created ON rag_configurations(created_at DESC);
-
--- ============================================
 -- Agents
 -- ============================================
 CREATE TABLE IF NOT EXISTS agents (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     type TEXT DEFAULT 'sql',
     db_connection_uri TEXT,
-    rag_config_id INTEGER,
     system_prompt TEXT,
     embedding_model TEXT DEFAULT 'bge-m3',
     embedding_dimension INTEGER DEFAULT 1024,
     embedding_provider TEXT DEFAULT 'sentence-transformers',
-    created_by INTEGER,
+    created_by UUID,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(rag_config_id) REFERENCES rag_configurations(id),
     FOREIGN KEY(created_by) REFERENCES users(id)
 );
 
@@ -88,11 +57,11 @@ CREATE TABLE IF NOT EXISTS agents (
 -- User-Agent RBAC
 -- ============================================
 CREATE TABLE IF NOT EXISTS user_agents (
-    user_id INTEGER,
-    agent_id INTEGER,
+    user_id UUID,
+    agent_id UUID,
     role TEXT DEFAULT 'user',
     granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    granted_by INTEGER,
+    granted_by UUID,
     PRIMARY KEY (user_id, agent_id),
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(agent_id) REFERENCES agents(id),
@@ -109,7 +78,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
     is_active INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by TEXT,
-    agent_id INTEGER REFERENCES agents(id)
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE
 );
 
 -- ============================================
@@ -147,9 +116,10 @@ CREATE TABLE IF NOT EXISTS vector_db_registry (
     version TEXT DEFAULT '1.0.0',
     schema_snapshot TEXT,
     schema_snapshot_at TIMESTAMP,
-    agent_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by TEXT
+    created_by UUID,
+    FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
 -- ============================================
@@ -172,7 +142,7 @@ CREATE INDEX IF NOT EXISTS idx_doc_index_vdbname ON document_index(vector_db_nam
 -- ============================================
 CREATE TABLE IF NOT EXISTS embedding_versions (
     id SERIAL PRIMARY KEY,
-    config_id INTEGER NOT NULL,
+    config_id INTEGER,
     version_hash TEXT NOT NULL UNIQUE,
     embedding_model TEXT NOT NULL,
     embedding_dimension INTEGER NOT NULL,
@@ -189,8 +159,8 @@ CREATE TABLE IF NOT EXISTS embedding_versions (
     error_message TEXT,
     error_details TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by INTEGER NOT NULL,
-    FOREIGN KEY (config_id) REFERENCES rag_configurations(id) ON DELETE CASCADE,
+    created_by UUID NOT NULL,
+    FOREIGN KEY (config_id) REFERENCES system_prompts(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
@@ -226,7 +196,7 @@ CREATE TABLE IF NOT EXISTS rag_audit_log (
     id SERIAL PRIMARY KEY,
     config_id INTEGER,
     action TEXT NOT NULL,
-    performed_by INTEGER NOT NULL,
+    performed_by UUID NOT NULL,
     performed_by_email TEXT NOT NULL,
     performed_by_role TEXT NOT NULL,
     ip_address TEXT,
@@ -236,7 +206,7 @@ CREATE TABLE IF NOT EXISTS rag_audit_log (
     reason TEXT,
     success INTEGER DEFAULT 1,
     error_message TEXT,
-    FOREIGN KEY (config_id) REFERENCES rag_configurations(id) ON DELETE SET NULL,
+    FOREIGN KEY (config_id) REFERENCES system_prompts(id) ON DELETE SET NULL,
     FOREIGN KEY (performed_by) REFERENCES users(id)
 );
 
@@ -250,7 +220,7 @@ CREATE INDEX IF NOT EXISTS idx_rag_audit_config ON rag_audit_log(config_id);
 -- ============================================
 CREATE TABLE IF NOT EXISTS notifications (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
+    user_id UUID NOT NULL,
     type TEXT NOT NULL,
     priority TEXT NOT NULL DEFAULT 'medium',
     title TEXT NOT NULL,
@@ -277,7 +247,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_priority ON notifications(priority)
 -- ============================================
 CREATE TABLE IF NOT EXISTS notification_preferences (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER UNIQUE NOT NULL,
+    user_id UUID UNIQUE NOT NULL,
     in_app_enabled INTEGER DEFAULT 1,
     email_enabled INTEGER DEFAULT 1,
     webhook_enabled INTEGER DEFAULT 0,
@@ -338,11 +308,11 @@ CREATE TABLE IF NOT EXISTS embedding_jobs (
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     embedding_started_at TIMESTAMP,
-    agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
     embedding_model TEXT,
     embedding_dimension INTEGER,
-    started_by INTEGER NOT NULL,
-    cancelled_by INTEGER,
+    started_by UUID NOT NULL,
+    cancelled_by UUID,
     error_message TEXT,
     error_details TEXT,
     retry_count INTEGER DEFAULT 0,
@@ -542,7 +512,7 @@ CREATE INDEX IF NOT EXISTS idx_vector_db_schedules_next_run ON vector_db_schedul
 -- ============================================
 CREATE TABLE IF NOT EXISTS uploaded_file_tables (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
+    user_id UUID NOT NULL,
     table_name TEXT NOT NULL,
     original_filename TEXT NOT NULL,
     file_type TEXT NOT NULL,

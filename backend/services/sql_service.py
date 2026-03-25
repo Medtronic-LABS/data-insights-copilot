@@ -130,7 +130,7 @@ class CachedSQLDatabase(SQLDatabase):
 
 
 
-def _get_active_database_url(agent_id: Optional[int] = None, connection_id: Optional[int] = None) -> Optional[str]:
+def _get_active_database_url(agent_id: Optional[str] = None, connection_id: Optional[int] = None) -> Optional[str]:  # agent_id is UUID
     """
     Get the database URL from the active published config.
     

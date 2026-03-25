@@ -244,7 +244,7 @@ class AuthorizationService:
         self,
         config_id: Optional[int] = None,
         action: Optional[str] = None,
-        user_id: Optional[int] = None,
+        user_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[dict]:

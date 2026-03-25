@@ -98,10 +98,10 @@ class RAGConfiguration(RAGConfigurationBase):
     version_number: int
     status: RAGConfigStatus
     config_hash: str
-    created_by: int
+    created_by: str  # UUID as string
     created_at: datetime
     published_at: Optional[datetime] = None
-    published_by: Optional[int] = None
+    published_by: Optional[str] = None  # UUID as string
     parent_version_id: Optional[int] = None
     
     model_config = ConfigDict(from_attributes=True)
@@ -139,7 +139,7 @@ class EmbeddingVersion(EmbeddingVersionBase):
     validation_details: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: datetime
-    created_by: int
+    created_by: str  # UUID as string
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -297,7 +297,7 @@ class NotificationBase(BaseModel):
 
 class NotificationCreate(NotificationBase):
     """Request model for creating a notification."""
-    user_id: int = Field(..., description="Target user ID")
+    user_id: str = Field(..., description="Target user ID (UUID)")
     related_entity_type: Optional[str] = None
     related_entity_id: Optional[int] = None
     channels: List[str] = Field(default=["in_app"], description="Delivery channels")
@@ -306,7 +306,7 @@ class NotificationCreate(NotificationBase):
 class Notification(NotificationBase):
     """Complete notification response model."""
     id: int
-    user_id: int
+    user_id: str  # UUID as string
     status: NotificationStatus
     related_entity_type: Optional[str] = None
     related_entity_id: Optional[int] = None

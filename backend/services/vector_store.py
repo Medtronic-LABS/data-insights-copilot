@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 class VectorStoreService:
     """Service for managing vector store operations with Qdrant/ChromaDB support."""
     
-    def __init__(self, agent_id: Optional[int] = None):
+    def __init__(self, agent_id: Optional[str] = None):  # agent_id is UUID
         """Initialize the vector store with advanced retrieval.
         
         Args:
@@ -279,7 +279,7 @@ class VectorStoreService:
 _vector_store_cache: Dict[Optional[int], VectorStoreService] = {}
 
 
-def get_vector_store(agent_id: Optional[int] = None) -> VectorStoreService:
+def get_vector_store(agent_id: Optional[str] = None) -> VectorStoreService:  # agent_id is UUID
     """
     Get cached vector store service instance with agent-specific isolation.
     
@@ -298,7 +298,7 @@ def get_vector_store(agent_id: Optional[int] = None) -> VectorStoreService:
     return _vector_store_cache[agent_id]
 
 
-def clear_vector_store_cache(agent_id: Optional[int] = None):
+def clear_vector_store_cache(agent_id: Optional[str] = None):  # agent_id is UUID
     """
     Clear cached vector store instances to force re-initialization.
     

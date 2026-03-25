@@ -87,7 +87,7 @@ class FileRAGPipeline:
     
     def __init__(
         self,
-        user_id: int,
+        user_id: str,  # UUID as string
         config: Optional[FileRAGConfig] = None,
         embedding_provider: Optional[Any] = None,
     ):
@@ -767,7 +767,7 @@ class FileRAGPipeline:
 
 # Convenience function
 def get_file_rag_pipeline(
-    user_id: int,
+    user_id: str,  # UUID as string
     config: Optional[FileRAGConfig] = None,
 ) -> FileRAGPipeline:
     """Get a FileRAGPipeline instance for a user."""
