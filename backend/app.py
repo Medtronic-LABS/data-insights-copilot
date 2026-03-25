@@ -20,7 +20,6 @@ from backend.api.routes import embedding_progress, notifications, settings as se
 from backend.api.websocket import embedding_progress as embedding_ws
 from backend.api.websocket import notifications as notifications_ws
 from backend.services.embeddings import preload_embedding_model
-from backend.services.embeddings import preload_embedding_model
 
 # Conditional Langfuse import
 try:

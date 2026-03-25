@@ -21,7 +21,7 @@ from backend.config import (
     get_chunking_settings, get_vector_store_settings
 )
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.services.chroma_service import get_vector_store_type, VectorStoreManager
 
 settings = get_settings()

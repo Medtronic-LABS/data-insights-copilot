@@ -12,7 +12,7 @@ from backend.core.permissions import get_current_user, _security as security
 # Re-export settings and db_service for convenience
 from backend.config import get_settings, get_settings as _get_settings
 settings = _get_settings()
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 # Re-export role-based dependencies from permissions
 from backend.core.permissions import (

@@ -30,7 +30,7 @@ from backend.models.rag_models import (
     EmbeddingJobStatus, RAGAuditAction, ChunkingConfig, ParallelizationConfig,
     MedicalContextConfig
 )
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.services.embedding_job_service import get_embedding_job_service, EmbeddingJobService, JobCancelledError
 from backend.services.authorization_service import get_authorization_service, AuthorizationService
 from backend.services.notification_service import get_notification_service
@@ -109,7 +109,7 @@ async def start_embedding_job(
     Requires Admin role or above.
     """
     try:
-        from backend.sqliteDb.db import get_db_service
+        from backend.database.db import get_db_service
         db_service = get_db_service()
         config = db_service.get_config_by_id(request.config_id)
         if not config:
@@ -277,7 +277,11 @@ async def _run_embedding_job(
             job_service.update_progress(job_id, processed_documents=0, current_batch=0, 
                                         phase=f"Resuming from {resume_phase.value} phase...")
         
-        if job_service.get_job_progress(job_id).status == EmbeddingJobStatus.CANCELLED:
+        job_progress = job_service.get_job_progress(job_id)
+        if not job_progress:
+            logger.error(f"Job {job_id} not found in database, cannot proceed")
+            return
+        if job_progress.status == EmbeddingJobStatus.CANCELLED:
             logger.info(f"Job {job_id} cancelled before starting.")
             return
         
@@ -554,7 +558,8 @@ async def _run_embedding_job(
 
                 table_data = await extractor.extract_all_tables(on_progress=extractor_progress)
                 
-                if job_service.get_job_progress(job_id).status == EmbeddingJobStatus.CANCELLED:
+                job_progress = job_service.get_job_progress(job_id)
+                if not job_progress or job_progress.status == EmbeddingJobStatus.CANCELLED:
                     logger.info(f"Job {job_id} cancelled after extraction.")
                     return
                 
@@ -593,7 +598,8 @@ async def _run_embedding_job(
                 check_cancellation=lambda: job_service.is_job_cancelled(job_id)
             )
             
-            if job_service.get_job_progress(job_id).status == EmbeddingJobStatus.CANCELLED:
+            job_progress = job_service.get_job_progress(job_id)
+            if not job_progress or job_progress.status == EmbeddingJobStatus.CANCELLED:
                 logger.info(f"Job {job_id} cancelled after transformation.")
                 return
             
@@ -615,7 +621,7 @@ async def _run_embedding_job(
             cursor_reg = conn_reg.cursor()
             cursor_reg.execute('''
                 INSERT INTO vector_db_registry (name, data_source_id, created_by, embedding_model, llm)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT(name) DO UPDATE SET
                     data_source_id=excluded.data_source_id,
                     embedding_model=excluded.embedding_model,
@@ -633,7 +639,7 @@ async def _run_embedding_job(
         cursor = conn.cursor()
         
         if not incremental:
-            cursor.execute("DELETE FROM document_index WHERE vector_db_name = ?", (vector_db_name,))
+            cursor.execute("DELETE FROM document_index WHERE vector_db_name = %s", (vector_db_name,))
             conn.commit()
             try:
                 from backend.services.settings_service import get_settings_service, SettingCategory
@@ -653,7 +659,7 @@ async def _run_embedding_job(
             stale_source_ids = []
             logger.info(f"Rebuild mode: Wiped existing database indexing for {vector_db_name}")
         else:
-            cursor.execute("SELECT source_id, checksum FROM document_index WHERE vector_db_name = ?", (vector_db_name,))
+            cursor.execute("SELECT source_id, checksum FROM document_index WHERE vector_db_name = %s", (vector_db_name,))
             existing_docs = {row['source_id']: row['checksum'] for row in cursor.fetchall()}
             
             logger.info(f"Checking for deltas among {len(documents)} documents...")
@@ -732,7 +738,8 @@ async def _run_embedding_job(
                 check_cancellation=lambda: job_service.is_job_cancelled(job_id)
             )
             
-            if job_service.get_job_progress(job_id).status == EmbeddingJobStatus.CANCELLED:
+            job_progress = job_service.get_job_progress(job_id)
+            if not job_progress or job_progress.status == EmbeddingJobStatus.CANCELLED:
                 logger.info(f"Job {job_id} cancelled after chunking.")
                 return
             
@@ -974,7 +981,7 @@ async def _run_embedding_job(
             if 'checksum' in metadata and 'source_id' in metadata:
                 cursor.execute('''
                     INSERT INTO document_index (vector_db_name, source_id, checksum)
-                    VALUES (?, ?, ?)
+                    VALUES (%s, %s, %s)
                     ON CONFLICT(vector_db_name, source_id) DO UPDATE SET
                         checksum=excluded.checksum,
                         updated_at=CURRENT_TIMESTAMP
@@ -985,7 +992,7 @@ async def _run_embedding_job(
             cursor.execute(f'''
                 UPDATE vector_db_registry 
                 SET {"last_incremental_run" if incremental else "last_full_run"} = CURRENT_TIMESTAMP
-                WHERE name = ?
+                WHERE name = %s
             ''', (vector_db_name,))
             conn.commit()
         except Exception as e:

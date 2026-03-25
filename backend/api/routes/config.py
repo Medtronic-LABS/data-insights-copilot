@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 
 from backend.services.config_service import ConfigService, get_config_service
 from backend.models.config import PromptGenerationRequest, PromptPublishRequest, PromptResponse
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 from backend.core.logging import get_logger
 from backend.core.permissions import require_editor, require_admin, get_current_user, User
 from backend.services.sql_service import get_sql_service
@@ -544,8 +544,11 @@ async def publish_prompt(
         
         return result
     except Exception as e:
-        logger.error(f"Error publishing prompt: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to publish prompt: {str(e)}")
+        logger.error(f"Error publishing prompt: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"Failed to publish prompt: {str(e)}"
+        )
 
 @router.get("/history", response_model=List[PromptResponse])
 async def get_prompt_history(
@@ -607,21 +610,25 @@ async def rollback_to_version(
         cursor = conn.cursor()
         
         # Get the version to rollback to
-        cursor.execute("SELECT id, version, prompt_text, agent_id FROM system_prompts WHERE id = ?", (version_id,))
+        cursor.execute("SELECT id, version, prompt_text, agent_id FROM system_prompts WHERE id = %s", (version_id,))
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Version not found")
         
-        prompt_id, version_num, prompt_text, agent_id = row
+        # RealDictCursor returns dict-like objects, access by key
+        prompt_id = row['id']
+        version_num = row['version']
+        prompt_text = row['prompt_text']
+        agent_id = row['agent_id']
         
         # Deactivate all existing prompts for THIS AGENT (or global if agent_id is None)
         if agent_id:
-            cursor.execute("UPDATE system_prompts SET is_active = 0 WHERE agent_id = ?", (agent_id,))
+            cursor.execute("UPDATE system_prompts SET is_active = 0 WHERE agent_id = %s", (agent_id,))
         else:
             cursor.execute("UPDATE system_prompts SET is_active = 0 WHERE agent_id IS NULL")
         
         # Activate the selected version
-        cursor.execute("UPDATE system_prompts SET is_active = 1 WHERE id = ?", (version_id,))
+        cursor.execute("UPDATE system_prompts SET is_active = 1 WHERE id = %s", (version_id,))
         conn.commit()
         
         # Log audit event

@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 from backend.services.agent_service import get_agent_service, AgentService
 from backend.models.schemas import ChatRequest, User
 

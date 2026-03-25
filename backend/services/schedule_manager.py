@@ -9,7 +9,7 @@ from enum import Enum
 from croniter import croniter
 
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 logger = get_logger(__name__)
 
@@ -62,9 +62,9 @@ class ScheduleManager:
         try:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS vector_db_schedules (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     vector_db_name TEXT NOT NULL UNIQUE,
-                    enabled INTEGER DEFAULT 0,
+                    enabled BOOLEAN DEFAULT FALSE,
                     schedule_type TEXT DEFAULT 'daily',
                     schedule_hour INTEGER DEFAULT 2,
                     schedule_minute INTEGER DEFAULT 0,
@@ -74,8 +74,8 @@ class ScheduleManager:
                     next_run_at TIMESTAMP,
                     last_run_status TEXT,
                     last_run_job_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
                     created_by TEXT
                 )
             ''')
@@ -151,18 +151,18 @@ class ScheduleManager:
                     (vector_db_name, enabled, schedule_type, schedule_hour, 
                      schedule_minute, schedule_day_of_week, schedule_cron, 
                      next_run_at, created_by, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(vector_db_name) DO UPDATE SET
-                    enabled = excluded.enabled,
-                    schedule_type = excluded.schedule_type,
-                    schedule_hour = excluded.schedule_hour,
-                    schedule_minute = excluded.schedule_minute,
-                    schedule_day_of_week = excluded.schedule_day_of_week,
-                    schedule_cron = excluded.schedule_cron,
-                    next_run_at = excluded.next_run_at,
-                    updated_at = excluded.updated_at
+                    enabled = EXCLUDED.enabled,
+                    schedule_type = EXCLUDED.schedule_type,
+                    schedule_hour = EXCLUDED.schedule_hour,
+                    schedule_minute = EXCLUDED.schedule_minute,
+                    schedule_day_of_week = EXCLUDED.schedule_day_of_week,
+                    schedule_cron = EXCLUDED.schedule_cron,
+                    next_run_at = EXCLUDED.next_run_at,
+                    updated_at = EXCLUDED.updated_at
             ''', (
-                vector_db_name, 1 if enabled else 0, schedule_type.value,
+                vector_db_name, enabled, schedule_type.value,
                 hour, minute, day_of_week, cron_expression, next_run_iso, 
                 created_by, datetime.now(timezone.utc).isoformat()
             ))
@@ -180,7 +180,7 @@ class ScheduleManager:
         
         try:
             cursor.execute('''
-                SELECT * FROM vector_db_schedules WHERE vector_db_name = ?
+                SELECT * FROM vector_db_schedules WHERE vector_db_name = %s
             ''', (vector_db_name,))
             row = cursor.fetchone()
             
@@ -211,7 +211,7 @@ class ScheduleManager:
         
         try:
             cursor.execute('''
-                DELETE FROM vector_db_schedules WHERE vector_db_name = ?
+                DELETE FROM vector_db_schedules WHERE vector_db_name = %s
             ''', (vector_db_name,))
             conn.commit()
             
@@ -253,17 +253,17 @@ class ScheduleManager:
             if status == ScheduleStatus.RUNNING or status == ScheduleStatus.QUEUED:
                 cursor.execute('''
                     UPDATE vector_db_schedules 
-                    SET last_run_status = ?, updated_at = ?
-                    WHERE vector_db_name = ?
+                    SET last_run_status = %s, updated_at = %s
+                    WHERE vector_db_name = %s
                 ''', (status.value, now_str, vector_db_name))
             else:
                 cursor.execute('''
                     UPDATE vector_db_schedules 
-                    SET last_run_at = ?,
-                        last_run_status = ?,
-                        last_run_job_id = ?,
-                        updated_at = ?
-                    WHERE vector_db_name = ?
+                    SET last_run_at = %s,
+                        last_run_status = %s,
+                        last_run_job_id = %s,
+                        updated_at = %s
+                    WHERE vector_db_name = %s
                 ''', (now_str, status.value, job_id, now_str, vector_db_name))
             conn.commit()
         finally:
@@ -276,8 +276,8 @@ class ScheduleManager:
         try:
             cursor.execute('''
                 UPDATE vector_db_schedules 
-                SET next_run_at = ?, updated_at = ?
-                WHERE vector_db_name = ?
+                SET next_run_at = %s, updated_at = %s
+                WHERE vector_db_name = %s
             ''', (next_run.isoformat(), datetime.now(timezone.utc).isoformat(), vector_db_name))
             conn.commit()
         finally:

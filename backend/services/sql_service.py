@@ -146,7 +146,7 @@ def _get_active_database_url(agent_id: Optional[int] = None, connection_id: Opti
         Database URI string, or None if no connection is configured.
     """
     try:
-        from backend.sqliteDb.db import get_db_service
+        from backend.database.db import get_db_service
         db_service = get_db_service()
         
         # If direct connection_id provided, use it
@@ -190,9 +190,9 @@ def _get_active_database_url(agent_id: Optional[int] = None, connection_id: Opti
         row = cursor.fetchone()
         conn.close()
         
-        if row and row[0]:
-            fallback_conn_id = row[0]
-            fallback_agent_id = row[1]
+        if row and row['connection_id']:
+            fallback_conn_id = row['connection_id']
+            fallback_agent_id = row['agent_id']
             connection = db_service.get_db_connection_by_id(fallback_conn_id)
             if connection and connection.get('uri'):
                 logger.info(f"Using database connection from agent {fallback_agent_id} config (fallback): {connection.get('name')} (ID: {fallback_conn_id})")
@@ -478,7 +478,7 @@ class SQLService:
         Extracts key rules from the published system prompt.
         """
         try:
-            from backend.sqliteDb.db import get_db_service
+            from backend.database.db import get_db_service
             db_service = get_db_service()
             
             # Get the active system prompt

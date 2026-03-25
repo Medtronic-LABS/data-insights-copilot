@@ -12,7 +12,7 @@ from backend.models.schemas import User
 from backend.models.rag_models import RAGAuditAction
 from backend.core.roles import Role, role_at_least
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 logger = get_logger(__name__)
 
@@ -144,7 +144,7 @@ class AuthorizationService:
                 INSERT INTO rag_audit_log 
                 (action, performed_by, performed_by_email, performed_by_role, 
                  ip_address, user_agent, success, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 RAGAuditAction.UNAUTHORIZED_ACCESS.value,
                 user.id,
@@ -210,7 +210,7 @@ class AuthorizationService:
                 INSERT INTO rag_audit_log 
                 (config_id, action, performed_by, performed_by_email, performed_by_role, 
                  ip_address, user_agent, changes, reason, success, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 config_id,
                 action.value if isinstance(action, RAGAuditAction) else action,
@@ -268,28 +268,28 @@ class AuthorizationService:
         params = []
         
         if config_id is not None:
-            query += " AND config_id = ?"
+            query += " AND config_id = %s"
             params.append(config_id)
         
         if action:
-            query += " AND action = ?"
+            query += " AND action = %s"
             params.append(action)
         
         if user_id is not None:
-            query += " AND performed_by = ?"
+            query += " AND performed_by = %s"
             params.append(user_id)
         
-        query += " ORDER BY performed_at DESC LIMIT ? OFFSET ?"
+        query += " ORDER BY performed_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
         
         cursor.execute(query, params)
-        columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         conn.close()
         
         result = []
         for row in rows:
-            entry = dict(zip(columns, row))
+            # RealDictCursor already returns dict-like objects
+            entry = dict(row)
             if entry.get('changes'):
                 try:
                     entry['changes'] = json.loads(entry['changes'])

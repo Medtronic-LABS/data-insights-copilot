@@ -6,7 +6,7 @@ import sys
 sys.path.append(os.path.dirname(__file__))
 
 from backend.api.routes.embedding_progress import _run_embedding_job
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 async def main():
     try:

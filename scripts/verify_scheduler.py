@@ -7,7 +7,6 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backend.services.schedule_manager import get_schedule_manager, ScheduleType
-from backend.sqliteDb.db import get_db_service
 
 def print_step(msg):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] \033[1;36m{msg}\033[0m")

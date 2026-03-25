@@ -1,5 +1,5 @@
 """
-Tests for sqliteDb/migrations.py to increase code coverage.
+Tests for database/migrations.py to increase code coverage.
 """
 from pathlib import Path
 
@@ -9,19 +9,19 @@ class TestMigrationRunnerClass:
     
     def test_class_import(self):
         """Test MigrationRunner can be imported."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert MigrationRunner is not None
     
     def test_init_with_default_migrations_dir(self):
         """Test MigrationRunner initialization with default migrations dir."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         runner = MigrationRunner(":memory:")
         assert runner.db_path == ":memory:"
         assert runner.migrations_dir is not None
     
     def test_init_with_custom_migrations_dir(self):
         """Test MigrationRunner initialization with custom migrations dir."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         runner = MigrationRunner(":memory:", "/custom/path")
         assert runner.migrations_dir == Path("/custom/path")
 
@@ -31,32 +31,32 @@ class TestMigrationRunnerMethods:
     
     def test_get_connection_exists(self):
         """Test get_connection method exists."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert hasattr(MigrationRunner, 'get_connection')
     
     def test_ensure_migrations_table_exists(self):
         """Test _ensure_migrations_table method exists."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert hasattr(MigrationRunner, '_ensure_migrations_table')
     
     def test_get_applied_migrations_exists(self):
         """Test _get_applied_migrations method exists."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert hasattr(MigrationRunner, '_get_applied_migrations')
     
     def test_get_pending_migrations_exists(self):
         """Test _get_pending_migrations method exists."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert hasattr(MigrationRunner, '_get_pending_migrations')
     
     def test_apply_migration_exists(self):
         """Test _apply_migration method exists."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert hasattr(MigrationRunner, '_apply_migration')
     
     def test_run_pending_migrations_exists(self):
         """Test run_pending_migrations method exists."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         assert hasattr(MigrationRunner, 'run_pending_migrations')
 
 
@@ -65,7 +65,7 @@ class TestMigrationRunnerConnection:
     
     def test_get_connection_returns_connection(self):
         """Test get_connection returns valid connection."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         runner = MigrationRunner(":memory:")
         conn = runner.get_connection()
         assert conn is not None
@@ -77,7 +77,7 @@ class TestMigrationRunnerEnsureTable:
     
     def test_ensure_migrations_table_creates_table(self):
         """Test _ensure_migrations_table creates tracking table."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         runner = MigrationRunner(":memory:")
         conn = runner.get_connection()
         
@@ -96,7 +96,7 @@ class TestMigrationRunnerAppliedMigrations:
     
     def test_get_applied_migrations_empty(self):
         """Test _get_applied_migrations returns empty list for new db."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         runner = MigrationRunner(":memory:")
         conn = runner.get_connection()
         runner._ensure_migrations_table(conn)
@@ -111,7 +111,7 @@ class TestMigrationRunnerPendingMigrations:
     
     def test_get_pending_migrations_no_dir(self):
         """Test _get_pending_migrations with non-existent directory."""
-        from backend.sqliteDb.migrations import MigrationRunner
+        from backend.database.migrations import MigrationRunner
         runner = MigrationRunner(":memory:", "/nonexistent/dir")
         pending = runner._get_pending_migrations()
         assert pending == []
@@ -122,17 +122,17 @@ class TestMigrationRunnerImports:
     
     def test_sqlite3_import(self):
         """Test sqlite3 is used."""
-        from backend.sqliteDb.migrations import sqlite3
+        from backend.database.migrations import sqlite3
         assert sqlite3 is not None
     
     def test_path_import(self):
         """Test Path is imported."""
-        from backend.sqliteDb.migrations import Path
+        from backend.database.migrations import Path
         assert Path is not None
     
     def test_logger_exists(self):
         """Test logger is defined."""
-        from backend.sqliteDb.migrations import logger
+        from backend.database.migrations import logger
         assert logger is not None
 
 
@@ -141,6 +141,6 @@ class TestRunMigrationsFunction:
     
     def test_run_migrations_import(self):
         """Test run_migrations can be imported."""
-        from backend.sqliteDb.migrations import run_migrations
+        from backend.database.migrations import run_migrations
         assert run_migrations is not None
         assert callable(run_migrations)

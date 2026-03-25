@@ -1,7 +1,8 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
-from backend.sqliteDb.db import get_db_service, DatabaseService
+from backend.database.db import get_db_service, DatabaseService
 from backend.core.permissions import require_admin, User
 from backend.core.logging import get_logger
 from backend.services.schedule_manager import (
@@ -156,9 +157,9 @@ class ScheduleResponse(BaseModel):
     schedule_minute: int
     schedule_day_of_week: Optional[int] = None
     schedule_cron: Optional[str] = None
-    next_run_at: Optional[str] = None
+    next_run_at: Optional[datetime] = None
     countdown_seconds: Optional[int] = None
-    last_run_at: Optional[str] = None
+    last_run_at: Optional[datetime] = None
     last_run_status: Optional[str] = None
     last_run_job_id: Optional[str] = None
 
@@ -186,7 +187,7 @@ async def get_vector_db_status(
         cursor.execute('''
             SELECT COUNT(*) as count, MAX(updated_at) as last_updated
             FROM document_index
-            WHERE vector_db_name = ?
+            WHERE vector_db_name = %s
         ''', (vector_db_name,))
         
         row = cursor.fetchone()
@@ -197,7 +198,7 @@ async def get_vector_db_status(
         cursor.execute('''
             SELECT embedding_model, llm, last_full_run, last_incremental_run, version
             FROM vector_db_registry
-            WHERE name = ?
+            WHERE name = %s
         ''', (vector_db_name,))
         reg_row = cursor.fetchone()
         
@@ -452,7 +453,7 @@ async def check_vector_db_name(
     cursor = conn.cursor()
     
     try:
-        cursor.execute('SELECT id FROM vector_db_registry WHERE name = ?', (name,))
+        cursor.execute('SELECT id FROM vector_db_registry WHERE name = %s', (name,))
         existing = cursor.fetchone()
         
         if existing:
@@ -658,7 +659,7 @@ async def delete_vector_database(
         cursor = conn.cursor()
         
         # Check if exists in registry
-        cursor.execute('SELECT id FROM vector_db_registry WHERE name = ?', (vector_db_name,))
+        cursor.execute('SELECT id FROM vector_db_registry WHERE name = %s', (vector_db_name,))
         existing = cursor.fetchone()
         
         if not existing:
@@ -669,10 +670,10 @@ async def delete_vector_database(
             )
         
         # Delete from registry
-        cursor.execute('DELETE FROM vector_db_registry WHERE name = ?', (vector_db_name,))
+        cursor.execute('DELETE FROM vector_db_registry WHERE name = %s', (vector_db_name,))
         
         # Delete from document_index
-        cursor.execute('DELETE FROM document_index WHERE vector_db_name = ?', (vector_db_name,))
+        cursor.execute('DELETE FROM document_index WHERE vector_db_name = %s', (vector_db_name,))
         
         conn.commit()
         conn.close()

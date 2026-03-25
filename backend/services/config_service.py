@@ -15,7 +15,7 @@ import json
 from langchain.prompts import ChatPromptTemplate
 from backend.core.logging import get_logger
 from backend.services.settings_service import get_settings_service, SettingsService
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 import os
 from dotenv import load_dotenv
 
@@ -579,8 +579,9 @@ class ConfigService:
                     data_source_id = str(connection_id) if data_source_type == 'database' else (ingestion_file_name or "unknown")
                     try:
                         self.db_service.register_vector_db(vector_db_name, data_source_id, user_id)
-                    except ValueError:
+                    except (ValueError, Exception) as e:
                         # Already exists, which is fine if they are republishing with the same name
+                        logger.debug(f"Vector DB registration skipped: {e}")
                         pass
             except Exception as e:
                 logger.warning(f"Failed to register vector DB from config: {e}")

@@ -2,7 +2,6 @@
 Chat endpoint for RAG chatbot queries.
 """
 import uuid
-from contextlib import contextmanager
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 
 from backend.models.schemas import ChatRequest, ChatResponse, User, ErrorResponse

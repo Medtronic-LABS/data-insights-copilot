@@ -14,7 +14,7 @@ from backend.models.rag_models import (
 )
 from backend.models.schemas import User
 from backend.core.logging import get_logger
-from backend.sqliteDb.db import get_db_service
+from backend.database.db import get_db_service
 
 class JobCancelledError(Exception):
     """Exception raised when an embedding job is explicitly cancelled."""
@@ -75,15 +75,17 @@ class EmbeddingJobService:
                 INSERT INTO embedding_jobs 
                 (job_id, config_id, status, phase, total_documents, total_batches, 
                  batch_size, started_by, config_metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING job_id, status
             """, (
                 job_id, config_id, EmbeddingJobStatus.QUEUED.value,
                 "Job queued for processing", total_documents, total_batches,
                 batch_size, user.id, config_metadata
             ))
             
+            result = cursor.fetchone()
             conn.commit()
-            logger.info(f"Created embedding job {job_id} for config {config_id}")
+            logger.info(f"Created embedding job {result['job_id']} with status {result['status']}")
             
             return job_id
             
@@ -130,7 +132,7 @@ class EmbeddingJobService:
         try:
             # Get total documents and embedding start time for speed calculation
             cursor.execute(
-                "SELECT total_documents, started_at, embedding_started_at FROM embedding_jobs WHERE job_id = ?",
+                "SELECT total_documents, started_at, embedding_started_at FROM embedding_jobs WHERE job_id = %s",
                 (job_id,)
             )
             row = cursor.fetchone()
@@ -154,42 +156,43 @@ class EmbeddingJobService:
             
             if embedding_start:
                 try:
-                    start_time = datetime.fromisoformat(embedding_start.replace('Z', '+00:00'))
-                    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-                    if elapsed > 0 and processed_documents > 0:
-                        docs_per_second = processed_documents / elapsed
-                        remaining_docs = total_documents - total_handled
-                        if docs_per_second > 0:
-                            remaining_seconds = remaining_docs / docs_per_second
-                            estimated_completion = (datetime.now(timezone.utc) + timedelta(seconds=remaining_seconds)).isoformat()
+                    start_time = self.db.parse_datetime(embedding_start)
+                    if start_time:
+                        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                        if elapsed > 0 and processed_documents > 0:
+                            docs_per_second = processed_documents / elapsed
+                            remaining_docs = total_documents - total_handled
+                            if docs_per_second > 0:
+                                remaining_seconds = remaining_docs / docs_per_second
+                                estimated_completion = (datetime.now(timezone.utc) + timedelta(seconds=remaining_seconds)).isoformat()
                 except Exception as e:
                     logger.debug(f"Error calculating ETA: {e}")
             
             # Build update query
             update_fields = [
-                "processed_documents = ?",
-                "current_batch = ?",
-                "failed_documents = ?",
-                "progress_percentage = ?"
+                "processed_documents = %s",
+                "current_batch = %s",
+                "failed_documents = %s",
+                "progress_percentage = %s"
             ]
             params = [processed_documents, current_batch, failed_documents, progress_percentage]
             
             if docs_per_second is not None:
-                update_fields.append("documents_per_second = ?")
+                update_fields.append("documents_per_second = %s")
                 params.append(docs_per_second)
             
             if estimated_completion:
-                update_fields.append("estimated_completion_at = ?")
+                update_fields.append("estimated_completion_at = %s")
                 params.append(estimated_completion)
             
             if phase:
-                update_fields.append("phase = ?")
+                update_fields.append("phase = %s")
                 params.append(phase)
             
             params.append(job_id)
             
             cursor.execute(
-                f"UPDATE embedding_jobs SET {', '.join(update_fields)} WHERE job_id = ?",
+                f"UPDATE embedding_jobs SET {', '.join(update_fields)} WHERE job_id = %s",
                 params
             )
             
@@ -306,7 +309,7 @@ class EmbeddingJobService:
         try:
             # Check current status
             cursor.execute(
-                "SELECT status FROM embedding_jobs WHERE job_id = ?",
+                "SELECT status FROM embedding_jobs WHERE job_id = %s",
                 (job_id,)
             )
             row = cursor.fetchone()
@@ -327,8 +330,8 @@ class EmbeddingJobService:
             # Cancel the job
             cursor.execute("""
                 UPDATE embedding_jobs 
-                SET status = ?, phase = ?, completed_at = ?, cancelled_by = ?
-                WHERE job_id = ?
+                SET status = %s, phase = %s, completed_at = %s, cancelled_by = %s
+                WHERE job_id = %s
             """, (
                 EmbeddingJobStatus.CANCELLED.value,
                 "Cancelled by user",
@@ -360,7 +363,7 @@ class EmbeddingJobService:
         
         try:
             cursor.execute(
-                "SELECT status FROM embedding_jobs WHERE job_id = ?",
+                "SELECT status FROM embedding_jobs WHERE job_id = %s",
                 (job_id,)
             )
             row = cursor.fetchone()
@@ -380,7 +383,7 @@ class EmbeddingJobService:
         cursor = conn.cursor()
         
         try:
-            cursor.execute("SELECT config_metadata FROM embedding_jobs WHERE job_id = ?", (job_id,))
+            cursor.execute("SELECT config_metadata FROM embedding_jobs WHERE job_id = %s", (job_id,))
             row = cursor.fetchone()
             if not row or not row['config_metadata']:
                 return None
@@ -406,11 +409,13 @@ class EmbeddingJobService:
         
         try:
             cursor.execute("""
-                SELECT * FROM embedding_jobs WHERE job_id = ?
+                SELECT * FROM embedding_jobs WHERE job_id = %s
             """, (job_id,))
             
             row = cursor.fetchone()
+            logger.info(f"Query for job_id={job_id}, row result: {row}")
             if not row:
+                logger.warning(f"Job {job_id} not found in database")
                 return None
             
             job = dict(row)
@@ -419,25 +424,29 @@ class EmbeddingJobService:
             elapsed_seconds = None
             if job.get('started_at'):
                 try:
-                    start_time = datetime.fromisoformat(job['started_at'].replace('Z', '+00:00'))
-                    elapsed_seconds = int((datetime.now(timezone.utc) - start_time).total_seconds())
-                except:
+                    start_time = self.db.parse_datetime(job['started_at'])
+                    if start_time:
+                        elapsed_seconds = int((datetime.now(timezone.utc) - start_time).total_seconds())
+                except Exception as e:
+                    logger.warning(f"Failed to calculate elapsed time: {e}")
                     pass
             
             # Calculate ETA in seconds
             eta_seconds = None
             if job.get('estimated_completion_at'):
                 try:
-                    eta_time = datetime.fromisoformat(job['estimated_completion_at'].replace('Z', '+00:00'))
-                    eta_seconds = max(0, int((eta_time - datetime.now(timezone.utc)).total_seconds()))
-                except:
+                    eta_time = self.db.parse_datetime(job['estimated_completion_at'])
+                    if eta_time:
+                        eta_seconds = max(0, int((eta_time - datetime.now(timezone.utc)).total_seconds()))
+                except Exception as e:
+                    logger.warning(f"Failed to calculate ETA: {e}")
                     pass
             
             # Get recent errors
             recent_errors = []
             cursor.execute("""
                 SELECT event_data FROM embedding_job_events 
-                WHERE job_id = (SELECT id FROM embedding_jobs WHERE job_id = ?)
+                WHERE job_id = (SELECT id FROM embedding_jobs WHERE job_id = %s)
                 AND event_type = 'error'
                 ORDER BY timestamp DESC LIMIT 5
             """, (job_id,))
@@ -463,8 +472,8 @@ class EmbeddingJobService:
                 elapsed_seconds=elapsed_seconds,
                 errors_count=job.get('failed_documents', 0),
                 recent_errors=recent_errors,
-                started_at=datetime.fromisoformat(job['started_at']) if job.get('started_at') else None,
-                completed_at=datetime.fromisoformat(job['completed_at']) if job.get('completed_at') else None
+                started_at=self.db.parse_datetime(job.get('started_at')),
+                completed_at=self.db.parse_datetime(job.get('completed_at'))
             )
             
         except Exception as e:
@@ -529,18 +538,18 @@ class EmbeddingJobService:
             params = []
             
             if user_id is not None:
-                query += " AND started_by = ?"
+                query += " AND started_by = %s"
                 params.append(user_id)
             
             if config_id is not None:
-                query += " AND config_id = ?"
+                query += " AND config_id = %s"
                 params.append(config_id)
             
             if status:
-                query += " AND status = ?"
+                query += " AND status = %s"
                 params.append(status.value)
             
-            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
             params.extend([limit, offset])
             
             cursor.execute(query, params)
@@ -564,11 +573,11 @@ class EmbeddingJobService:
             if 'status' in kwargs and isinstance(kwargs['status'], EmbeddingJobStatus):
                 kwargs['status'] = kwargs['status'].value
             
-            fields = [f"{k} = ?" for k in kwargs.keys()]
+            fields = [f"{k} = %s" for k in kwargs.keys()]
             values = list(kwargs.values()) + [job_id]
             
             cursor.execute(
-                f"UPDATE embedding_jobs SET {', '.join(fields)} WHERE job_id = ?",
+                f"UPDATE embedding_jobs SET {', '.join(fields)} WHERE job_id = %s",
                 values
             )
             conn.commit()
@@ -585,7 +594,7 @@ class EmbeddingJobService:
         
         try:
             # Get internal job ID
-            cursor.execute("SELECT id FROM embedding_jobs WHERE job_id = ?", (job_id,))
+            cursor.execute("SELECT id FROM embedding_jobs WHERE job_id = %s", (job_id,))
             row = cursor.fetchone()
             if not row:
                 return
@@ -595,7 +604,7 @@ class EmbeddingJobService:
             
             cursor.execute("""
                 INSERT INTO embedding_job_events (job_id, event_type, event_data)
-                VALUES (?, ?, ?)
+                VALUES (%s, %s, %s)
             """, (internal_id, event_type, event_json))
             
             conn.commit()
