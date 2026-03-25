@@ -4,9 +4,23 @@ Structured logging configuration for the backend service.
 import logging
 import sys
 import json
+import warnings
 from datetime import datetime
 from typing import Any, Dict
 from pathlib import Path
+
+# Suppress SQLAlchemy circular foreign key warnings (common in complex DBs like OpenMRS)
+warnings.filterwarnings(
+    "ignore",
+    message="Cannot correctly sort tables.*unresolvable cycles",
+    category=UserWarning,
+    module="sqlalchemy.*"
+)
+warnings.filterwarnings(
+    "ignore", 
+    category=DeprecationWarning,
+    module="sqlalchemy.*"
+)
 
 
 class JSONFormatter(logging.Formatter):
@@ -51,7 +65,6 @@ def setup_logging() -> logging.Logger:
     
     # Resolve logs directory relative to project root (parent of backend/)
     backend_root = Path(__file__).parent.parent
-    project_root = backend_root.parent if backend_root.name == "backend" else backend_root
     
     log_file_path = Path(settings.log_file)
     if not log_file_path.is_absolute():
