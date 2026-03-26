@@ -30,13 +30,16 @@ from backend.pipeline.ingestion.schema_normalizer import (
     normalize_table_name,
 )
 from backend.core.permissions import get_current_user, User
+from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingestion", tags=["ingestion"])
 
 # Directory to store user data files and DuckDB databases
-DATA_STORAGE_DIR = Path(__file__).parent.parent.parent.parent / "data" / "duckdb_files"
+# Uses centralized config from backend/config.py
+_settings = get_settings()
+DATA_STORAGE_DIR = _settings.duckdb_path
 DATA_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Global schema normalizer instance
@@ -57,20 +60,43 @@ def _sanitize_column_name(col: str, index: int = 0) -> str:
     return normalize_column_name(col, index)
 
 
-def _get_user_data_dir(user_id: str) -> Path:  # UUID as string
-    """Get the directory for a user's data files."""
+def _get_agent_data_dir(agent_id: str) -> Path:
+    """Get the directory for an agent's data files.
+    
+    Standard format: data/duckdb_files/agent_{id}/
+    This matches the indexes pattern: data/indexes/agent_{id}/
+    """
+    agent_dir = DATA_STORAGE_DIR / f"agent_{agent_id}"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir
+
+
+def _get_agent_duckdb_path(agent_id: str) -> Path:
+    """Get the path to an agent's DuckDB file."""
+    return _get_agent_data_dir(agent_id) / "database.duckdb"
+
+
+def _get_agent_csv_path(agent_id: str, table_name: str) -> Path:
+    """Get the path where an agent's CSV file will be stored."""
+    return _get_agent_data_dir(agent_id) / f"{table_name}.csv"
+
+
+# Legacy user-based functions (for backward compatibility during migration)
+def _get_user_data_dir(user_id: str) -> Path:
+    """DEPRECATED: Use _get_agent_data_dir instead.
+    Kept for backward compatibility with existing data."""
     user_dir = DATA_STORAGE_DIR / f"user_{user_id}"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
 
-def _get_user_duckdb_path(user_id: str) -> Path:  # UUID as string
-    """Get the path to a user's DuckDB file."""
+def _get_user_duckdb_path(user_id: str) -> Path:
+    """DEPRECATED: Use _get_agent_duckdb_path instead."""
     return _get_user_data_dir(user_id) / "database.duckdb"
 
 
-def _get_user_csv_path(user_id: str, table_name: str) -> Path:  # UUID as string
-    """Get the path where a user's CSV file will be stored."""
+def _get_user_csv_path(user_id: str, table_name: str) -> Path:
+    """DEPRECATED: Use _get_agent_csv_path instead."""
     return _get_user_data_dir(user_id) / f"{table_name}.csv"
 
 

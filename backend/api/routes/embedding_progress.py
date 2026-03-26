@@ -40,6 +40,7 @@ from backend.pipeline.transform import AdvancedDataTransformer
 from backend.core.permissions import require_admin, get_current_user
 from backend.core.logging import get_embedding_logger
 from backend.services.embedding_registry import get_embedding_processor_registry
+from backend.config import get_settings
 
 logger = get_embedding_logger()
 
@@ -47,6 +48,11 @@ router = APIRouter(prefix="/embedding-jobs", tags=["Embedding Jobs"])
 
 # Thread pool for running embedding jobs without blocking the event loop
 _embedding_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="embedding_job_")
+
+# Get centralized data paths from config
+_settings = get_settings()
+_indexes_path = _settings.indexes_path
+_indexes_path.mkdir(parents=True, exist_ok=True)
 
 
 def _run_embedding_job_sync_wrapper(
@@ -253,16 +259,15 @@ async def _run_embedding_job(
         agent_id = config.get('agent_id')
         job_service.start_job(job_id)
         
-        # Setup paths
-        chroma_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../data/indexes/{v_db_name}"))
+        # Setup paths using centralized config
+        chroma_path = str(_indexes_path / v_db_name)
         os.makedirs(chroma_path, exist_ok=True)
         docstore_path = os.path.join(chroma_path, "parent_docstore.db")
         
         # =================================================================
         # INITIALIZE CHECKPOINT SERVICE
         # =================================================================
-        base_indexes_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
-        checkpoint_service = get_checkpoint_service(base_indexes_path, v_db_name)
+        checkpoint_service = get_checkpoint_service(_indexes_path, v_db_name)
         
         # Check if we can resume from a previous checkpoint
         can_resume, resume_phase, resume_msg = checkpoint_service.can_resume(config_id)
@@ -1007,6 +1012,16 @@ async def _run_embedding_job(
         conn.close()
         job_service.complete_job(job_id, validation_passed=validation_passed)
         
+        # =================================================================
+        # CLEANUP: Clear checkpoints after successful completion
+        # =================================================================
+        if checkpoint_service and validation_passed:
+            try:
+                checkpoint_service.clear_checkpoints()
+                logger.info(f"CHECKPOINT CLEANUP: Cleared checkpoints for {v_db_name} after successful completion")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to clear checkpoints after completion: {cleanup_error}")
+        
         # INVALIDATE SQL CACHE ON SUCCESSFUL SYNC
         try:
             from backend.services.sql_service import invalidate_sql_cache
@@ -1208,8 +1223,7 @@ async def get_checkpoint_status(
     Requires SuperAdmin role.
     """
     try:
-        base_indexes_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
-        checkpoint_service = get_checkpoint_service(base_indexes_path, vector_db_name)
+        checkpoint_service = get_checkpoint_service(_indexes_path, vector_db_name)
         status = checkpoint_service.get_checkpoint_status()
         return status
     except Exception as e:
@@ -1233,8 +1247,7 @@ async def clear_checkpoints(
     Requires SuperAdmin role.
     """
     try:
-        base_indexes_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/indexes"))
-        checkpoint_service = get_checkpoint_service(base_indexes_path, vector_db_name)
+        checkpoint_service = get_checkpoint_service(_indexes_path, vector_db_name)
         checkpoint_service.clear_checkpoints()
         
         auth_service.log_rag_action(
