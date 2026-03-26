@@ -693,7 +693,6 @@ class DatabaseService(BaseRepository):
             for vdb_name in vector_db_names:
                 cursor.execute(VectorDBQueries.DELETE_SCHEDULES_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_DOCUMENT_INDEX_BY_NAME, (vdb_name,))
-                cursor.execute(VectorDBQueries.DELETE_SCHEMA_DRIFT_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_BY_NAME, (vdb_name,))
                 
                 # Delete ChromaDB folder on disk

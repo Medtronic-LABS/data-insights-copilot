@@ -300,24 +300,24 @@ class PromptQueries:
 
 
 class PromptConfigQueries:
-    """SQL query constants for prompt configuration operations (now merged with system_prompts)."""
+    """SQL query constants for prompt configuration operations."""
     
     GET_BY_ID = """
         SELECT 
             sp.id as prompt_id,
-            sp.connection_id,
-            sp.schema_selection,
-            sp.data_dictionary,
-            sp.reasoning,
-            sp.example_questions,
-            sp.data_source_type,
-            sp.embedding_config,
-            sp.retriever_config,
-            sp.chunking_config,
-            sp.llm_config,
-            sp.ingestion_documents,
-            sp.ingestion_file_name,
-            sp.ingestion_file_type,
+            pc.connection_id,
+            pc.schema_selection,
+            pc.data_dictionary,
+            pc.reasoning,
+            pc.example_questions,
+            pc.data_source_type,
+            pc.embedding_config,
+            pc.retriever_config,
+            pc.chunking_config,
+            pc.llm_config,
+            pc.ingestion_documents,
+            pc.ingestion_file_name,
+            pc.ingestion_file_type,
             sp.prompt_text,
             sp.agent_id,
             sp.version,
@@ -325,7 +325,8 @@ class PromptConfigQueries:
             dc.uri AS db_uri,
             dc.engine_type
         FROM system_prompts sp
-        LEFT JOIN db_connections dc ON sp.connection_id = dc.id
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
+        LEFT JOIN db_connections dc ON pc.connection_id = dc.id
         WHERE sp.id = %s
     """
     # Parameters: (config_id,)
@@ -338,21 +339,22 @@ class PromptConfigQueries:
             sp.created_at,
             sp.created_by,
             u.username as created_by_username,
-            sp.connection_id,
-            sp.schema_selection,
-            sp.data_dictionary,
-            sp.reasoning,
-            sp.example_questions,
-            sp.data_source_type,
-            sp.ingestion_documents,
-            sp.ingestion_file_name,
-            sp.ingestion_file_type,
-            sp.embedding_config,
-            sp.retriever_config,
-            sp.chunking_config,
-            sp.llm_config
+            pc.connection_id,
+            pc.schema_selection,
+            pc.data_dictionary,
+            pc.reasoning,
+            pc.example_questions,
+            pc.data_source_type,
+            pc.ingestion_documents,
+            pc.ingestion_file_name,
+            pc.ingestion_file_type,
+            pc.embedding_config,
+            pc.retriever_config,
+            pc.chunking_config,
+            pc.llm_config
         FROM system_prompts sp
         LEFT JOIN users u ON sp.created_by = u.username
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.is_active = 1 AND sp.agent_id = %s
         LIMIT 1
     """
@@ -366,21 +368,22 @@ class PromptConfigQueries:
             sp.created_at,
             sp.created_by,
             u.username as created_by_username,
-            sp.connection_id,
-            sp.schema_selection,
-            sp.data_dictionary,
-            sp.reasoning,
-            sp.example_questions,
-            sp.data_source_type,
-            sp.ingestion_documents,
-            sp.ingestion_file_name,
-            sp.ingestion_file_type,
-            sp.embedding_config,
-            sp.retriever_config,
-            sp.chunking_config,
-            sp.llm_config
+            pc.connection_id,
+            pc.schema_selection,
+            pc.data_dictionary,
+            pc.reasoning,
+            pc.example_questions,
+            pc.data_source_type,
+            pc.ingestion_documents,
+            pc.ingestion_file_name,
+            pc.ingestion_file_type,
+            pc.embedding_config,
+            pc.retriever_config,
+            pc.chunking_config,
+            pc.llm_config
         FROM system_prompts sp
         LEFT JOIN users u ON sp.created_by = u.username
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.is_active = 1 AND sp.agent_id IS NULL
         LIMIT 1
     """
@@ -408,8 +411,9 @@ class PromptConfigQueries:
     # Parameters: (agent_id,)
     
     GET_EMBEDDING_CONFIGS_BY_AGENT = """
-        SELECT sp.embedding_config 
+        SELECT pc.embedding_config 
         FROM system_prompts sp
+        JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.agent_id = %s
     """
     # Parameters: (agent_id,)
@@ -539,12 +543,6 @@ class VectorDBQueries:
     
     DELETE_DOCUMENT_INDEX_BY_NAME = """
         DELETE FROM document_index 
-        WHERE vector_db_name = %s
-    """
-    # Parameters: (vector_db_name,)
-    
-    DELETE_SCHEMA_DRIFT_BY_NAME = """
-        DELETE FROM schema_drift_logs 
         WHERE vector_db_name = %s
     """
     # Parameters: (vector_db_name,)
