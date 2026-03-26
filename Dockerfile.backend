@@ -33,6 +33,9 @@ COPY backend/ ./backend/
 # Copy shared constants
 COPY shared/ ./shared/
 
+# Copy database migrations
+COPY migrations/ ./migrations/
+
 # Create runtime directories
 RUN mkdir -p /app/backend/logs \
     /app/backend/data/indexes \

@@ -67,6 +67,7 @@ services:
       - ./backend/models:/app/backend/models
       - ./backend/data:/app/backend/data
       - ./backend/logs:/app/backend/logs
+      - ./migrations:/app/migrations
     ports:
       - "8000:8000"
     healthcheck:
