@@ -208,7 +208,7 @@ class DatabaseService(BaseRepository):
             logger.error(f"OIDC user upsert error: {e}")
             raise
     
-    def update_user_role(self, user_id: int, new_role: str) -> bool:
+    def update_user_role(self, user_id: str, new_role: str) -> bool:
         """Update a user's role (admin function for local role management).
         
         Args:
@@ -271,7 +271,7 @@ class DatabaseService(BaseRepository):
         query = UserQueries.GET_BY_EMAILS_TEMPLATE.format(placeholders=placeholders)
         return self.fetch_all(query, tuple(normalized_emails))
     
-    def deactivate_user(self, user_id: int) -> bool:
+    def deactivate_user(self, user_id: str) -> bool:
         """Deactivate a user account.
         
         Args:
@@ -287,7 +287,7 @@ class DatabaseService(BaseRepository):
             return True
         return False
     
-    def activate_user(self, user_id: int) -> bool:
+    def activate_user(self, user_id: str) -> bool:
         """Activate (reactivate) a user account.
         
         Args:
@@ -303,7 +303,7 @@ class DatabaseService(BaseRepository):
             return True
         return False
     
-    def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve user information by database ID.
         
         Args:
@@ -318,7 +318,7 @@ class DatabaseService(BaseRepository):
         """Get a specific configuration by ID."""
         return self.fetch_one(PromptConfigQueries.GET_BY_ID, (config_id,))
     
-    def get_latest_active_prompt(self, agent_id: Optional[int] = None) -> Optional[str]:
+    def get_latest_active_prompt(self, agent_id: Optional[str] = None) -> Optional[str]:  # agent_id is UUID
         """Get the latest active system prompt.
         
         Returns:
@@ -344,7 +344,7 @@ class DatabaseService(BaseRepository):
                               retriever_config: Optional[str] = None,
                               chunking_config: Optional[str] = None,
                               llm_config: Optional[str] = None,
-                              agent_id: Optional[int] = None,
+                              agent_id: Optional[str] = None,  # UUID as string
                               data_source_type: str = 'database',
                               ingestion_documents: Optional[str] = None,
                               ingestion_file_name: Optional[str] = None,
@@ -421,14 +421,14 @@ class DatabaseService(BaseRepository):
                 "agent_id": agent_id
             }
 
-    def get_active_config(self, agent_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def get_active_config(self, agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:  # agent_id is UUID
         """Get the configuration metadata for the currently active prompt."""
         if agent_id:
             return self.fetch_one(PromptConfigQueries.GET_ACTIVE_CONFIG_FOR_AGENT, (agent_id,))
         else:
             return self.fetch_one(PromptConfigQueries.GET_ACTIVE_CONFIG_GLOBAL)
 
-    def get_all_prompts(self, agent_id: Optional[int] = None) -> list[Dict[str, Any]]:
+    def get_all_prompts(self, agent_id: Optional[str] = None) -> list[Dict[str, Any]]:  # agent_id is UUID
         """Get all system prompt versions history with configuration metadata."""
         if agent_id:
             rows = self.fetch_all(PromptConfigQueries.GET_ALL_FOR_AGENT, (agent_id,))
@@ -476,8 +476,14 @@ class DatabaseService(BaseRepository):
         """Get vector db by name to check existence/collisions."""
         return self.fetch_one(VectorDBQueries.GET_BY_NAME, (name,))
 
-    def register_vector_db(self, name: str, data_source_id: str, created_by: Optional[str] = None) -> int:
-        """Register a new vector DB namespace."""
+    def register_vector_db(self, name: str, data_source_id: str, created_by = None) -> int:
+        """Register a new vector DB namespace.
+        
+        Args:
+            name: Vector DB name
+            data_source_id: Data source identifier
+            created_by: User ID (UUID) or None
+        """
         try:
             result = self.execute_returning(VectorDBQueries.INSERT, (name, data_source_id, created_by))
             return result['id']
@@ -506,15 +512,16 @@ class DatabaseService(BaseRepository):
             return []
 
     def create_agent(self, name: str, description: str = None, agent_type: str = 'sql', 
-                    db_connection_uri: str = None, rag_config_id: int = None, 
-                    system_prompt: str = None, created_by: int = None) -> Dict[str, Any]:
-        """Create a new agent and automatically assign the creator as admin."""
+                    db_connection_uri: str = None, 
+                    system_prompt: str = None, created_by: Optional[str] = None) -> Dict[str, Any]:
+        """Create a new agent and automatically assign the creator as admin"""
         try:
             with self.transaction() as (conn, cursor):
                 # Insert agent
                 cursor.execute(AgentQueries.INSERT_AGENT, 
-                    (name, description, agent_type, db_connection_uri, rag_config_id, system_prompt, created_by))
+                    (name, description, agent_type, db_connection_uri, system_prompt, created_by))
                 agent_id = cursor.fetchone()['id']
+                logger.info(f"Created agent '{name}' with ID {agent_id}")
                 
                 # Auto-assign creator as admin in user_agents table
                 if created_by:
@@ -525,15 +532,15 @@ class DatabaseService(BaseRepository):
         except psycopg2.IntegrityError:
             raise ValueError(f"Agent with name '{name}' already exists")
 
-    def get_agent_by_id(self, agent_id: int) -> Optional[Dict[str, Any]]:
+    def get_agent_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:  # agent_id is UUID
         """Get agent by ID."""
         return self.fetch_one(AgentQueries.GET_BY_ID, (agent_id,))
 
-    def get_agents_for_user(self, user_id: int) -> list[Dict[str, Any]]:
+    def get_agents_for_user(self, user_id: str) -> list[Dict[str, Any]]:
         """Get all agents a user has access to."""
         return self.fetch_all(AgentQueries.GET_FOR_USER, (user_id,))
 
-    def get_agents_for_admin(self, user_id: int) -> list[Dict[str, Any]]:
+    def get_agents_for_admin(self, user_id: str) -> list[Dict[str, Any]]:
         """Get all agents an admin has access to via user_agents table.
         
         Access is determined solely by user_agents assignments. The created_by field
@@ -541,7 +548,7 @@ class DatabaseService(BaseRepository):
         """
         return self.fetch_all(AgentQueries.GET_FOR_ADMIN, (user_id,))
 
-    def check_user_access(self, user_id: int, agent_id: int, required_role: str = None) -> bool:
+    def check_user_access(self, user_id: str, agent_id: str, required_role: str = None) -> bool:  # Both UUIDs
         """Check if user has access to an agent."""
         row = self.fetch_one(UserAgentQueries.CHECK_ACCESS, (user_id, agent_id))
         
@@ -561,7 +568,7 @@ class DatabaseService(BaseRepository):
         """List all agents (Admin only)."""
         return self.fetch_all(AgentQueries.LIST_ALL)
 
-    def assign_user_to_agent(self, agent_id: int, user_id: int, role: str = 'user', granted_by: int = None) -> bool:
+    def assign_user_to_agent(self, agent_id: str, user_id: str, role: str = 'user', granted_by: Optional[str] = None) -> bool:  # All UUIDs
         """Assign a user to an agent with a specific role."""
         try:
             self.execute_write(UserAgentQueries.ASSIGN_USER, (user_id, agent_id, role, granted_by))
@@ -570,7 +577,7 @@ class DatabaseService(BaseRepository):
             logger.error(f"Failed to assign user {user_id} to agent {agent_id}: {e}")
             return False
 
-    def revoke_user_access(self, agent_id: int, user_id: int) -> bool:
+    def revoke_user_access(self, agent_id: str, user_id: str) -> bool:  # Both UUIDs
         """Revoke a user's access to an agent."""
         try:
             affected = self.execute_write(UserAgentQueries.REVOKE_ACCESS, (user_id, agent_id))
@@ -579,7 +586,7 @@ class DatabaseService(BaseRepository):
             logger.error(f"Failed to revoke access for user {user_id} from agent {agent_id}: {e}")
             return False
 
-    def get_agent_users(self, agent_id: int) -> list:
+    def get_agent_users(self, agent_id: str) -> list:  # agent_id is UUID
         """Get all users assigned to an agent with their details."""
         try:
             return self.fetch_all(UserAgentQueries.GET_AGENT_USERS, (agent_id,))
@@ -587,7 +594,7 @@ class DatabaseService(BaseRepository):
             logger.error(f"Failed to get users for agent {agent_id}: {e}")
             return []
 
-    def update_agent(self, agent_id: int, name: str = None, description: str = None) -> Optional[Dict[str, Any]]:
+    def update_agent(self, agent_id: str, name: str = None, description: str = None) -> Optional[Dict[str, Any]]:  # agent_id is UUID
         """Update an agent's name and/or description.
         
         Args:
@@ -637,7 +644,7 @@ class DatabaseService(BaseRepository):
         
         return self.get_agent_by_id(agent_id)
 
-    def delete_agent(self, agent_id: int) -> bool:
+    def delete_agent(self, agent_id: str) -> bool:  # agent_id is UUID
         """Delete an agent and all related records (cascade deletion).
         
         Deletion order (child tables first):
@@ -711,7 +718,6 @@ class DatabaseService(BaseRepository):
                 # Delete from database tables
                 cursor.execute(VectorDBQueries.DELETE_SCHEDULES_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_DOCUMENT_INDEX_BY_NAME, (vdb_name,))
-                cursor.execute(VectorDBQueries.DELETE_SCHEMA_DRIFT_BY_NAME, (vdb_name,))
                 cursor.execute(VectorDBQueries.DELETE_BY_NAME, (vdb_name,))
                 
                 # Delete from Qdrant if configured

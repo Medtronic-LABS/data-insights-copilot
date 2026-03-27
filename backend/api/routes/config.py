@@ -552,7 +552,7 @@ async def publish_prompt(
 
 @router.get("/history", response_model=List[PromptResponse])
 async def get_prompt_history(
-    agent_id: Optional[int] = None,
+    agent_id: Optional[str] = None,  # UUID as string
     service: ConfigService = Depends(get_config_service)
 ):
     """Get all historical versions of the system prompt."""
@@ -564,7 +564,7 @@ async def get_prompt_history(
 
 @router.get("/active-metadata", response_model=Optional[Dict[str, Any]])
 async def get_active_config(
-    agent_id: Optional[int] = None,
+    agent_id: Optional[str] = None,  # UUID as string
     service: ConfigService = Depends(get_config_service)
 ):
     """Get the configuration metadata for the active prompt."""
@@ -576,7 +576,7 @@ async def get_active_config(
 
 @router.get("/active", response_model=Dict[str, Optional[str]])
 async def get_active_prompt(
-    agent_id: Optional[int] = None,
+    agent_id: Optional[str] = None,  # UUID as string
     db_service: DatabaseService = Depends(get_db_service)
 ):
     """

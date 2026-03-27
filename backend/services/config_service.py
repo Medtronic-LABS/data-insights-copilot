@@ -560,7 +560,7 @@ class ConfigService:
                               retriever_config: Optional[str] = None,
                               chunking_config: Optional[str] = None,
                               llm_config: Optional[str] = None,
-                              agent_id: Optional[int] = None,
+                              agent_id: Optional[str] = None,  # UUID as string
                               data_source_type: str = 'database',
                               ingestion_documents: Optional[str] = None,
                               ingestion_file_name: Optional[str] = None,
@@ -609,11 +609,11 @@ class ConfigService:
     # Prompt History & Active Config
     # =========================================================================
 
-    def get_prompt_history(self, agent_id: Optional[int] = None):
+    def get_prompt_history(self, agent_id: Optional[str] = None):  # UUID as string
         """Get history of all system prompts."""
         return self.db_service.get_all_prompts(agent_id=agent_id)
 
-    def get_active_config(self, agent_id: Optional[int] = None) -> Optional[dict]:
+    def get_active_config(self, agent_id: Optional[str] = None) -> Optional[dict]:  # UUID as string
         """Get the active prompt configuration."""
         return self.db_service.get_active_config(agent_id=agent_id)
 

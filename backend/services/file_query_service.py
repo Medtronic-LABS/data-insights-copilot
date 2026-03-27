@@ -92,7 +92,7 @@ class FileQueryService:
     The Agentic Hybrid is the GOLD STANDARD for complex queries on 6.5M+ rows.
     """
     
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: str):
         self.user_id = user_id
         self.intent_router = get_intent_router()
         self._sql_service: Optional[FileSQLService] = None
@@ -958,6 +958,6 @@ Answer:"""
         }
 
 
-def get_file_query_service(user_id: int) -> FileQueryService:
+def get_file_query_service(user_id: str) -> FileQueryService:
     """Get a FileQueryService instance for a user."""
     return FileQueryService(user_id)

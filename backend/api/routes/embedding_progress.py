@@ -58,7 +58,7 @@ _indexes_path.mkdir(parents=True, exist_ok=True)
 def _run_embedding_job_sync_wrapper(
     job_id: str,
     config_id: int,
-    user_id: int,
+    user_id: str,  # UUID as string
     incremental: bool,
     ui_batch_size: Optional[int],
     ui_max_concurrent: Optional[int],
@@ -202,7 +202,7 @@ async def start_embedding_job(
 async def _run_embedding_job(
     job_id: str, 
     config_id: int, 
-    user_id: int, 
+    user_id: str,  # UUID as string
     incremental: bool = True,
     ui_batch_size: Optional[int] = None,
     ui_max_concurrent: Optional[int] = None,
@@ -631,7 +631,7 @@ async def _run_embedding_job(
                     data_source_id=excluded.data_source_id,
                     embedding_model=excluded.embedding_model,
                     llm=excluded.llm
-            ''', (vector_db_name, str(config.get('connection_id') or config.get('agent_id') or 'system'), str(user_id), model_name, llm_name))
+            ''', (vector_db_name, str(config.get('connection_id') or config.get('agent_id') or 'system'), user_id, model_name, llm_name))
             conn_reg.commit()
             conn_reg.close()
         except Exception as e:

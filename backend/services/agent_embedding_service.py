@@ -27,7 +27,7 @@ DEFAULT_EMBEDDING_CONFIG = {
 }
 
 
-def generate_collection_name(agent_id: int, model_name: str) -> str:
+def generate_collection_name(agent_id: str, model_name: str) -> str:  # agent_id is UUID
     """
     Generate a unique collection name for an agent + embedding model combination.
     
@@ -51,7 +51,7 @@ class AgentEmbeddingService:
     def __init__(self):
         self._registry = get_embedding_registry()
     
-    def get_agent_embedding_config(self, agent_id: int) -> Dict[str, Any]:
+    def get_agent_embedding_config(self, agent_id: str) -> Dict[str, Any]:  # agent_id is UUID
         """
         Get the embedding configuration for a specific agent.
         
@@ -122,7 +122,7 @@ class AgentEmbeddingService:
     
     def set_agent_embedding_config(
         self,
-        agent_id: int,
+        agent_id: str,  # UUID as string
         provider: str,
         model_name: str,
         dimension: int,
@@ -215,12 +215,12 @@ class AgentEmbeddingService:
             "previous_model": current_config.get("model_name") if model_changed else None
         }
     
-    def get_collection_name_for_agent(self, agent_id: int) -> str:
+    def get_collection_name_for_agent(self, agent_id: str) -> str:  # agent_id is UUID
         """Get the vector collection name for a specific agent."""
         config = self.get_agent_embedding_config(agent_id)
         return config["collection_name"]
     
-    def get_embedding_provider_for_agent(self, agent_id: int):
+    def get_embedding_provider_for_agent(self, agent_id: str):  # agent_id is UUID
         """
         Get an embedding provider instance configured for a specific agent.
         
@@ -249,7 +249,7 @@ class AgentEmbeddingService:
     
     def mark_agent_indexed(
         self,
-        agent_id: int,
+        agent_id: str,  # UUID as string
         document_count: int,
         job_id: Optional[str] = None
     ) -> None:
@@ -299,7 +299,7 @@ class AgentEmbeddingService:
         
         return [dict(r) for r in results] if results else []
     
-    def get_embedding_history(self, agent_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_embedding_history(self, agent_id: str, limit: int = 10) -> List[Dict[str, Any]]:  # agent_id is UUID
         """Get the embedding model change history for an agent."""
         db = get_db_service()
         

@@ -38,7 +38,7 @@ class NotificationService:
     
     async def create_notification(
         self,
-        user_id: int,
+        user_id: str,
         notification_type: NotificationType,
         title: str,
         message: Optional[str] = None,
@@ -94,7 +94,7 @@ class NotificationService:
     
     def _create_notification_record(
         self,
-        user_id: int,
+        user_id: str,
         notification_type: NotificationType,
         title: str,
         message: Optional[str],
@@ -146,7 +146,7 @@ class NotificationService:
         self,
         notification_id: int,
         channels: List[str],
-        user_id: int
+        user_id: str
     ) -> None:
         """Route notification to specified channels."""
         notification = self.get_notification(notification_id)
@@ -171,7 +171,7 @@ class NotificationService:
                 logger.error(f"Failed to deliver notification to {channel}: {e}")
                 self._log_delivery(notification_id, channel, "failed", str(e))
     
-    async def _deliver_in_app(self, notification: Notification, user_id: int) -> None:
+    async def _deliver_in_app(self, notification: Notification, user_id: str) -> None:
         """Deliver notification via in-app channel using WebSocket."""
         try:
             # Import here to avoid circular imports
@@ -197,7 +197,7 @@ class NotificationService:
             
             # Push via WebSocket
             ws_manager = get_notification_ws_manager()
-            sent_count = await ws_manager.send_to_user(str(user_id), notification_data)
+            sent_count = await ws_manager.send_to_user(user_id, notification_data)
             
             if sent_count > 0:
                 logger.debug(f"In-app notification pushed to {sent_count} connections for user {user_id}")
@@ -212,7 +212,7 @@ class NotificationService:
     async def _deliver_email(
         self,
         notification: Notification,
-        user_id: int,
+        user_id: str,
         preferences: NotificationPreferences
     ) -> None:
         """Deliver notification via email."""
@@ -348,7 +348,7 @@ class NotificationService:
     
     def get_user_notifications(
         self,
-        user_id: int,
+        user_id: str,
         status: Optional[NotificationStatus] = None,
         limit: int = 50,
         offset: int = 0
@@ -376,7 +376,7 @@ class NotificationService:
         
         return [self.get_notification(nid) for nid in notification_ids if self.get_notification(nid)]
     
-    def get_unread_count(self, user_id: int) -> int:
+    def get_unread_count(self, user_id: str) -> int:
         """Get count of unread notifications for a user."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -392,7 +392,7 @@ class NotificationService:
     
     def get_notification_count(
         self, 
-        user_id: int, 
+        user_id: str, 
         status: Optional[NotificationStatus] = None
     ) -> int:
         """Get total count of notifications for a user, optionally filtered by status."""
@@ -412,7 +412,7 @@ class NotificationService:
         finally:
             conn.close()
     
-    def mark_as_read(self, notification_id: int, user_id: int) -> bool:
+    def mark_as_read(self, notification_id: int, user_id: str) -> bool:
         """Mark a notification as read."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -437,7 +437,7 @@ class NotificationService:
         finally:
             conn.close()
     
-    def mark_all_as_read(self, user_id: int) -> int:
+    def mark_all_as_read(self, user_id: str) -> int:
         """Mark all user's notifications as read."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -459,7 +459,7 @@ class NotificationService:
         finally:
             conn.close()
     
-    def dismiss_notification(self, notification_id: int, user_id: int) -> bool:
+    def dismiss_notification(self, notification_id: int, user_id: str) -> bool:
         """Dismiss a notification."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -481,7 +481,7 @@ class NotificationService:
         finally:
             conn.close()
     
-    def get_user_preferences(self, user_id: int) -> NotificationPreferences:
+    def get_user_preferences(self, user_id: str) -> NotificationPreferences:
         """Get notification preferences for a user."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -519,7 +519,7 @@ class NotificationService:
     
     def update_user_preferences(
         self,
-        user_id: int,
+        user_id: str,
         preferences: Dict[str, Any]
     ) -> bool:
         """Update notification preferences for a user."""
@@ -573,35 +573,35 @@ class NotificationService:
         finally:
             conn.close()
     
-    async def broadcast_notification_read(self, notification_id: int, user_id: int) -> None:
+    async def broadcast_notification_read(self, notification_id: int, user_id: str) -> None:
         """Broadcast notification_read event to all user's WebSocket connections."""
         try:
             from backend.api.websocket.notifications import get_notification_ws_manager
             ws_manager = get_notification_ws_manager()
             await ws_manager.broadcast_to_user(
-                str(user_id), 
+                user_id, 
                 "notification_read", 
                 {"notification_id": notification_id}
             )
         except Exception as e:
             logger.debug(f"Failed to broadcast notification_read: {e}")
     
-    async def broadcast_all_read(self, user_id: int) -> None:
+    async def broadcast_all_read(self, user_id: str) -> None:
         """Broadcast all_read event to all user's WebSocket connections."""
         try:
             from backend.api.websocket.notifications import get_notification_ws_manager
             ws_manager = get_notification_ws_manager()
-            await ws_manager.broadcast_to_user(str(user_id), "all_read")
+            await ws_manager.broadcast_to_user(user_id, "all_read")
         except Exception as e:
             logger.debug(f"Failed to broadcast all_read: {e}")
     
-    async def broadcast_notification_dismissed(self, notification_id: int, user_id: int) -> None:
+    async def broadcast_notification_dismissed(self, notification_id: int, user_id: str) -> None:
         """Broadcast notification_dismissed event to all user's WebSocket connections."""
         try:
             from backend.api.websocket.notifications import get_notification_ws_manager
             ws_manager = get_notification_ws_manager()
             await ws_manager.broadcast_to_user(
-                str(user_id), 
+                user_id, 
                 "notification_dismissed", 
                 {"notification_id": notification_id}
             )

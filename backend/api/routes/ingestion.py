@@ -60,7 +60,7 @@ def _sanitize_column_name(col: str, index: int = 0) -> str:
     return normalize_column_name(col, index)
 
 
-def _get_agent_data_dir(agent_id: int) -> Path:
+def _get_agent_data_dir(agent_id: str) -> Path:
     """Get the directory for an agent's data files.
     
     Standard format: data/duckdb_files/agent_{id}/
@@ -71,18 +71,18 @@ def _get_agent_data_dir(agent_id: int) -> Path:
     return agent_dir
 
 
-def _get_agent_duckdb_path(agent_id: int) -> Path:
+def _get_agent_duckdb_path(agent_id: str) -> Path:
     """Get the path to an agent's DuckDB file."""
     return _get_agent_data_dir(agent_id) / "database.duckdb"
 
 
-def _get_agent_csv_path(agent_id: int, table_name: str) -> Path:
+def _get_agent_csv_path(agent_id: str, table_name: str) -> Path:
     """Get the path where an agent's CSV file will be stored."""
     return _get_agent_data_dir(agent_id) / f"{table_name}.csv"
 
 
 # Legacy user-based functions (for backward compatibility during migration)
-def _get_user_data_dir(user_id: int) -> Path:
+def _get_user_data_dir(user_id: str) -> Path:
     """DEPRECATED: Use _get_agent_data_dir instead.
     Kept for backward compatibility with existing data."""
     user_dir = DATA_STORAGE_DIR / f"user_{user_id}"
@@ -90,12 +90,12 @@ def _get_user_data_dir(user_id: int) -> Path:
     return user_dir
 
 
-def _get_user_duckdb_path(user_id: int) -> Path:
+def _get_user_duckdb_path(user_id: str) -> Path:
     """DEPRECATED: Use _get_agent_duckdb_path instead."""
     return _get_user_data_dir(user_id) / "database.duckdb"
 
 
-def _get_user_csv_path(user_id: int, table_name: str) -> Path:
+def _get_user_csv_path(user_id: str, table_name: str) -> Path:
     """DEPRECATED: Use _get_agent_csv_path instead."""
     return _get_user_data_dir(user_id) / f"{table_name}.csv"
 
@@ -165,7 +165,7 @@ def _stream_excel_to_csv(
 
 
 def _register_csv_in_duckdb(
-    user_id: int,
+    user_id: str,  # UUID as string
     table_name: str,
     csv_path: str,
     original_filename: str,
@@ -218,7 +218,7 @@ def _register_csv_in_duckdb(
 
 
 def _process_large_file_background(
-    user_id: int,
+    user_id: str,  # UUID as string
     table_name: str,
     source_path: str,
     file_type: str,
@@ -1346,7 +1346,7 @@ async def embed_text_columns_for_rag(
 
 
 def _store_rag_config(
-    user_id: int,
+    user_id: str,  # UUID as string
     table_name: str,
     text_columns: List[str],
     id_column: str,

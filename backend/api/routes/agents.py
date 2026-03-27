@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- Helper Functions ---
-def check_agent_admin_access(db, agent_id: int, current_user: User) -> bool:
+def check_agent_admin_access(db, agent_id: str, current_user: User) -> bool:  # agent_id is UUID
     """
     Check if current user has admin access to a specific agent.
     - Super admin: always has access
@@ -38,7 +38,7 @@ def check_agent_admin_access(db, agent_id: int, current_user: User) -> bool:
 
 # --- Schemas ---
 class AgentResponse(BaseModel):
-    id: int
+    id: str  # UUID represented as string
     name: str
     description: Optional[str] = None
     type: str
@@ -148,7 +148,7 @@ async def create_agent(agent: AgentCreate, current_user: User = Depends(require_
 
 
 @router.patch("/{agent_id}", response_model=AgentResponse)
-async def update_agent(agent_id: int, agent_update: AgentUpdate, current_user: User = Depends(require_admin)):
+async def update_agent(agent_id: str, agent_update: AgentUpdate, current_user: User = Depends(require_admin)):  # agent_id is UUID
     """
     Update an agent's name and/or description.
     Requires admin access to the specific agent.
@@ -180,7 +180,7 @@ async def update_agent(agent_id: int, agent_update: AgentUpdate, current_user: U
             actor_username=current_user.username,
             actor_role=current_user.role,
             resource_type="agent",
-            resource_id=str(agent_id),
+            resource_id=agent_id,
             resource_name=updated_agent.get('name'),
             details={"name": agent_update.name, "description": agent_update.description}
         )
@@ -194,7 +194,7 @@ async def update_agent(agent_id: int, agent_update: AgentUpdate, current_user: U
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent(agent_id: int, current_user: User = Depends(require_admin)):
+async def delete_agent(agent_id: str, current_user: User = Depends(require_admin)):  # agent_id is UUID
     """
     Delete an agent and all related data (cascade deletion).
     
@@ -236,7 +236,7 @@ async def delete_agent(agent_id: int, current_user: User = Depends(require_admin
             actor_username=current_user.username,
             actor_role=current_user.role,
             resource_type="agent",
-            resource_id=str(agent_id),
+            resource_id=agent_id,
             resource_name=agent_name,
             details={"cascade": True}
         )
@@ -262,12 +262,12 @@ async def list_all_agents(current_user: User = Depends(require_super_admin)):
 
 
 class AgentAssignment(BaseModel):
-    user_id: int
+    user_id: str  # UUID as string
     role: str = "user"
 
 
 @router.get("/{agent_id}/users")
-async def get_agent_users(agent_id: int, current_user: User = Depends(require_admin)):
+async def get_agent_users(agent_id: str, current_user: User = Depends(require_admin)):  # agent_id is UUID
     """
     Get all users assigned to an agent.
     Requires admin access to the specific agent.
@@ -285,7 +285,7 @@ async def get_agent_users(agent_id: int, current_user: User = Depends(require_ad
     return {"users": users, "agent_id": agent_id}
 
 @router.post("/{agent_id}/users")
-async def assign_user(agent_id: int, assignment: AgentAssignment, current_user: User = Depends(require_admin)):
+async def assign_user(agent_id: str, assignment: AgentAssignment, current_user: User = Depends(require_admin)):  # agent_id is UUID
     """
     Assign a user to an agent.
     - Super admin can assign with any per-agent role (admin or user)
@@ -337,7 +337,7 @@ async def assign_user(agent_id: int, assignment: AgentAssignment, current_user: 
         actor_username=current_user.username,
         actor_role=current_user.role,
         resource_type="agent",
-        resource_id=str(agent_id),
+        resource_id=agent_id,
         details={
             "assigned_user_id": assignment.user_id,
             "assigned_user_name": target_user.get('username') if target_user else None,
@@ -348,7 +348,7 @@ async def assign_user(agent_id: int, assignment: AgentAssignment, current_user: 
     return {"status": "success", "message": f"User {assignment.user_id} assigned to agent {agent_id}"}
 
 @router.delete("/{agent_id}/users/{user_id}")
-async def revoke_access(agent_id: int, user_id: int, current_user: User = Depends(require_admin)):
+async def revoke_access(agent_id: str, user_id: str, current_user: User = Depends(require_admin)):  # both are UUIDs
     """
     Revoke a user's access to an agent.
     Requires admin access to the specific agent.
@@ -377,7 +377,7 @@ async def revoke_access(agent_id: int, user_id: int, current_user: User = Depend
         actor_username=current_user.username,
         actor_role=current_user.role,
         resource_type="agent",
-        resource_id=str(agent_id),
+        resource_id=agent_id,
         details={
             "revoked_user_id": user_id,
             "revoked_user_name": target_user.get('username') if target_user else None
@@ -388,14 +388,14 @@ async def revoke_access(agent_id: int, user_id: int, current_user: User = Depend
 
 
 class BulkAgentAssignment(BaseModel):
-    user_id: int
-    agent_ids: List[int]
+    user_id: str  # UUID as string
+    agent_ids: List[str]  # List of agent UUIDs as strings
     role: str = "user"
 
 
 # --- Embedding Configuration Schemas ---
 class AgentEmbeddingConfigResponse(BaseModel):
-    agent_id: int
+    agent_id: str  # UUID as string
     provider: str
     model_name: str
     model_path: Optional[str] = None
@@ -520,7 +520,7 @@ async def bulk_assign_agents(assignment: BulkAgentAssignment, current_user: User
 # =============================================================================
 
 @router.get("/{agent_id}/embedding", response_model=AgentEmbeddingConfigResponse)
-async def get_agent_embedding_config(agent_id: int, current_user: User = Depends(require_admin)):
+async def get_agent_embedding_config(agent_id: str, current_user: User = Depends(require_admin)):  # agent_id is UUID
     """
     Get the embedding model configuration for an agent.
     
@@ -555,7 +555,7 @@ async def get_agent_embedding_config(agent_id: int, current_user: User = Depends
 
 @router.put("/{agent_id}/embedding", response_model=AgentEmbeddingConfigResponse)
 async def update_agent_embedding_config(
-    agent_id: int,
+    agent_id: str,  # UUID as string
     config: AgentEmbeddingConfigUpdate,
     current_user: User = Depends(require_admin)
 ):
@@ -616,7 +616,7 @@ async def update_agent_embedding_config(
             actor_username=current_user.username,
             actor_role=current_user.role,
             resource_type="agent",
-            resource_id=str(agent_id),
+            resource_id=agent_id,
             resource_name=agent.get('name'),
             details={
                 "action": "embedding_config_update",
@@ -637,7 +637,7 @@ async def update_agent_embedding_config(
 
 @router.get("/{agent_id}/embedding/history", response_model=List[AgentEmbeddingHistoryResponse])
 async def get_agent_embedding_history(
-    agent_id: int,
+    agent_id: str,  # UUID as string
     limit: int = 10,
     current_user: User = Depends(require_admin)
 ):

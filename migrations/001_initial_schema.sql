@@ -9,7 +9,7 @@
 -- Core User Management
 -- ============================================
 CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username TEXT UNIQUE NOT NULL,
     email TEXT UNIQUE,
     password_hash TEXT NOT NULL,
@@ -36,51 +36,20 @@ CREATE TABLE IF NOT EXISTS db_connections (
 );
 
 -- ============================================
--- RAG Configurations (Versioning)
--- ============================================
-CREATE TABLE IF NOT EXISTS rag_configurations (
-    id SERIAL PRIMARY KEY,
-    version TEXT NOT NULL UNIQUE,
-    version_number INTEGER NOT NULL,
-    schema_snapshot TEXT NOT NULL,
-    data_dictionary TEXT,
-    prompt_template TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    created_by INTEGER NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    published_at TIMESTAMP,
-    published_by INTEGER,
-    parent_version_id INTEGER,
-    change_summary TEXT,
-    config_hash TEXT NOT NULL,
-    connection_id INTEGER REFERENCES db_connections(id),
-    is_active INTEGER DEFAULT 0,
-    FOREIGN KEY (created_by) REFERENCES users(id),
-    FOREIGN KEY (published_by) REFERENCES users(id),
-    FOREIGN KEY (parent_version_id) REFERENCES rag_configurations(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_rag_config_status ON rag_configurations(status);
-CREATE INDEX IF NOT EXISTS idx_rag_config_version ON rag_configurations(version_number DESC);
-CREATE INDEX IF NOT EXISTS idx_rag_config_created ON rag_configurations(created_at DESC);
-
--- ============================================
 -- Agents
 -- ============================================
 CREATE TABLE IF NOT EXISTS agents (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     type TEXT DEFAULT 'sql',
     db_connection_uri TEXT,
-    rag_config_id INTEGER,
     system_prompt TEXT,
     embedding_model TEXT DEFAULT 'bge-m3',
     embedding_dimension INTEGER DEFAULT 1024,
     embedding_provider TEXT DEFAULT 'sentence-transformers',
-    created_by INTEGER,
+    created_by UUID,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(rag_config_id) REFERENCES rag_configurations(id),
     FOREIGN KEY(created_by) REFERENCES users(id)
 );
 
@@ -88,11 +57,11 @@ CREATE TABLE IF NOT EXISTS agents (
 -- User-Agent RBAC
 -- ============================================
 CREATE TABLE IF NOT EXISTS user_agents (
-    user_id INTEGER,
-    agent_id INTEGER,
+    user_id UUID,
+    agent_id UUID,
     role TEXT DEFAULT 'user',
     granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    granted_by INTEGER,
+    granted_by UUID,
     PRIMARY KEY (user_id, agent_id),
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(agent_id) REFERENCES agents(id),
@@ -109,7 +78,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
     is_active INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by TEXT,
-    agent_id INTEGER REFERENCES agents(id)
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE
 );
 
 -- ============================================
@@ -139,7 +108,7 @@ CREATE TABLE IF NOT EXISTS prompt_configs (
 CREATE TABLE IF NOT EXISTS vector_db_registry (
     id SERIAL PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    data_source_id TEXT,
+    data_source_id INTEGER REFERENCES db_connections(id) ON DELETE CASCADE,
     embedding_model TEXT,
     llm TEXT,
     last_full_run TIMESTAMP,
@@ -147,9 +116,10 @@ CREATE TABLE IF NOT EXISTS vector_db_registry (
     version TEXT DEFAULT '1.0.0',
     schema_snapshot TEXT,
     schema_snapshot_at TIMESTAMP,
-    agent_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by TEXT
+    created_by UUID,
+    FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
 -- ============================================
@@ -168,65 +138,13 @@ CREATE TABLE IF NOT EXISTS document_index (
 CREATE INDEX IF NOT EXISTS idx_doc_index_vdbname ON document_index(vector_db_name);
 
 -- ============================================
--- Embedding Versions
--- ============================================
-CREATE TABLE IF NOT EXISTS embedding_versions (
-    id SERIAL PRIMARY KEY,
-    config_id INTEGER NOT NULL,
-    version_hash TEXT NOT NULL UNIQUE,
-    embedding_model TEXT NOT NULL,
-    embedding_dimension INTEGER NOT NULL,
-    total_documents INTEGER NOT NULL DEFAULT 0,
-    table_documents INTEGER NOT NULL DEFAULT 0,
-    column_documents INTEGER NOT NULL DEFAULT 0,
-    relationship_documents INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'pending',
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    generation_time_seconds REAL,
-    validation_passed INTEGER DEFAULT 0,
-    validation_details TEXT,
-    error_message TEXT,
-    error_details TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by INTEGER NOT NULL,
-    FOREIGN KEY (config_id) REFERENCES rag_configurations(id) ON DELETE CASCADE,
-    FOREIGN KEY (created_by) REFERENCES users(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_embedding_versions_config ON embedding_versions(config_id);
-CREATE INDEX IF NOT EXISTS idx_embedding_versions_status ON embedding_versions(status);
-
--- ============================================
--- Embedding Documents
--- ============================================
-CREATE TABLE IF NOT EXISTS embedding_documents (
-    id SERIAL PRIMARY KEY,
-    version_id INTEGER NOT NULL,
-    document_id TEXT NOT NULL,
-    document_type TEXT NOT NULL,
-    source_table TEXT,
-    source_column TEXT,
-    content TEXT NOT NULL,
-    embedding TEXT NOT NULL,
-    metadata TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (version_id) REFERENCES embedding_versions(id) ON DELETE CASCADE,
-    UNIQUE(version_id, document_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_embedding_docs_version ON embedding_documents(version_id);
-CREATE INDEX IF NOT EXISTS idx_embedding_docs_type ON embedding_documents(document_type);
-CREATE INDEX IF NOT EXISTS idx_embedding_docs_table ON embedding_documents(source_table);
-
--- ============================================
 -- RAG Audit Log
 -- ============================================
 CREATE TABLE IF NOT EXISTS rag_audit_log (
     id SERIAL PRIMARY KEY,
     config_id INTEGER,
     action TEXT NOT NULL,
-    performed_by INTEGER NOT NULL,
+    performed_by UUID NOT NULL,
     performed_by_email TEXT NOT NULL,
     performed_by_role TEXT NOT NULL,
     ip_address TEXT,
@@ -236,7 +154,7 @@ CREATE TABLE IF NOT EXISTS rag_audit_log (
     reason TEXT,
     success INTEGER DEFAULT 1,
     error_message TEXT,
-    FOREIGN KEY (config_id) REFERENCES rag_configurations(id) ON DELETE SET NULL,
+    FOREIGN KEY (config_id) REFERENCES system_prompts(id) ON DELETE SET NULL,
     FOREIGN KEY (performed_by) REFERENCES users(id)
 );
 
@@ -246,11 +164,34 @@ CREATE INDEX IF NOT EXISTS idx_rag_audit_timestamp ON rag_audit_log(performed_at
 CREATE INDEX IF NOT EXISTS idx_rag_audit_config ON rag_audit_log(config_id);
 
 -- ============================================
+-- Audit Logs (General System Audit)
+-- ============================================
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actor_id UUID,
+    actor_username TEXT,
+    actor_role TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id TEXT,
+    resource_name TEXT,
+    details TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    FOREIGN KEY (actor_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor_username);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+
+-- ============================================
 -- Notifications
 -- ============================================
 CREATE TABLE IF NOT EXISTS notifications (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
+    user_id UUID NOT NULL,
     type TEXT NOT NULL,
     priority TEXT NOT NULL DEFAULT 'medium',
     title TEXT NOT NULL,
@@ -277,7 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_priority ON notifications(priority)
 -- ============================================
 CREATE TABLE IF NOT EXISTS notification_preferences (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER UNIQUE NOT NULL,
+    user_id UUID UNIQUE NOT NULL,
     in_app_enabled INTEGER DEFAULT 1,
     email_enabled INTEGER DEFAULT 1,
     webhook_enabled INTEGER DEFAULT 0,
@@ -338,11 +279,11 @@ CREATE TABLE IF NOT EXISTS embedding_jobs (
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     embedding_started_at TIMESTAMP,
-    agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
     embedding_model TEXT,
     embedding_dimension INTEGER,
-    started_by INTEGER NOT NULL,
-    cancelled_by INTEGER,
+    started_by UUID NOT NULL,
+    cancelled_by UUID,
     error_message TEXT,
     error_details TEXT,
     retry_count INTEGER DEFAULT 0,
@@ -358,28 +299,6 @@ CREATE INDEX IF NOT EXISTS idx_embedding_jobs_job_id ON embedding_jobs(job_id);
 CREATE INDEX IF NOT EXISTS idx_embedding_jobs_started_by ON embedding_jobs(started_by);
 CREATE INDEX IF NOT EXISTS idx_embedding_jobs_created ON embedding_jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_embedding_jobs_config ON embedding_jobs(config_id);
-
--- ============================================
--- Embedding Job Batches
--- ============================================
-CREATE TABLE IF NOT EXISTS embedding_job_batches (
-    id SERIAL PRIMARY KEY,
-    job_id INTEGER NOT NULL,
-    batch_number INTEGER NOT NULL,
-    document_ids TEXT NOT NULL,
-    document_count INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    processing_time_ms INTEGER,
-    attempt_count INTEGER DEFAULT 0,
-    last_error TEXT,
-    FOREIGN KEY (job_id) REFERENCES embedding_jobs(id) ON DELETE CASCADE,
-    UNIQUE(job_id, batch_number)
-);
-
-CREATE INDEX IF NOT EXISTS idx_job_batches_job ON embedding_job_batches(job_id);
-CREATE INDEX IF NOT EXISTS idx_job_batches_status ON embedding_job_batches(status);
 
 -- ============================================
 -- Embedding Job Events
@@ -436,35 +355,6 @@ CREATE INDEX IF NOT EXISTS idx_settings_history_setting_id ON settings_history(s
 CREATE INDEX IF NOT EXISTS idx_settings_history_changed_at ON settings_history(changed_at);
 
 -- ============================================
--- Usage Metrics
--- ============================================
-CREATE TABLE IF NOT EXISTS usage_metrics (
-    id SERIAL PRIMARY KEY,
-    trace_id TEXT NOT NULL,
-    session_id TEXT,
-    user_id TEXT,
-    operation_type TEXT NOT NULL,
-    model_name TEXT,
-    provider TEXT,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    total_tokens INTEGER,
-    estimated_cost_usd REAL,
-    duration_ms INTEGER,
-    batch_size INTEGER,
-    results_count INTEGER,
-    query_text TEXT,
-    metadata TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_operation_type ON usage_metrics(operation_type);
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_created_at ON usage_metrics(created_at);
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_trace_id ON usage_metrics(trace_id);
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_user_id ON usage_metrics(user_id);
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_model ON usage_metrics(model_name);
-
--- ============================================
 -- Model Registry: Embedding Models
 -- ============================================
 CREATE TABLE IF NOT EXISTS embedding_models (
@@ -513,6 +403,21 @@ CREATE TABLE IF NOT EXISTS embedding_llm_compatibility (
 );
 
 -- ============================================
+-- Model Config Versions
+-- ============================================
+CREATE TABLE IF NOT EXISTS model_config_versions (
+    id SERIAL PRIMARY KEY,
+    config_type TEXT NOT NULL,              -- 'embedding', 'llm', or 'full'
+    config_snapshot TEXT NOT NULL,          -- JSON blob of the entire config state
+    version INTEGER NOT NULL,               -- Incrementing version number per config_type
+    updated_by TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_config_versions_type ON model_config_versions(config_type);
+CREATE INDEX IF NOT EXISTS idx_config_versions_version ON model_config_versions(config_type, version);
+
+-- ============================================
 -- Vector DB Schedules
 -- ============================================
   CREATE TABLE IF NOT EXISTS vector_db_schedules (
@@ -535,54 +440,3 @@ CREATE TABLE IF NOT EXISTS embedding_llm_compatibility (
 
 CREATE INDEX IF NOT EXISTS idx_vector_db_schedules_enabled ON vector_db_schedules(enabled);
 CREATE INDEX IF NOT EXISTS idx_vector_db_schedules_next_run ON vector_db_schedules(next_run_at);
-
-
--- ============================================
--- Uploaded File Tables (for SQL querying on uploaded CSVs/Excel)
--- ============================================
-CREATE TABLE IF NOT EXISTS uploaded_file_tables (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    table_name TEXT NOT NULL,
-    original_filename TEXT NOT NULL,
-    file_type TEXT NOT NULL,
-    columns TEXT NOT NULL,
-    row_count INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE(user_id, table_name)
-);
-
-CREATE TABLE IF NOT EXISTS uploaded_file_data (
-    id SERIAL PRIMARY KEY,
-    file_table_id INTEGER NOT NULL,
-    row_number INTEGER NOT NULL,
-    row_data TEXT NOT NULL,
-    FOREIGN KEY (file_table_id) REFERENCES uploaded_file_tables(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_uploaded_file_data_table_id ON uploaded_file_data(file_table_id);
-CREATE INDEX IF NOT EXISTS idx_uploaded_file_tables_user ON uploaded_file_tables(user_id);
-
--- ============================================
--- Schema Drift Detection
--- ============================================
-CREATE TABLE IF NOT EXISTS schema_drift_logs (
-    id SERIAL PRIMARY KEY,
-    vector_db_name TEXT NOT NULL,
-    drift_type TEXT NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'warning',
-    entity_name TEXT NOT NULL,
-    details TEXT,
-    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP,
-    resolved_by TEXT,
-    acknowledged_at TIMESTAMP,
-    acknowledged_by TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_schema_drift_vector_db ON schema_drift_logs(vector_db_name);
-CREATE INDEX IF NOT EXISTS idx_schema_drift_severity ON schema_drift_logs(severity);
-CREATE INDEX IF NOT EXISTS idx_schema_drift_detected ON schema_drift_logs(detected_at DESC);
-CREATE INDEX IF NOT EXISTS idx_schema_drift_unresolved ON schema_drift_logs(vector_db_name, resolved_at) WHERE resolved_at IS NULL;

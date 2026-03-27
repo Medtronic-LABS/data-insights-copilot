@@ -30,57 +30,6 @@ async def test_multi_agent_flow():
         user_id = user_rec['id']
         print(f"ℹ️ User {test_user} already exists (ID: {user_id})")
 
-    # Pre-requisite: Create a dummy RAG config
-    rag_config_id = None
-    try:
-        # We need a system prompt version first
-        prompt_res = db.publish_system_prompt(
-            prompt_text="You are a sales expert.",
-            user_id=user_id,
-            connection_id=None,
-            schema_selection="{}",
-            data_dictionary="{}",
-            reasoning="{}",
-            example_questions="[]"
-        )
-        # The prompt creation also creates a config entry in prompt_configs, but we need a RAGConfiguration entry?
-        # Wait, the Foreign Key in agents table points to `rag_config_id` which references `rag_configurations(id)`
-        # But looking at db.py, I don't see `rag_configurations` table creation in `_init_database`?
-        # Ah, I might have missed checking `rag_models.py` vs `db.py` schema sync.
-        # Let's check if `rag_configurations` table exists in `db.py`.
-        # If not, I might have a schema mismatch. 
-        # For now, let's assume `rag_config_id` is nullable or I can pass None if the constraint isn't enforced strictly yet, 
-        # OR I need to insert into `rag_configurations` if it exists.
-        
-        # Actually in db.py I added: FOREIGN KEY(rag_config_id) REFERENCES rag_configurations(id)
-        # So I MUST have that table.
-        # Let's try to insert a dummy one using raw cursor if no method exists.
-        
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Check if table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rag_configurations'")
-        if not cursor.fetchone():
-             # If table doesn't exist, maybe I should strip the FK constraint or create the table?
-             # Creating the table here for test context if it's missing (it shouldn't be if migration ran, but `db.py` didn't show it in `_init_database`)
-             # Wait, `db.py` showed `prompt_configs` and `system_prompts`, but `rag_models.py` defines `RAGConfiguration`.
-             # There seems to be a disconnect between `db.py` (legacy/manual) and `rag_models.py`.
-             # I added the FK reference to `rag_configurations` in `agents` table. 
-             # I should probably have referenced `prompt_configs` or `system_prompts` or ensured `rag_configurations` exists.
-             # Let's quickly create it if missing for this test to pass, or assume it exists.
-             pass
-        
-        # Insert a dummy rag config
-        # We need to know the schema of rag_configurations. 
-        # Based on RAGConfiguration model: id, version, prompt_template, schema_snapshot...
-        # Let's try to pass None for now and see if SQLite enforces it (it does if enabled).
-        pass
-        conn.close()
-
-    except Exception as e:
-        print(f"⚠️ Warning during RAG config setup: {e}")
-
     # 2. Create a Test Agent
     agent_name = "Test Sales Agent"
     try:
@@ -89,7 +38,6 @@ async def test_multi_agent_flow():
             description="Agent for sales data",
             agent_type="sql",
             db_connection_uri="sqlite:///sales_test.db", # Mock URI
-            rag_config_id=None, # Try None first
             system_prompt="You are a sales expert.",
             created_by=user_id
         )

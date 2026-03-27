@@ -76,7 +76,7 @@ async def _process_chat_with_tracing(
     request: ChatRequest,
     fastapi_req: Request,
     user_id: str,
-    user_int_id: int,
+    user_int_id: str,  # UUID as string (legacy var name from when IDs were int)
     session_id: str,
     trace_id: str,
     is_super_admin: bool

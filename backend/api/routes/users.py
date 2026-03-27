@@ -38,7 +38,7 @@ class UserUpdateRequest(BaseModel):
 
 class UserResponse(BaseModel):
     """User information response."""
-    id: int
+    id: str  # UUID as string
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
@@ -104,7 +104,7 @@ async def lookup_users_by_emails(
 
 @router.get("/{user_id}", response_model=UserResponse, dependencies=[Depends(require_admin)])
 async def get_user(
-    user_id: int,
+    user_id: str,  # UUID as string
     db_service: DatabaseService = Depends(get_db_service)
 ):
     """
@@ -130,7 +130,7 @@ async def get_user(
 
 @router.patch("/{user_id}", response_model=UserResponse)
 async def update_user(
-    user_id: int,
+    user_id: str,  # UUID as string
     request: UserUpdateRequest,
     current_user: User = Depends(require_super_admin),
     db_service: DatabaseService = Depends(get_db_service)
@@ -218,7 +218,7 @@ async def update_user(
         actor_username=current_user.username,
         actor_role=current_user.role,
         resource_type="user",
-        resource_id=str(user_id),
+        resource_id=user_id,
         resource_name=existing_user['username'],
         details=request.model_dump(exclude_unset=True)
     )
@@ -229,7 +229,7 @@ async def update_user(
 
 @router.post("/{user_id}/deactivate")
 async def deactivate_user(
-    user_id: int,
+    user_id: str,  # UUID as string
     current_user: User = Depends(require_super_admin),
     db_service: DatabaseService = Depends(get_db_service)
 ):
@@ -278,7 +278,7 @@ async def deactivate_user(
         actor_username=current_user.username,
         actor_role=current_user.role,
         resource_type="user",
-        resource_id=str(user_id),
+        resource_id=user_id,
         resource_name=username
     )
     
@@ -287,7 +287,7 @@ async def deactivate_user(
 
 @router.post("/{user_id}/activate")
 async def activate_user(
-    user_id: int,
+    user_id: str,  # UUID as string
     current_user: User = Depends(require_super_admin),
     db_service: DatabaseService = Depends(get_db_service)
 ):
@@ -324,7 +324,7 @@ async def activate_user(
         actor_username=current_user.username,
         actor_role=current_user.role,
         resource_type="user",
-        resource_id=str(user_id),
+        resource_id=user_id,
         resource_name=username,
         details={"is_active": True, "action": "activate"}
     )
@@ -335,7 +335,7 @@ async def activate_user(
 
 @router.get("/{user_id}/agents", dependencies=[Depends(require_admin)])
 async def get_user_agents(
-    user_id: int,
+    user_id: str,  # UUID as string
     db_service: DatabaseService = Depends(get_db_service)
 ):
     """

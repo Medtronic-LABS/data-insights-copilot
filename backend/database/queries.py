@@ -135,11 +135,11 @@ class AgentQueries:
     # Parameters: (agent_id,)
     
     INSERT_AGENT = """
-        INSERT INTO agents (name, description, type, db_connection_uri, rag_config_id, system_prompt, created_by)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO agents (name, description, type, db_connection_uri, system_prompt, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id
     """
-    # Parameters: (name, description, agent_type, db_connection_uri, rag_config_id, system_prompt, created_by)
+    # Parameters: (name, description, agent_type, db_connection_uri, system_prompt, created_by)
     
     UPDATE_NAME_AND_DESCRIPTION = """
         UPDATE agents 
@@ -299,8 +299,7 @@ class PromptConfigQueries:
     
     GET_BY_ID = """
         SELECT 
-            pc.prompt_id,
-            pc.prompt_id,
+            sp.id as prompt_id,
             pc.connection_id,
             pc.schema_selection,
             pc.data_dictionary,
@@ -320,10 +319,10 @@ class PromptConfigQueries:
             dc.name AS db_name,
             dc.uri AS db_uri,
             dc.engine_type
-        FROM prompt_configs pc
-        JOIN system_prompts sp ON pc.prompt_id = sp.id
+        FROM system_prompts sp
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         LEFT JOIN db_connections dc ON pc.connection_id = dc.id
-        WHERE pc.prompt_id = %s
+        WHERE sp.id = %s
     """
     # Parameters: (config_id,)
     
@@ -349,8 +348,8 @@ class PromptConfigQueries:
             pc.chunking_config,
             pc.llm_config
         FROM system_prompts sp
-        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         LEFT JOIN users u ON sp.created_by = u.username
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.is_active = 1 AND sp.agent_id = %s
         LIMIT 1
     """
@@ -378,8 +377,8 @@ class PromptConfigQueries:
             pc.chunking_config,
             pc.llm_config
         FROM system_prompts sp
-        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         LEFT JOIN users u ON sp.created_by = u.username
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.is_active = 1 AND sp.agent_id IS NULL
         LIMIT 1
     """
@@ -408,8 +407,8 @@ class PromptConfigQueries:
     
     GET_EMBEDDING_CONFIGS_BY_AGENT = """
         SELECT pc.embedding_config 
-        FROM prompt_configs pc
-        JOIN system_prompts sp ON pc.prompt_id = sp.id
+        FROM system_prompts sp
+        JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.agent_id = %s
     """
     # Parameters: (agent_id,)
@@ -424,7 +423,7 @@ class PromptConfigQueries:
             sp.created_by,
             sp.agent_id,
             u.username as created_by_username,
-            pc.prompt_id AS config_id,
+            sp.id AS config_id,
             pc.schema_selection,
             pc.connection_id,
             pc.data_dictionary,
@@ -439,8 +438,8 @@ class PromptConfigQueries:
             pc.ingestion_file_name,
             pc.ingestion_file_type
         FROM system_prompts sp
-        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         LEFT JOIN users u ON sp.created_by = u.username
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.agent_id = %s
         ORDER BY sp.version DESC
     """
@@ -456,7 +455,7 @@ class PromptConfigQueries:
             sp.created_by,
             sp.agent_id,
             u.username as created_by_username,
-            pc.prompt_id AS config_id,
+            sp.id AS config_id,
             pc.schema_selection,
             pc.connection_id,
             pc.data_dictionary,
@@ -471,8 +470,8 @@ class PromptConfigQueries:
             pc.ingestion_file_name,
             pc.ingestion_file_type
         FROM system_prompts sp
-        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         LEFT JOIN users u ON sp.created_by = u.username
+        LEFT JOIN prompt_configs pc ON sp.id = pc.prompt_id
         WHERE sp.agent_id IS NULL
         ORDER BY sp.version DESC
     """
@@ -528,7 +527,7 @@ class VectorDBQueries:
             created_by = EXCLUDED.created_by
         RETURNING id
     """
-    # Parameters: (name, data_source_id, created_by)
+    # Parameters: (name, data_source_id, created_by[UUID])
     
     DELETE_BY_NAME = """
         DELETE FROM vector_db_registry 
@@ -544,12 +543,6 @@ class VectorDBQueries:
     
     DELETE_DOCUMENT_INDEX_BY_NAME = """
         DELETE FROM document_index 
-        WHERE vector_db_name = %s
-    """
-    # Parameters: (vector_db_name,)
-    
-    DELETE_SCHEMA_DRIFT_BY_NAME = """
-        DELETE FROM schema_drift_logs 
         WHERE vector_db_name = %s
     """
     # Parameters: (vector_db_name,)
@@ -586,7 +579,7 @@ class AuditLogQueries:
         SET resource_id = NULL 
         WHERE resource_type = 'agent' AND resource_id = %s
     """
-    # Parameters: (str(agent_id),)
+    # Parameters: (agent_id,)  # agent_id is UUID string
 
 
 class TableInfoQueries:

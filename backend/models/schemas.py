@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ConfigDict
 class User(BaseModel):
     """User information."""
     username: str
-    id: Optional[int] = None
+    id: Optional[str] = None  # UUID serialized as string
     email: Optional[str] = None
     full_name: Optional[str] = None
     created_at: Optional[str] = None
@@ -35,7 +35,7 @@ class ChatRequest(BaseModel):
         default=None,
         description="Session ID for conversation tracking. Auto-generated if not provided."
     )
-    agent_id: Optional[int] = Field(default=None, description="Target agent ID")
+    agent_id: Optional[str] = Field(default=None, description="Target agent ID (UUID)")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -105,7 +105,7 @@ class ChatResponse(BaseModel):
     embedding_info: Optional[EmbeddingInfo] = Field(default=None, description="Embedding analysis")
     trace_id: str = Field(..., description="Langfuse trace ID for debugging")
     session_id: Optional[str] = Field(default=None, description="Session ID for conversation tracking")
-    agent_id: Optional[int] = Field(default=None, description="Agent ID that generated this response")
+    agent_id: Optional[str] = Field(default=None, description="Agent ID (UUID) that generated this response")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
     
     model_config = ConfigDict(json_schema_extra={
@@ -344,9 +344,9 @@ class IngestionRequest(BaseModel):
         default="database",
         description="Type of data source: 'database', 'file', or 'agent'"
     )
-    agent_id: Optional[int] = Field(
+    agent_id: Optional[str] = Field(
         None,
-        description="Target agent ID for the embedding job"
+        description="Target agent ID (UUID) for the embedding job"
     )
     vector_db_name: Optional[str] = Field(
         None,
