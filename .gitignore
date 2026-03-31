@@ -18,3 +18,7 @@ __pycache__/
 backend/embedding_test_output.txt
 /models
 /backend/venv
+
+# Local output and settings
+.vscode/
+eval/reports/
