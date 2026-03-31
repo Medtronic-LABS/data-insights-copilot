@@ -12,6 +12,12 @@ from backend.config import get_settings
 from backend.core.logging import get_logger
 from backend.models.schemas import CritiqueResponse
 
+# Optional SchemaGraph import — used when available for structured validation
+try:
+    from backend.services.schema_graph import SchemaGraph
+except ImportError:
+    SchemaGraph = None
+
 settings = get_settings()
 logger = get_logger(__name__)
 
@@ -42,7 +48,8 @@ Output valid JSON matching the CritiqueResponse schema.
 If the SQL is correct and answers the question, set is_valid=True.
 """
 
-# Known valid tables that should always pass quick validation when present in schema
+# Legacy hardcoded list — kept ONLY as fallback when SchemaGraph is not available.
+# When SchemaGraph is initialized, validation uses live database introspection instead.
 KNOWN_VALID_TABLES = [
     'patient_tracker', 'patient_visit', 'patient_diagnosis', 'patient_assessment',
     'patient_lab_test', 'patient_lab_test_result', 'patient_treatment_plan',
@@ -51,7 +58,6 @@ KNOWN_VALID_TABLES = [
     'patient_general_information', 'patient_history', 'patient_transfer',
     'patient_eye_care', 'patient_cataract', 'patient_pregnancy_details',
     'patient_nutrition_lifestyle', 'patient_para_counselling', 'patient_medical_compliance',
-    # Core data tables (not prefixed with patient_)
     'bp_log', 'glucose_log', 'screening_log', 'lab_test', 'lab_test_result',
     'site', 'organization', 'country', 'account', 'user', 'role',
     'medication_country_detail', 'dosage_form', 'dosage_frequency',
@@ -61,8 +67,9 @@ KNOWN_VALID_TABLES = [
 ]
 
 class SQLCritiqueService:
-    def __init__(self):
+    def __init__(self, schema_graph=None):
         logger.info("Initializing SQLCritiqueService")
+        self.schema_graph = schema_graph  # SchemaGraph instance for structured validation
         self.llm = ChatOpenAI(
             temperature=0,
             model_name="gpt-3.5-turbo",  # Use faster model for critique
@@ -104,10 +111,10 @@ class SQLCritiqueService:
 
     def _quick_validate(self, sql_query: str, schema_context: str) -> Optional[CritiqueResponse]:
         """
-        Perform quick validation without LLM for simple, obviously valid queries.
-        Returns CritiqueResponse if validation is conclusive, None if LLM critique needed.
+        Perform quick validation without LLM.
         
-        OPTIMIZED: More aggressive about passing simple queries to reduce latency.
+        Uses SchemaGraph (when available) for precise table/column existence checks,
+        falls back to legacy KNOWN_VALID_TABLES + schema text matching.
         """
         sql_lower = sql_query.lower()
         schema_lower = schema_context.lower()
@@ -124,7 +131,6 @@ class SQLCritiqueService:
         
         # Check for demo 'patient' table misuse
         if 'patient' in tables and len([t for t in tables if t == 'patient']) > 0:
-            # Query uses just 'patient' table (not patient_tracker, etc.)
             other_patient_tables = [t for t in tables if t.startswith('patient_')]
             if not other_patient_tables and 'patient_tracker' in schema_lower:
                 logger.warning("Rejecting 'patient' table - should use 'patient_tracker' instead")
@@ -134,7 +140,50 @@ class SQLCritiqueService:
                     issues=["Use 'patient_tracker' table instead of 'patient' for patient data queries"]
                 )
         
-        # OPTIMIZATION: For known valid tables, skip LLM entirely
+        # === SchemaGraph-based validation (preferred) ===
+        if self.schema_graph:
+            all_tables_valid = True
+            issues = []
+            for table in tables:
+                if table == 'patient':
+                    continue
+                if not self.schema_graph.has_table(table):
+                    all_tables_valid = False
+                    issues.append(f"Table '{table}' not found in database schema")
+            
+            if not all_tables_valid:
+                return CritiqueResponse(
+                    is_valid=False,
+                    reasoning=f"Schema validation failed: {'; '.join(issues)}",
+                    issues=issues
+                )
+            
+            # Validate joins if multiple tables
+            join_issues = self._validate_joins(sql_query, tables)
+            if join_issues:
+                return CritiqueResponse(
+                    is_valid=False,
+                    reasoning=f"Join validation issues: {'; '.join(join_issues)}",
+                    issues=join_issues
+                )
+            
+            # Validate aggregation GROUP BY completeness
+            agg_issues = self._validate_aggregation(sql_query)
+            if agg_issues:
+                return CritiqueResponse(
+                    is_valid=False,
+                    reasoning=f"Aggregation issues: {'; '.join(agg_issues)}",
+                    issues=agg_issues
+                )
+            
+            logger.info(f"SchemaGraph validation PASSED for tables: {tables}")
+            return CritiqueResponse(
+                is_valid=True,
+                reasoning=f"All tables and joins validated against SchemaGraph: {', '.join(tables)}",
+                issues=[]
+            )
+        
+        # === Legacy KNOWN_VALID_TABLES fallback ===
         all_tables_known = True
         for table in tables:
             if table == 'patient':
@@ -150,10 +199,8 @@ class SQLCritiqueService:
                 logger.info(f"Table '{table}' not found in quick validation, deferring to LLM")
                 break
         
-        # OPTIMIZATION: If all tables are known/valid, pass the query
-        # This saves an LLM call (~1-2s) for most queries
         if all_tables_known:
-            logger.info(f"Quick validation PASSED - all tables known: {tables}")
+            logger.info(f"Quick validation PASSED (legacy) - all tables known: {tables}")
             return CritiqueResponse(
                 is_valid=True,
                 reasoning=f"All tables validated against known tables and schema: {', '.join(tables)}",
@@ -161,6 +208,62 @@ class SQLCritiqueService:
             )
         
         return None  # Unknown table - let LLM validate
+    
+    def _validate_joins(self, sql_query: str, tables: List[str]) -> List[str]:
+        """
+        Validate JOIN conditions against SchemaGraph FK relationships.
+        Returns a list of issues (empty if all joins are valid).
+        """
+        if not self.schema_graph or len(tables) <= 1:
+            return []
+        
+        issues = []
+        sql_lower = sql_query.lower()
+        
+        # Check that multi-table queries have JOIN clauses
+        if len(tables) > 1 and 'join' not in sql_lower:
+            # Might be using comma-separated FROM with WHERE join - less ideal but valid
+            if ',' in sql_query[sql_lower.find('from'):sql_lower.find('where') if 'where' in sql_lower else len(sql_lower)]:
+                logger.info("Using implicit comma join syntax - valid but not recommended")
+            else:
+                issues.append("Query references multiple tables but has no JOIN clause")
+        
+        return issues
+    
+    def _validate_aggregation(self, sql_query: str) -> List[str]:
+        """
+        Check for common aggregation errors (e.g., missing GROUP BY).
+        """
+        sql_lower = sql_query.lower()
+        issues = []
+        
+        # Check if query has aggregation functions
+        agg_functions = ['count(', 'sum(', 'avg(', 'min(', 'max(']
+        has_aggregation = any(agg in sql_lower for agg in agg_functions)
+        
+        if has_aggregation:
+            # Check for non-aggregated columns in SELECT without GROUP BY
+            has_group_by = 'group by' in sql_lower
+            
+            # Heuristic: if using aggregation with non-star select and no GROUP BY
+            # and the SELECT has multiple columns, it might be missing GROUP BY
+            select_end = sql_lower.find('from')
+            if select_end > 0:
+                select_clause = sql_lower[6:select_end].strip()
+                has_non_agg_columns = False
+                for part in select_clause.split(','):
+                    part = part.strip()
+                    if part and not any(agg in part for agg in agg_functions) and part != '*':
+                        has_non_agg_columns = True
+                        break
+                
+                if has_non_agg_columns and not has_group_by:
+                    issues.append(
+                        "SELECT includes non-aggregated columns alongside aggregation functions "
+                        "but has no GROUP BY clause"
+                    )
+        
+        return issues
 
     def _is_simple_query(self, sql_query: str) -> bool:
         """Check if query is simple enough to skip LLM critique."""
@@ -224,14 +327,20 @@ class SQLCritiqueService:
                 # Fallback to manual parsing
                 response = self.parser.parse(output.content)
             
-            # Double-check LLM response for false negatives on known tables
+            # Double-check LLM response for false negatives
             if not response.is_valid:
                 tables = self._extract_tables_from_sql(sql_query)
                 false_negative = False
                 
                 for table in tables:
-                    if table in KNOWN_VALID_TABLES and table in schema_context.lower():
-                        # LLM incorrectly rejected a known valid table
+                    # Prefer SchemaGraph for validation
+                    table_is_valid = False
+                    if self.schema_graph:
+                        table_is_valid = self.schema_graph.has_table(table)
+                    else:
+                        table_is_valid = table in KNOWN_VALID_TABLES and table in schema_context.lower()
+                    
+                    if table_is_valid:
                         for issue in response.issues or []:
                             if table in issue.lower() and ('not found' in issue.lower() or 'missing' in issue.lower() or "doesn't exist" in issue.lower()):
                                 logger.warning(f"LLM false negative detected for table '{table}' - overriding")

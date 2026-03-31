@@ -30,6 +30,13 @@ from backend.config import get_settings, get_llm_settings
 from backend.core.logging import get_logger
 from backend.services.reflection_service import get_critique_service
 
+# Schema-aware SQL pipeline imports
+from backend.services.schema_graph import SchemaGraph
+from backend.services.data_dictionary import get_data_dictionary
+from backend.services.schema_linker import SchemaLinker
+from backend.services.query_planner import QueryPlanner
+from backend.services.prompt_builder import PromptBuilder
+
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -388,6 +395,42 @@ class SQLService:
             )
             logger.info(f"SQL agent initialized successfully with {len(self.relevant_tables)} cached tables")
             
+            # ================================================================
+            # Schema-Aware Pipeline Initialization
+            # ================================================================
+            try:
+                self.schema_graph = SchemaGraph(engine, schema_name=detected_schema)
+                self.data_dictionary = get_data_dictionary()
+                self.schema_linker = SchemaLinker(
+                    schema_graph=self.schema_graph,
+                    data_dictionary=self.data_dictionary,
+                    llm=self.llm_fast
+                )
+                self.query_planner = QueryPlanner(
+                    llm=self.llm_fast,
+                    schema_graph=self.schema_graph
+                )
+                self.prompt_builder = PromptBuilder()
+                
+                # Wire SchemaGraph into CritiqueService for structured validation
+                self.critique_service.schema_graph = self.schema_graph
+                
+                logger.info(
+                    "Schema-aware pipeline initialized: "
+                    f"SchemaGraph({len(self.schema_graph.tables)} tables), "
+                    f"DataDictionary, SchemaLinker, QueryPlanner, PromptBuilder"
+                )
+            except Exception as schema_err:
+                logger.warning(
+                    f"Schema-aware pipeline init failed: {schema_err}. "
+                    "Falling back to legacy prompting."
+                )
+                self.schema_graph = None
+                self.data_dictionary = None
+                self.schema_linker = None
+                self.query_planner = None
+                self.prompt_builder = None
+            
         except Exception as e:
             logger.error(f"Failed to initialize SQL service: {e}", exc_info=True)
             raise
@@ -431,7 +474,29 @@ class SQLService:
             self.cached_schema = None
     
     def _get_relevant_schema(self, question: str) -> str:
+        """
+        Get relevant schema context for a question.
+        
+        Uses SchemaLinker (multi-strategy entity linking) when available,
+        falls back to legacy keyword matching otherwise.
+        """
         try:
+            # === Schema-aware path (new) ===
+            if self.schema_linker and self.schema_graph:
+                link_result = self.schema_linker.link(question)
+                self._last_link_result = link_result  # Cache for use in _generate_sql
+                
+                # Use SchemaGraph to render FK-annotated schema
+                schema_text = self.schema_graph.to_prompt_format(link_result.tables)
+                
+                logger.info(
+                    f"Schema-aware linking: {len(link_result.tables)} tables, "
+                    f"{len(link_result.join_paths)} join paths, "
+                    f"confidence={link_result.confidence:.2f}"
+                )
+                return schema_text
+            
+            # === Legacy path (fallback) ===
             question_lower = question.lower()
             
             relevant_tables = [
@@ -439,10 +504,7 @@ class SQLService:
                 if table.lower() in question_lower
             ]
             
-            # Dynamic table matching: look for tables whose names appear in the question
-            # No hardcoded keyword mappings - schema understanding comes from data dictionary
             for table in (self.relevant_tables or []):
-                # Match if table name (or parts of it) appear in the question
                 table_words = table.lower().replace('_', ' ').split()
                 if any(word in question_lower for word in table_words if len(word) > 2):
                     if table not in relevant_tables:
@@ -452,24 +514,19 @@ class SQLService:
                 logger.info("No specific tables matched in question. Using full cached schema.")
                 return self.cached_schema
             
-            # IMPORTANT: Exclude the demo 'patient' table if patient_tracker exists
-            # patient_tracker is the real patient data table
             if 'patient_tracker' in relevant_tables and 'patient' in relevant_tables:
                 relevant_tables.remove('patient')
                 logger.info("Removed demo 'patient' table - using 'patient_tracker' instead")
             
             relevant_tables = list(dict.fromkeys(relevant_tables))
-            logger.info(f"Selected relevant tables for query: {', '.join(relevant_tables)}")
+            logger.info(f"Selected relevant tables for query (legacy): {', '.join(relevant_tables)}")
             
             base_schema = self.db.get_table_info(table_names=relevant_tables)
-            
-            # Join patterns are discovered from schema foreign keys or data dictionary
-            schema_enhancements = ""
-            
-            return base_schema + schema_enhancements
+            return base_schema
             
         except Exception as e:
             logger.warning(f"Failed to get relevant schema: {e}. Falling back to full schema.")
+            self._last_link_result = None
             return self.cached_schema
 
     def _get_active_system_prompt_rules(self) -> str:
@@ -701,12 +758,65 @@ class SQLService:
 
     @observe(as_type="span", name="generate_sql")
     def _generate_sql(self, question: str) -> str:
-        """Generate SQL query from natural language question using fast model."""
+        """
+        Generate SQL query from natural language question.
+        
+        Two-stage pipeline (when schema-aware components available):
+          Stage 1: Question → QueryPlan (via QueryPlanner)
+          Stage 2: QueryPlan + Schema → SQL (via PromptBuilder → LLM)
+        
+        Falls back to legacy single-prompt generation if pipeline unavailable.
+        """
         logger.info(" API Call: Generate SQL query with targeted schema")
         
         relevant_schema = self._get_relevant_schema(question)
         system_prompt_rules = self._get_active_system_prompt_rules()
+        link_result = getattr(self, '_last_link_result', None)
         
+        # === Schema-aware two-stage pipeline ===
+        if self.query_planner and self.prompt_builder:
+            try:
+                # Get data dictionary context
+                dd_context = ""
+                if self.data_dictionary and link_result:
+                    dd_context = self.data_dictionary.to_prompt_context(link_result.tables)
+                
+                # Stage 1: Question → QueryPlan
+                query_plan = self.query_planner.plan(
+                    question=question,
+                    schema_context=relevant_schema,
+                    data_dictionary_context=dd_context,
+                    schema_link_result=link_result
+                )
+                query_plan_context = self.query_planner.plan_to_prompt_context(query_plan)
+                
+                # Cache plan for logging/debugging
+                self._last_query_plan = query_plan
+                
+                logger.info(f"Query plan generated: {query_plan.reasoning}")
+                
+                # Stage 2: QueryPlan + Schema → Prompt → SQL
+                prompt = self.prompt_builder.build(
+                    question=question,
+                    schema_context=relevant_schema,
+                    query_plan_context=query_plan_context,
+                    data_dictionary_context=dd_context,
+                    system_prompt_rules=system_prompt_rules,
+                    dialect="postgresql"
+                )
+                
+                response = self.llm_fast.invoke(prompt)
+                sql_query = response.content.strip()
+                sql_query = re.sub(r'```sql\n?', '', sql_query)
+                sql_query = re.sub(r'```\n?', '', sql_query)
+                
+                logger.info(f"Schema-aware SQL generated: {sql_query[:150]}...")
+                return sql_query.strip()
+                
+            except Exception as e:
+                logger.warning(f"Schema-aware pipeline failed: {e}. Falling back to legacy.")
+        
+        # === Legacy single-prompt path (fallback) ===
         prompt = f"""You are a PostgreSQL expert. Generate ONLY a SQL query to answer the question.
 
 {system_prompt_rules}
@@ -750,8 +860,17 @@ SQL Query:"""
                 logger.warning(f"Retry attempt {current_try}/{max_retries}")
                 retry_count += 1
                 
-                # Fix SQL based on critique
-                fix_prompt = f"""The previous SQL query was invalid. Fix it based on the critique.
+                # Use PromptBuilder for structured fix prompt when available
+                if self.prompt_builder:
+                    fix_prompt = self.prompt_builder.build_fix_prompt(
+                        question=question,
+                        previous_sql=sql_query,
+                        error_or_critique=critique_feedback,
+                        schema_context=relevant_schema,
+                        dialect="postgresql"
+                    )
+                else:
+                    fix_prompt = f"""The previous SQL query was invalid. Fix it based on the critique.
 
 DATABASE SCHEMA:
 {relevant_schema}

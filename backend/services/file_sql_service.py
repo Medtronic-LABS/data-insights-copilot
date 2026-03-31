@@ -24,6 +24,7 @@ from langchain_openai import ChatOpenAI
 
 from backend.config import get_settings, get_llm_settings
 from backend.core.logging import get_logger
+from backend.services.prompt_builder import PromptBuilder
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -124,6 +125,9 @@ class FileSQLService:
         self._schema_cache: Optional[Dict] = None
         self._cache_schema()
         
+        # Initialize PromptBuilder for dynamic prompt construction
+        self.prompt_builder = PromptBuilder()
+        
         if allowed_tables:
             logger.info(f"FileSQLService initialized for user {user_id}, restricted to tables: {allowed_tables}")
         else:
@@ -219,49 +223,18 @@ Columns:
         return schema["schema_text"]
     
     def _generate_sql(self, question: str) -> str:
-        """Generate SQL from natural language question."""
+        """Generate SQL from natural language question using PromptBuilder."""
         schema_text = self.get_schema_for_prompt()
         
         # Get sample data for context
         sample_data = self._get_sample_data()
         
-        prompt = f"""You are a DuckDB SQL expert. Generate ONLY a SQL query to answer the question.
-
-AVAILABLE TABLES AND SCHEMA:
-{schema_text}
-
-SAMPLE DATA (first 3 rows from each table):
-{sample_data}
-
-IMPORTANT RULES:
-1. Use ONLY the exact column and table names shown above
-2. DuckDB uses standard SQL syntax
-3. For string comparisons, use ILIKE for case-insensitive matching
-4. Use appropriate aggregation functions: COUNT, AVG, SUM, MIN, MAX
-5. Always include meaningful column aliases for aggregations
-6. For date columns, use standard SQL date functions
-7. NULL handling: Use COALESCE or IS NOT NULL as needed
-
-SPECIAL QUERY PATTERNS:
-
-8. **LOOKUP QUERIES** (e.g., "which org is X", "what is patient Y", "info about Z"):
-   - When user asks about a specific ID/value, return ALL relevant columns for that entity
-   - Example: "which org is 14299" → SELECT * FROM table WHERE organization_id = 14299 LIMIT 10
-   - Example: "details for patient 123" → SELECT * FROM table WHERE patient_id = 123
-   - If the requested name/description column doesn't exist, return what IS available
-   - NEVER just return the same ID the user asked about - that's useless!
-
-9. **AGGREGATION BY ENTITY** (e.g., "how many patients in org 14299"):
-   - Filter by the entity, then aggregate: SELECT COUNT(*) FROM table WHERE organization_id = 14299
-
-10. **EXISTENCE CHECK**: If user just wants to verify something exists:
-    - Return a count or sample: SELECT COUNT(*) as record_count FROM table WHERE condition
-
-QUESTION: {question}
-
-Return ONLY the SQL query. No markdown, no explanation, no comments.
-
-SQL:"""
+        # Use PromptBuilder for dynamic, schema-aware prompt construction
+        prompt = self.prompt_builder.build_for_file_query(
+            question=question,
+            schema_context=schema_text,
+            sample_data=sample_data
+        )
 
         # Use callbacks for tracing if available
         invoke_config = {"callbacks": self.callbacks} if self.callbacks else {}
@@ -273,7 +246,7 @@ SQL:"""
         sql = re.sub(r'```\n?', '', sql)
         sql = sql.strip()
         
-        logger.info(f"Generated SQL: {sql[:200]}...")
+        logger.info(f"Generated SQL (DuckDB): {sql[:200]}...")
         return sql
     
     def _get_sample_data(self, limit: int = 3) -> str:
