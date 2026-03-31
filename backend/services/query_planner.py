@@ -25,31 +25,7 @@ from backend.services.schema_graph import SchemaGraph
 logger = get_logger(__name__)
 
 
-# Structured output schema for LLM query plan extraction
-_PLAN_SYSTEM_PROMPT = """You are a SQL Query Planner. Your job is to decompose a natural language question
-into a structured query plan. You do NOT write SQL — only the logical plan.
-
-Given a user question and the available database schema, extract:
-
-1. **entities**: Which tables are needed (use exact table names from schema)
-2. **select_columns**: Specific columns to select (if applicable)
-3. **metrics**: Aggregation functions needed (COUNT, SUM, AVG, MIN, MAX, COUNT_DISTINCT)
-4. **filters**: WHERE conditions (column, operator, value)
-5. **grouping**: GROUP BY columns
-6. **ordering**: ORDER BY specifications
-7. **limit**: Result limit
-8. **time_range**: Date/time filters
-9. **reasoning**: Brief explanation of your plan
-
-IMPORTANT RULES:
-- Use ONLY table and column names that exist in the provided schema
-- For counting unique items, use COUNT_DISTINCT
-- For "how many" questions, use COUNT or COUNT_DISTINCT
-- For "average", "mean" questions, use AVG
-- For "total" questions, use SUM
-- Always identify the correct tables for joins when multiple tables are needed
-- Include time_range if the question mentions dates, periods, quarters, etc.
-"""
+# System prompt is loaded dynamically in __init__
 
 _PLAN_USER_TEMPLATE = """DATABASE SCHEMA:
 {schema_context}
@@ -90,8 +66,16 @@ class QueryPlanner:
         # Create structured output chain
         self.structured_llm = llm.with_structured_output(QueryPlan)
         
+        import os
+        try:
+            template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "agent_spec", "prompt_templates", "query_planner.md")
+            with open(template_path, "r") as f:
+                system_prompt = f.read()
+        except Exception:
+            system_prompt = "You are a SQL Query Planner. Your job is to decompose a natural language question into a structured query plan."
+            
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", _PLAN_SYSTEM_PROMPT),
+            ("system", system_prompt),
             ("user", _PLAN_USER_TEMPLATE)
         ])
     
