@@ -9,7 +9,8 @@ logs/backend.log
 __pycache__/
 /backend/models/sentence-transformers
 /models/bge-m3
-/backend/models
+/backend/models/bge-*
+/backend/models/sentence-transformers
 *.db
 /data/indexes
 /frontend/dev-dist
@@ -18,3 +19,7 @@ __pycache__/
 backend/embedding_test_output.txt
 /models
 /backend/venv
+
+# Local output and settings
+.vscode/
+eval/reports/

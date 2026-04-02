@@ -388,28 +388,29 @@ class ConfigService:
         
         # Standard Chart Rules to append (Single Source of Truth)
         standard_chart_rules = """
-        CHART GENERATION RULES:
-        1. Generate a chart_json for every query that returns data.
-        2. Use 'treemap' for distributions by location (e.g., country, site).
-        3. Use 'radar' for comparing entities across multiple metrics.
-        4. Use 'scorecard' for single statistics or summary data.
-        5. Avoid using 'bar' or 'pie' for location distributions; use 'treemap' instead.
-        6. For "Scorecard" charts, provide clear labels and values for each metric.
-        7. For "Radar" charts, compare entities across variables.
-        8. For "Treemap" charts, visualize hierarchical or categorical distributions.
+        ======================================================================
+        [OPERATIONAL PROTOCOL : CHART GENERATION]
+        ======================================================================
+        When a user query implies visualization (e.g., "show distribution", "compare", "trend") or returns a structured data table suitable for rendering, you MUST append a chart JSON payload.
+        
+        RULES:
+        1. Always format output as a single valid JSON block at the very end of your response.
+        2. Use 'treemap' for hierarchical or geographical distributions (e.g., population by country/site).
+        3. Use 'radar' for comparing overlapping entity attributes.
+        4. Use 'scorecard' for top-level singular metrics or KPIs (e.g., Total Active Patients).
+        5. Use 'bar' for categorical comparisons and 'line' for chronological trends.
+        6. DO NOT use Chart.js `datasets` structure. Use purely a simple `values` array matching the `labels` array.
 
-        JSON FORMAT:
-        You MUST append a single JSON block at the end of your response:
+        FORMAT:
         ```json
         {
             "chart_json": {
-                "title": "...",
+                "title": "Clear, descriptive title",
                 "type": "radar|scorecard|treemap|bar|line|pie",
-                "data": { "labels": ["..."], "values": [10, 20] }
+                "data": { "labels": ["Category A", "Category B"], "values": [10, 20] }
             }
         }
         ```
-        IMPORTANT: DO NOT use Chart.js structure (datasets). Use simple "values" array matching the "labels" array.
         """
 
         # Check if user provided structured input with sections
@@ -420,68 +421,47 @@ class ConfigService:
         
         user_provided_detailed_input = has_role_section and has_schema_section
 
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        template_dir = os.path.join(base_dir, "agent_spec", "prompt_templates")
+
         if data_source_type == 'file':
-            instruction = (
-                "Your task is to write a comprehensive SYSTEM PROMPT for an AI assistant that will answer questions based on a set of provided documents.\n\n"
-                "DOCUMENT CONTENT PROVIDED:\n"
-                f"{safe_data_dictionary}\n\n"
-                "INSTRUCTIONS:\n"
-                "1. Define a suitable persona based strictly on the content provided in the context above.\n"
-                "2. Summarize the key topics and types of information available in the documents.\n"
-                "3. Define strict rules for answering questions.\n"
-                "   - Instruct the assistant to only answer based on the provided text.\n"
-                "   - If the answer is not in the text, instruct the assistant to say it does not know.\n"
-                "4. **OUTPUT FORMAT:**\n"
-                "   - Do NOT include generic chart generation rules or JSON formats in your output (these will be appended automatically).\n"
-                "5. Return ONLY the prompt text (Persona + Extraction Rules), no markdown formatting."
-            )
+            template_path = os.path.join(template_dir, "file_generator.md")
+            try:
+                with open(template_path, "r") as f:
+                    instruction = f.read().replace("{data_dictionary}", safe_data_dictionary)
+            except Exception as e:
+                # Fallback if markdown file is deleted/missing
+                instruction = f"Your task is to engineer a highly rigorous SYSTEM PROMPT for a Data Analysis Assistant. Context: {safe_data_dictionary}"
         elif user_provided_detailed_input:
             # User has provided a detailed, structured input - preserve it with minimal modification
             instruction = (
                 "The user has provided a detailed, well-structured system prompt specification. "
-                "Your task is to REFINE and FORMAT it into a production-ready system prompt while PRESERVING all the user's specifications.\n\n"
+                "Your task is to UPGRADE it into a highly rigorous, production-grade system prompt, standardizing its structure while PRESERVING all user constraints.\n\n"
                 "USER-PROVIDED SPECIFICATION:\n"
                 f"{safe_data_dictionary}\n\n"
                 "CRITICAL INSTRUCTIONS:\n"
-                "1. **PRESERVE THE USER'S CONTENT**: Keep ALL the following from the user's input:\n"
-                "   - The exact persona/role description they specified\n"
-                "   - ALL column/field descriptions from their data dictionary\n"
-                "   - ALL SQL generation rules and constraints they defined\n"
-                "   - The response format they specified\n"
-                "   - Any domain-specific thresholds or business logic (e.g., clinical thresholds)\n\n"
-                "2. **STRUCTURE THE OUTPUT** in this order:\n"
-                "   a) PERSONA: Use the user's role description verbatim or with minimal enhancement\n"
-                "   b) DATA DICTIONARY: Include the COMPLETE schema/field definitions from the user's input\n"
-                "   c) RULES & CONSTRAINTS: Include ALL the user's SQL/query rules exactly as specified\n"
-                "   d) RESPONSE FORMAT: Use the user's specified format\n\n"
-                "3. **DO NOT**:\n"
-                "   - Summarize or abbreviate the data dictionary - include ALL fields\n"
-                "   - Remove or simplify the user's specific rules\n"
-                "   - Add generic rules that contradict the user's specifications\n"
-                "   - Include chart generation rules (these are appended automatically)\n\n"
-                "4. **YOU MAY**:\n"
-                "   - Improve formatting and organization\n"
-                "   - Add clarifying language where helpful\n"
-                "   - Fix grammatical issues\n"
-                "   - Add a brief 'Answer only based on retrieved data' rule if not present\n\n"
-                "Return ONLY the refined system prompt text, no markdown code blocks."
+                "1. **PRESERVE ALL LOGIC**: Keep ALL clinical thresholds, field definitions, and explicit query rules.\n"
+                "2. **ENFORCE MODULAR STRUCTURE**: Format the output clearly into these sections:\n"
+                "   a) [CORE IDENTITY & PERSONA]\n"
+                "   b) [DATA DICTIONARY & SEMANTICS]: Include ALL schema definitions verbatim.\n"
+                "   c) [OPERATIONAL RULES & CONSTRAINTS]: Organize the user's rules rigorously.\n"
+                "   d) [RESPONSE FORMAT]: Enforce the user's specific format constraints.\n\n"
+                "3. **ENHANCE RELIABILITY**: Automatically append a strict 'Zero-Hallucination Mandate' instructing the agent to only use provided tables/fields and refuse unsupported assumptions.\n\n"
+                "4. **DO NOT**:\n"
+                "   - Summarize the data dictionary (keep everything).\n"
+                "   - Add chart generation rules (these are handled centrally).\n\n"
+                "Return ONLY the refined, highly professional system prompt text."
             )
         else:
-            # Standard database schema input - generate from scratch
-            instruction = (
-                "Your task is to write a comprehensive SYSTEM PROMPT for an AI assistant that will query a structured database.\n\n"
-                "CONTEXT PROVIDED:\n"
-                f"{safe_data_dictionary}\n\n"
-                "INSTRUCTIONS:\n"
-                "1. Define a suitable persona based strictly on the table names and column definitions provided in the context.\n"
-                "2. List the KEY tables and columns available based on the context above.\n"
-                "3. Define strict rules for SQL generation (e.g., joins, filters).\n"
-                "   - When multiple specific entities are mentioned (e.g., 'at Site A and Site B'), Use 'GROUP BY' to provide a breakdown/comparison, NOT a single total sum.\n"
-                "4. **OUTPUT FORMAT:**\n"
-                "   - Do NOT include generic chart generation rules or JSON formats in your output (these will be appended automatically).\n"
-                "   - Focus on domain-specific examples and logic.\n"
-                "5. Return ONLY the prompt text (Persona + SQL Rules), no markdown formatting."
-            )
+            # Standard database schema input - read from template
+            template_path = os.path.join(template_dir, "database_generator.md")
+            try:
+                with open(template_path, "r") as f:
+                    instruction = f.read().replace("{data_dictionary}", safe_data_dictionary)
+            except Exception as e:
+                # Fallback if markdown file is deleted/missing
+                instruction = f"Your task is to engineer a highly rigorous SYSTEM PROMPT for a SQL Architect connected to a database. Schema Context: {safe_data_dictionary}"
 
         # Add reasoning request to instruction
         instruction += (
