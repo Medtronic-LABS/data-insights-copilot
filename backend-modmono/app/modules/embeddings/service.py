@@ -206,7 +206,7 @@ class EmbeddingJobService:
                     api_key = decrypt_value(ai_model.api_key_encrypted)
         
         if not model_name:
-            model_name = emb_config.get('model', 'huggingface/BAAI/bge-m3')
+            model_name = emb_config.get('model', 'huggingface/BAAI/bge-large-en-v1.5')
         
         # Extract batch settings from embedding_config or use defaults
         # Default to 256 for faster processing
@@ -696,7 +696,7 @@ async def _get_embedding_provider(model_name: str, api_key: str = None, api_base
     
     Supports:
     - OpenAI: openai/text-embedding-3-small, openai/text-embedding-3-large
-    - HuggingFace local: huggingface/BAAI/bge-m3
+    - HuggingFace local: huggingface/BAAI/bge-large-en-v1.5
     - Azure: azure/text-embedding-ada-002
     """
     global _EMBEDDING_MODEL_CACHE
@@ -1044,7 +1044,7 @@ async def _extract_documents_from_duckdb(
         
         # Also get a row identifier if available
         # Try common ID column names
-        id_columns = ['id', 'ID', 'row_id', 'index', '_rowid']
+        id_columns = ['id', 'ID', 'row_id', 'index', 'reviewid', 'record_id', 'patient_id']
         id_column = None
         table_columns = [col[0] for col in conn.execute(f"DESCRIBE \"{table_name}\"").fetchall()]
         for ic in id_columns:
@@ -1060,7 +1060,8 @@ async def _extract_documents_from_duckdb(
             if id_column:
                 query = f"SELECT \"{id_column}\", {columns_sql} FROM \"{table_name}\" LIMIT {batch_size} OFFSET {offset}"
             else:
-                query = f"SELECT rowid as _rowid, {columns_sql} FROM \"{table_name}\" LIMIT {batch_size} OFFSET {offset}"
+                # DuckDB doesn't have rowid - use ROW_NUMBER() instead
+                query = f"SELECT ROW_NUMBER() OVER () as _row_num, {columns_sql} FROM \"{table_name}\" LIMIT {batch_size} OFFSET {offset}"
             
             rows = conn.execute(query).fetchall()
             
@@ -1110,7 +1111,7 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
         await _update_job_status(job_id, EmbeddingJobStatus.FAILED, error_message="No config_id provided")
         return
     
-    embedding_model = job_config.get("embedding_model", "huggingface/BAAI/bge-m3")
+    embedding_model = job_config.get("embedding_model", "huggingface/BAAI/bge-large-en-v1.5")
     api_key = job_config.get("api_key")
     api_base_url = job_config.get("api_base_url")
     chunking_config = job_config.get("chunking_config") or {}

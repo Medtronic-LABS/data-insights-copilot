@@ -19,15 +19,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add total_vectors and incremental columns to embedding_jobs table."""
-    # Add total_vectors column with default 0
-    op.add_column('embedding_jobs', sa.Column('total_vectors', sa.Integer(), nullable=False, server_default='0'))
-    
-    # Add incremental column with default false (0)
-    op.add_column('embedding_jobs', sa.Column('incremental', sa.Integer(), nullable=False, server_default='0'))
+    """
+    No-op: total_vectors and incremental columns are already created 
+    in the g7h8i9j0k1l2 migration when the embedding_jobs table is created.
+    """
+    pass
 
 
 def downgrade() -> None:
-    """Remove total_vectors and incremental columns from embedding_jobs table."""
-    op.drop_column('embedding_jobs', 'incremental')
-    op.drop_column('embedding_jobs', 'total_vectors')
+    """No-op: columns are managed by the table creation migration."""
+    pass
