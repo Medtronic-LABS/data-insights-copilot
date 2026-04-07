@@ -5,7 +5,7 @@ import { APP_CONFIG } from '../config';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/Toast';
 import { ArrowLeftIcon, CommandLineIcon, UserGroupIcon, Cog6ToothIcon } from '@heroicons/react/24/outline';
-import { getAgent, startEmbeddingJob, rollbackToVersion, getSystemSettings, handleApiError, getDraftConfig } from '../services/api';
+import { getAgent, startEmbeddingJob, rollbackToVersion, getSystemSettings, handleApiError, getDraftConfig, getVectorDbStatusByConfig } from '../services/api';
 import { canEditPrompt } from '../utils/permissions';
 import type { Agent } from '../types/agent';
 import type { PromptVersion, VectorDbStatus, AdvancedSettings, ActiveConfig } from '../contexts/AgentContext';
@@ -177,22 +177,36 @@ const AgentDashboardPage: React.FC = () => {
                         }
                     }
 
-                    // Build vectorDbStatus from config data (no extra API call needed)
-                    // The active config already has embedding_status, embedding_path, vector_collection_name
-                    const embConfig = parseConf(config.embedding_config);
-                    setVectorDbStatus({
-                        name: config.vector_collection_name || `config_${config.id}`,
-                        exists: config.embedding_status === 'completed',
-                        total_documents_indexed: embConfig?.total_documents || 0,
-                        total_vectors: embConfig?.total_vectors || 0,
-                        last_updated_at: config.updated_at || null,
-                        embedding_model: embConfig?.model || null,
-                        llm: null,
-                        last_full_run: null,
-                        last_incremental_run: null,
-                        version: '1.0.0',
-                        diagnostics: [],
-                    });
+                    // Fetch vectorDbStatus from the embedding-jobs API
+                    // This gets actual document/vector counts from completed jobs
+                    const configId = config.id || config.prompt_id;
+                    if (configId) {
+                        try {
+                            const status = await getVectorDbStatusByConfig(configId);
+                            if (isMounted) {
+                                setVectorDbStatus(status);
+                            }
+                        } catch (err) {
+                            console.log('Could not fetch vector DB status:', err);
+                            // Fallback to basic status from config
+                            const embConfig = parseConf(config.embedding_config);
+                            if (isMounted) {
+                                setVectorDbStatus({
+                                    name: config.vector_collection_name || `config_${configId}`,
+                                    exists: config.embedding_status === 'completed',
+                                    total_documents_indexed: 0,
+                                    total_vectors: 0,
+                                    last_updated_at: config.updated_at || null,
+                                    embedding_model: embConfig?.model || null,
+                                    llm: null,
+                                    last_full_run: null,
+                                    last_incremental_run: null,
+                                    version: '1.0.0',
+                                    diagnostics: [],
+                                });
+                            }
+                        }
+                    }
 
                     // Only fetch embedding job if status indicates one is running
                     if (config.embedding_status === 'in_progress') {
@@ -269,12 +283,22 @@ const AgentDashboardPage: React.FC = () => {
     const handleEmbeddingComplete = async () => {
         showSuccess('Embeddings Generated', 'Knowledge base updated successfully');
         setEmbeddingJobId(null);
-        // Update vectorDbStatus to show completed (config will be reloaded next time)
-        if (vectorDbStatus) {
-            setVectorDbStatus({
-                ...vectorDbStatus,
-                exists: true,
-            });
+        // Refresh vectorDbStatus from API to get actual counts
+        const configId = activeConfig?.id || activeConfig?.prompt_id;
+        if (configId) {
+            try {
+                const status = await getVectorDbStatusByConfig(configId);
+                setVectorDbStatus(status);
+            } catch (err) {
+                console.error('Failed to refresh vector DB status:', err);
+                // Fallback: just mark as exists
+                if (vectorDbStatus) {
+                    setVectorDbStatus({
+                        ...vectorDbStatus,
+                        exists: true,
+                    });
+                }
+            }
         }
     };
 
