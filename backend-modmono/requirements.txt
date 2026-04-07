@@ -1,4 +1,15 @@
 # ============================================
+# Backend-modmono Requirements
+# Last verified: 2026-04-07
+# Python: 3.13.9+
+# ============================================
+# 
+# Installation Note:
+# - Some packages may have non-critical version conflicts (OpenTelemetry, protobuf)
+# - These conflicts don't affect core functionality
+# - numpy>=1.26.4 may require Visual Studio Build Tools on Windows
+#
+# ============================================
 # Core FastAPI Dependencies
 # ============================================
 fastapi==0.120.4
@@ -21,7 +32,7 @@ alembic==1.13.1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==5.0.0
-httpx==0.27.0
+httpx>=0.27.0
 
 # ============================================
 # Structured Logging
@@ -44,9 +55,10 @@ opentelemetry-exporter-otlp-proto-grpc==1.22.0
 langchain==0.3.27
 langchain-openai==0.3.35
 langchain-community==0.3.31
-langchain-core==0.3.79
+langchain-core>=0.3.79
 langchain-text-splitters==0.3.11
 langchain-chroma==0.2.6
+langchain-huggingface==0.3.1
 openai==2.6.1
 
 # ============================================
@@ -73,7 +85,7 @@ cryptography>=42.0.0  # For API key encryption (Fernet)
 # Data Processing
 # ============================================
 pandas==2.2.1
-numpy==1.26.4
+numpy>=1.26.4  # Note: May require Visual Studio Build Tools on Windows for installation
 
 # ============================================
 # Utilities
@@ -88,7 +100,6 @@ pyyaml==6.0.1
 pytest==8.0.2
 pytest-asyncio==0.23.5
 pytest-cov==4.1.0
-httpx==0.27.0  # For testing async requests
 
 # ============================================
 # Development
