@@ -372,6 +372,8 @@ class EmbeddingJobService:
         from app.modules.embeddings.schemas import VectorDbStatusResponse, DiagnosticItem
         from sqlalchemy import desc
         
+        logger.info(f"get_vector_db_status called for config_id={config_id}")
+        
         # Get agent config
         stmt = select(AgentConfigModel).where(AgentConfigModel.id == config_id)
         result = await self.db.execute(stmt)
@@ -382,16 +384,30 @@ class EmbeddingJobService:
         
         collection_name = config.vector_collection_name or f"config_{config_id}"
         
-        # Get latest embedding job
-        jobs = await self.jobs.list_jobs(config_id=config_id, status=None, limit=1)
-        latest_job = jobs[0] if jobs else None
+        # Get latest embedding job directly from the model (not DTO) to access total_vectors
+        stmt = select(EmbeddingJobModel).where(
+            EmbeddingJobModel.config_id == config_id
+        ).order_by(desc(EmbeddingJobModel.created_at)).limit(1)
+        result = await self.db.execute(stmt)
+        latest_job = result.scalar_one_or_none()
+        
+        if latest_job:
+            logger.info(f"Latest job found: job_id={latest_job.job_id}, status={latest_job.status}, docs={latest_job.processed_documents}, vectors={latest_job.total_vectors}")
+        else:
+            logger.info(f"No jobs found for config_id={config_id}")
         
         # Get last completed full and incremental jobs
-        all_jobs = await self.jobs.list_jobs(config_id=config_id, status="COMPLETED", limit=20)
+        stmt = select(EmbeddingJobModel).where(
+            EmbeddingJobModel.config_id == config_id,
+            EmbeddingJobModel.status == "COMPLETED"
+        ).order_by(desc(EmbeddingJobModel.created_at)).limit(20)
+        result = await self.db.execute(stmt)
+        completed_jobs = result.scalars().all()
+        
         last_full_job = None
         last_incremental_job = None
-        for job in all_jobs:
-            is_incremental = getattr(job, 'incremental', False)
+        for job in completed_jobs:
+            is_incremental = job.incremental if hasattr(job, 'incremental') else False
             if is_incremental and not last_incremental_job:
                 last_incremental_job = job
             elif not is_incremental and not last_full_job:
@@ -406,7 +422,7 @@ class EmbeddingJobService:
             model_result = await self.db.execute(model_stmt)
             model = model_result.scalar_one_or_none()
             if model:
-                embedding_model_name = model.model_name
+                embedding_model_name = model.display_name
         
         llm_model_name = None
         if config.llm_model_id:
@@ -414,17 +430,17 @@ class EmbeddingJobService:
             model_result = await self.db.execute(model_stmt)
             model = model_result.scalar_one_or_none()
             if model:
-                llm_model_name = model.model_name
+                llm_model_name = model.display_name
         
-        # Calculate totals
+        # Calculate totals - use the job model directly to get total_vectors
         total_docs = 0
         total_vectors = 0
         if latest_job and latest_job.status == "COMPLETED":
             total_docs = latest_job.processed_documents or 0
-            total_vectors = getattr(latest_job, 'total_vectors', 0) or 0
+            total_vectors = latest_job.total_vectors or 0
         elif last_full_job:
             total_docs = last_full_job.processed_documents or 0
-            total_vectors = getattr(last_full_job, 'total_vectors', 0) or 0
+            total_vectors = last_full_job.total_vectors or 0
         
         # Build diagnostics
         diagnostics = []
@@ -454,6 +470,12 @@ class EmbeddingJobService:
         
         exists = embedding_status == "completed" or total_vectors > 0
         
+        # Get vector store type from factory
+        from app.modules.embeddings.vector_stores.factory import get_vector_store_type
+        vector_db_type = get_vector_store_type()
+        
+        logger.info(f"Returning VectorDbStatusResponse: docs={total_docs}, vectors={total_vectors}, vector_db_type={vector_db_type}")
+        
         return VectorDbStatusResponse(
             name=collection_name,
             exists=exists,
@@ -468,7 +490,8 @@ class EmbeddingJobService:
             diagnostics=diagnostics,
             embedding_status=embedding_status,
             last_job_id=latest_job.job_id if latest_job else None,
-            last_job_status=latest_job.status if latest_job else None
+            last_job_status=latest_job.status if latest_job else None,
+            vector_db_type=vector_db_type
         )
     
     def _job_to_progress(self, job: EmbeddingJobModel) -> EmbeddingJobProgress:
@@ -1327,37 +1350,30 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
             )
             return
         
-        # Initialize ChromaDB
+        # Initialize Vector Store using factory pattern (supports Qdrant and ChromaDB)
         await _update_job_status(job_id, EmbeddingJobStatus.EMBEDDING, phase="Initializing vector database...")
         
-        import chromadb
-        from chromadb.config import Settings
+        from app.modules.embeddings.vector_stores.factory import get_vector_store, get_vector_store_type
         
-        # Get storage path
-        from app.core.config import get_settings
-        settings = get_settings()
-        chroma_path = settings.data_dir / "chromadb" / vector_db_name
-        chroma_path.mkdir(parents=True, exist_ok=True)
+        vector_store_type = get_vector_store_type()
+        logger.info(f"Job {job_id}: Using vector store type: {vector_store_type}")
         
-        chroma_client = chromadb.PersistentClient(
-            path=str(chroma_path),
-            settings=Settings(anonymized_telemetry=False)
-        )
+        vector_store = get_vector_store(vector_db_name)
         
         # Delete existing collection if not incremental
         if not incremental:
             try:
-                chroma_client.delete_collection(vector_db_name)
+                await vector_store.delete_collection()
                 logger.info(f"Deleted existing collection: {vector_db_name}")
-            except Exception:
-                pass  # Collection doesn't exist
+            except Exception as e:
+                logger.warning(f"Could not delete existing collection (may not exist): {e}")
         
-        collection = chroma_client.get_or_create_collection(
-            name=vector_db_name,
-            metadata={"hnsw:space": "cosine"}
-        )
+        # Get storage path for config update
+        from app.core.settings import get_settings
+        settings = get_settings()
+        vector_store_path = str(settings.data_dir / vector_store_type / vector_db_name)
         
-        logger.info(f"ChromaDB collection ready: {vector_db_name}")
+        logger.info(f"Vector store ready: {vector_db_name} ({vector_store_type})")
         await _update_job_status(job_id, EmbeddingJobStatus.EMBEDDING, phase="Generating embeddings...")
         
         # Process documents in batches - optimized for throughput
@@ -1417,31 +1433,31 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
                 processed += len(batch_docs)
                 continue
             
-            # Store in ChromaDB
+            # Store in Vector Store (Qdrant or ChromaDB)
             ids = [doc["id"] for doc in batch_docs]
             metadatas = [doc["metadata"] for doc in batch_docs]
             
-            chroma_start = time.time()
+            store_start = time.time()
             try:
-                collection.upsert(
+                await vector_store.upsert_batch(
                     ids=ids,
                     documents=texts,
                     embeddings=embeddings,
                     metadatas=metadatas
                 )
                 total_vectors += len(embeddings)
-                chroma_time = time.time() - chroma_start
+                store_time = time.time() - store_start
             except Exception as e:
-                logger.error(f"ChromaDB upsert failed for batch {batch_idx}: {e}")
+                logger.error(f"Vector store upsert failed for batch {batch_idx}: {e}")
                 failed_batches += 1
-                chroma_time = time.time() - chroma_start
+                store_time = time.time() - store_start
             
             processed += len(batch_docs)
             batch_total_time = time.time() - batch_start_time
             
             # Log detailed timing for first 5 batches and every 10th batch
             if batch_idx < 5 or batch_idx % 10 == 0:
-                logger.info(f"Job {job_id}: Batch {batch_idx + 1} timing: embed={embed_time:.2f}s, chroma={chroma_time:.2f}s, total={batch_total_time:.2f}s for {len(batch_docs)} docs ({len(batch_docs)/batch_total_time:.1f} docs/sec). Job elapsed: {time.time() - job_start_time:.1f}s")
+                logger.info(f"Job {job_id}: Batch {batch_idx + 1} timing: embed={embed_time:.2f}s, store={store_time:.2f}s, total={batch_total_time:.2f}s for {len(batch_docs)} docs ({len(batch_docs)/batch_total_time:.1f} docs/sec). Job elapsed: {time.time() - job_start_time:.1f}s")
             
             # Calculate speed
             elapsed = time.time() - start_time
@@ -1465,8 +1481,8 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
         await _update_job_status(job_id, EmbeddingJobStatus.VALIDATING, phase="Validating embeddings...")
         
         # Verify collection count
-        final_count = collection.count()
-        logger.info(f"ChromaDB collection {vector_db_name} has {final_count} vectors")
+        final_count = await vector_store.get_collection_count()
+        logger.info(f"Vector store collection {vector_db_name} has {final_count} vectors")
         
         # Update status to STORING
         await _update_job_status(job_id, EmbeddingJobStatus.STORING, phase="Finalizing vector database...")
@@ -1478,7 +1494,7 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
                 AgentConfigModel.id == config_id
             ).values(
                 vector_collection_name=vector_db_name,
-                embedding_path=str(chroma_path),
+                embedding_path=vector_store_path,
                 embedding_status="completed"
             )
             await session.execute(stmt)
@@ -1502,10 +1518,10 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
         await _update_job_status(
             job_id, 
             EmbeddingJobStatus.COMPLETED, 
-            phase=f"Completed: {processed} documents, {total_vectors} vectors ({avg_speed:.1f} docs/sec)"
+            phase=f"Completed: {processed} documents, {total_vectors} vectors ({avg_speed:.1f} docs/sec) - {vector_store_type}"
         )
         
-        logger.info(f"Embedding job {job_id} completed: {processed} documents, {total_vectors} vectors in {total_time:.1f}s")
+        logger.info(f"Embedding job {job_id} completed: {processed} documents, {total_vectors} vectors in {total_time:.1f}s using {vector_store_type}")
         
     except Exception as e:
         logger.error(f"Embedding job {job_id} failed: {e}")

@@ -175,3 +175,6 @@ class VectorDbStatusResponse(BaseModel):
     embedding_status: Optional[str] = None
     last_job_id: Optional[str] = None
     last_job_status: Optional[str] = None
+    
+    # Vector store type (qdrant or chroma)
+    vector_db_type: Optional[str] = Field(default="qdrant", description="Vector database type: 'qdrant' or 'chroma'")
