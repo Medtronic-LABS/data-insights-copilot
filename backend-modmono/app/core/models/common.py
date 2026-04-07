@@ -13,25 +13,36 @@ from pydantic import BaseModel, Field, ConfigDict
 T = TypeVar('T')
 
 
-class BaseResponse(BaseModel):
+class BaseResponse(BaseModel, Generic[T]):
     """
     Standard API response wrapper.
     
     Provides consistent response structure across all endpoints.
+    Can be parametrized: BaseResponse[User], BaseResponse[dict], etc.
     """
-    status: str = Field(default="success", description="Response status")
-    message: Optional[str] = Field(default=None, description="Optional message")
-    data: Optional[Any] = Field(default=None, description="Response payload")
+    success: bool = Field(default=True, description="Whether the request was successful")
+    message: str = Field(default="", description="Optional message")
+    data: Optional[T] = Field(default=None, description="Response payload")
     
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "status": "success",
-                "message": "Operation completed successfully",
+                "success": True,
+                "message": "",
                 "data": {"id": "123", "name": "Example"}
             }
         }
     )
+    
+    @classmethod
+    def ok(cls, data: T = None, message: str = "") -> "BaseResponse[T]":
+        """Create a success response."""
+        return cls(success=True, message=message, data=data)
+    
+    @classmethod
+    def error(cls, message: str, data: T = None) -> "BaseResponse[T]":
+        """Create an error response."""
+        return cls(success=False, message=message, data=data)
 
 
 class PaginatedResponse(BaseModel, Generic[T]):

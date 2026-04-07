@@ -2,28 +2,81 @@
 Structured logging configuration using structlog.
 
 Provides consistent JSON logging with context and correlation IDs.
+Logs to both console (stdout) and file (logs/backend.log).
 """
 import sys
 import logging
+import os
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 import structlog
 from structlog.types import Processor
 
+# Force unbuffered stdout for immediate log output
+# This ensures logs appear immediately even if the request crashes
+sys.stdout.reconfigure(line_buffering=True)
 
-def configure_logging(log_level: str = "INFO", json_logs: bool = True) -> None:
+# Default log file path
+DEFAULT_LOG_DIR = Path(__file__).parent.parent.parent.parent / "logs"
+DEFAULT_LOG_FILE = "backend.log"
+
+
+def configure_logging(
+    log_level: str = "INFO", 
+    json_logs: bool = True,
+    log_file: Optional[str] = None,
+    max_bytes: int = 10 * 1024 * 1024,  # 10 MB
+    backup_count: int = 5
+) -> None:
     """
     Configure structured logging for the application.
+    
+    Logs to both console and file for persistence.
     
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_logs: Whether to output JSON logs (True for production, False for dev)
+        log_file: Path to log file (default: logs/backend.log)
+        max_bytes: Max size of log file before rotation (default: 10MB)
+        backup_count: Number of backup files to keep (default: 5)
     """
-    # Configure standard library logging
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=getattr(logging, log_level.upper()),
-    )
+    # Determine log file path
+    if log_file:
+        log_path = Path(log_file)
+    else:
+        log_path = DEFAULT_LOG_DIR / DEFAULT_LOG_FILE
+    
+    # Create log directory if it doesn't exist
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Get root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level.upper()))
+    
+    # Clear existing handlers
+    root_logger.handlers.clear()
+    
+    # Console handler (stdout)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(getattr(logging, log_level.upper()))
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(console_handler)
+    
+    # File handler with rotation
+    try:
+        file_handler = RotatingFileHandler(
+            str(log_path),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(getattr(logging, log_level.upper()))
+        file_handler.setFormatter(logging.Formatter("%(message)s"))
+        root_logger.addHandler(file_handler)
+        print(f"Logging to file: {log_path}")
+    except Exception as e:
+        print(f"Warning: Could not create log file {log_path}: {e}")
     
     # Suppress noisy loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)

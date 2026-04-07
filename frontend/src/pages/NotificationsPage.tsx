@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ChatHeader from '../components/chat/ChatHeader';
-import { getNotifications, getNotificationCount, markNotificationAsRead, dismissNotification, markAllNotificationsAsRead } from '../services/api';
+// Notification APIs disabled - not yet implemented in backend-modmono
 import type { Notification } from '../types/rag';
-import { useToast } from '../components/Toast';
 import { formatDateTime } from '../utils/datetime';
 
 const NOTIFICATION_ICONS: Record<string, string> = {
@@ -28,7 +27,6 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50];
 
 export default function NotificationsPage() {
     const navigate = useNavigate();
-    const { success, error } = useToast();
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [filter, setFilter] = useState<string>('all');
@@ -40,32 +38,12 @@ export default function NotificationsPage() {
     
     const totalPages = Math.ceil(totalCount / pageSize);
 
+    // Notifications disabled - backend API not yet implemented
     const fetchNotifications = useCallback(async () => {
-        try {
-            setIsLoading(true);
-            const params: { limit: number; offset: number; status_filter?: string } = {
-                limit: pageSize,
-                offset: page * pageSize
-            };
-            if (filter !== 'all') {
-                params.status_filter = filter;
-            }
-            
-            // Fetch notifications and count in parallel
-            const [data, countResult] = await Promise.all([
-                getNotifications(params),
-                getNotificationCount(filter !== 'all' ? { status_filter: filter } : undefined)
-            ]);
-            
-            setNotifications(data);
-            setTotalCount(countResult.count);
-        } catch (err) {
-            console.error('Failed to fetch notifications', err);
-            error('Failed to load notifications');
-        } finally {
-            setIsLoading(false);
-        }
-    }, [filter, page, pageSize, error]);
+        setIsLoading(false);
+        setNotifications([]);
+        setTotalCount(0);
+    }, []);
 
     useEffect(() => {
         fetchNotifications();
@@ -76,41 +54,17 @@ export default function NotificationsPage() {
         setPage(0);
     }, [filter]);
 
-    const handleMarkAsRead = async (id: number) => {
-        try {
-            await markNotificationAsRead(id);
-            setNotifications(prev => prev.map(n => n.id === id ? { ...n, status: 'read' } : n));
-        } catch (err) {
-            error('Failed to mark as read');
-        }
+    // Handlers disabled - notifications API not implemented
+    const handleMarkAsRead = async (_id: number) => {
+        // No-op - API not implemented
     };
 
-    const handleDismiss = async (id: number) => {
-        try {
-            const notification = notifications.find(n => n.id === id);
-            await dismissNotification(id);
-            setNotifications(prev => prev.filter(n => n.id !== id));
-            setTotalCount(prev => Math.max(0, prev - 1));
-            
-            // If filter is set and notification matched filter, update count
-            if (filter === 'unread' && notification?.status === 'unread') {
-                // Count will be updated on next refresh
-            }
-            
-            success('Notification dismissed');
-        } catch (err) {
-            error('Failed to dismiss notification');
-        }
+    const handleDismiss = async (_id: number) => {
+        // No-op - API not implemented
     };
 
     const handleMarkAllRead = async () => {
-        try {
-            await markAllNotificationsAsRead();
-            setNotifications(prev => prev.map(n => ({ ...n, status: 'read' })));
-            success('All notifications marked as read');
-        } catch (err) {
-            error('Failed to mark all as read');
-        }
+        // No-op - API not implemented
     };
     
     const handlePageChange = (newPage: number) => {
@@ -143,7 +97,7 @@ export default function NotificationsPage() {
                                             : 'text-gray-600 hover:bg-gray-100'
                                             }`}
                                     >
-                                        {f.charAt(0).toUpperCase() + f.slice(1)}
+                                        {f ? f.charAt(0).toUpperCase() + f.slice(1) : ''}
                                     </button>
                                 ))}
                             </div>

@@ -5,6 +5,7 @@ Defines database tables for audit logs and notifications.
 """
 from datetime import datetime
 from sqlalchemy import String, Text, DateTime, Integer, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database.connection import Base
 
@@ -19,7 +20,7 @@ class AuditLogModel(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    actor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=True)
+    actor_id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     actor_username: Mapped[str] = mapped_column(Text, nullable=True, index=True)
     actor_role: Mapped[str] = mapped_column(Text, nullable=True)
     action: Mapped[str] = mapped_column(Text, nullable=False, index=True)

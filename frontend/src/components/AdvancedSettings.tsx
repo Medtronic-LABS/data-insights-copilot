@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-    getEmbeddingModels, getLLMModels, getCompatibleLLMs,
-    activateEmbeddingModel, activateLLMModel, handleApiError,
-    registerEmbeddingModel, registerLLMModel
+    listAIModels, setAIModelDefault, handleApiError
 } from '../services/api';
-import type { ModelInfo } from '../services/api';
+import type { AIModel, ModelType } from '../services/api';
 import ModelCatalog from './ModelCatalog';
+import AIModelSelector from './AIModelSelector';
+import { useAIRegistryModels } from '../hooks/useAIRegistryModels';
 
 export type AccordionSection = 'embedding' | 'llm' | 'chunking' | 'retrieval';
 
@@ -16,6 +16,7 @@ interface AdvancedSettingsProps {
             vectorDbName?: string;
         };
         llm: {
+            model?: string;
             temperature: number;
             maxTokens: number;
         };
@@ -32,8 +33,12 @@ interface AdvancedSettingsProps {
             rerankEnabled: boolean;
             rerankerModel: string;
         };
+        // AI Registry model IDs at top level
+        embeddingModelId?: number;
+        llmModelId?: number;
+        rerankerModelId?: number;
     };
-    onChange: (settings: any) => void;
+    onChange: (settings: AdvancedSettingsProps['settings']) => void;
     readOnly?: boolean;
     dataSourceName?: string;
     /** If true, only one accordion section can be open at a time. Default: false (multiple can be open) */
@@ -90,41 +95,64 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
         checking: false
     });
 
-    // Model registry state
-    const [embeddingModels, setEmbeddingModels] = useState<ModelInfo[]>([]);
-    const [llmModels, setLLMModels] = useState<ModelInfo[]>([]);
-    const [compatibleLLMs, setCompatibleLLMs] = useState<ModelInfo[]>([]);
+    // Model registry state (from AI Registry)
+    const [embeddingModels, setEmbeddingModels] = useState<AIModel[]>([]);
+    const [llmModels, setLLMModels] = useState<AIModel[]>([]);
+    const [compatibleLLMs, setCompatibleLLMs] = useState<AIModel[]>([]);
     const [loadingModels, setLoadingModels] = useState(true);
     const [modelError, setModelError] = useState<string | null>(null);
+
+    // AI Registry models (new system)
+    const aiRegistry = useAIRegistryModels();
 
     // Activation state
     const [activatingId, setActivatingId] = useState<number | null>(null);
     const [activationMsg, setActivationMsg] = useState<string | null>(null);
 
     // Active selections
-    const [activeEmbedding, setActiveEmbedding] = useState<ModelInfo | null>(null);
-    const [activeLLM, setActiveLLM] = useState<ModelInfo | null>(null);
+    const [activeEmbedding, setActiveEmbedding] = useState<AIModel | null>(null);
+    const [activeLLM, setActiveLLM] = useState<AIModel | null>(null);
 
-    // Registration UI state
-    const [showRegisterEmbedding, setShowRegisterEmbedding] = useState(false);
-    const [showRegisterLLM, setShowRegisterLLM] = useState(false);
-    
     // Model Catalog toggle
     const [showModelCatalog, setShowModelCatalog] = useState(false);
-
-    const [newModelForm, setNewModelForm] = useState({
-        provider: 'huggingface',
-        model_name: '',
-        display_name: '',
-        dimensions: 768,
-        max_tokens: 512,
-        context_length: 4096,
-        max_output_tokens: 1024
-    });
+    
+    // Track if we've already set the default reranker
+    const hasSetDefaultReranker = React.useRef(false);
+    // Track if we've synced embedding/LLM defaults
+    const hasSetDefaultEmbedding = React.useRef(false);
+    const hasSetDefaultLLM = React.useRef(false);
 
     useEffect(() => {
         setLocalSettings(settings);
     }, [settings]);
+
+    // Pre-select default reranker model from AI Registry
+    // Only if the current value doesn't match any available model
+    useEffect(() => {
+        if (readOnly) return;
+        if (hasSetDefaultReranker.current) return;
+        if (aiRegistry.isLoading || aiRegistry.rerankerModels.length === 0) return;
+        if (!aiRegistry.defaults?.reranker) return;
+        
+        const currentRerankerModelId = localSettings.rerankerModelId;
+        const isValidSelection = currentRerankerModelId && aiRegistry.rerankerModels.some(m => m.id === currentRerankerModelId);
+        
+        // If current selection is not valid, use the default
+        if (!isValidSelection) {
+            hasSetDefaultReranker.current = true;
+            const defaultReranker = aiRegistry.defaults.reranker;
+            const newSettings = {
+                ...localSettings,
+                retriever: {
+                    ...localSettings.retriever,
+                    rerankerModel: defaultReranker.model_id,
+                },
+                rerankerModelId: defaultReranker.id,  // Store at top level
+            };
+            setLocalSettings(newSettings);
+            onChange(newSettings);
+        }
+    }, [aiRegistry.isLoading, aiRegistry.rerankerModels, aiRegistry.defaults?.reranker, readOnly, localSettings, onChange]);
 
     // Handle Vector DB Default formatting
     useEffect(() => {
@@ -164,42 +192,82 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
         return () => clearTimeout(timer);
     }, [localSettings.embedding.vectorDbName]);
 
-    // Load models from backend
+    // Load models from AI Registry
     const loadModels = useCallback(async () => {
         setLoadingModels(true);
         setModelError(null);
         try {
-            const [embModels, llModels, compat] = await Promise.all([
-                getEmbeddingModels(),
-                getLLMModels(),
-                getCompatibleLLMs()
+            const [embResult, llmResult] = await Promise.all([
+                listAIModels({ model_type: 'embedding' as ModelType }),
+                listAIModels({ model_type: 'llm' as ModelType })
             ]);
+            
+            // Filter to only ready models
+            const embModels = (embResult.models || []).filter(m => m.is_ready);
+            const llModels = (llmResult.models || []).filter(m => m.is_ready);
+            
             setEmbeddingModels(embModels);
             setLLMModels(llModels);
-            setCompatibleLLMs(compat);
+            // For compatibility, set all LLMs as compatible for now
+            setCompatibleLLMs(llModels);
 
-            const activeEmb = embModels.find(m => m.is_active === 1) || null;
-            const activeLl = llModels.find(m => m.is_active === 1) || null;
+            const activeEmb = embModels.find(m => m.is_default) || null;
+            const activeLl = llModels.find(m => m.is_default) || null;
             setActiveEmbedding(activeEmb);
             setActiveLLM(activeLl);
-
-            // Sync with parent settings if out of bounds
-            if (activeEmb && activeEmb.model_name !== localSettings.embedding.model) {
-                handleChange('embedding', 'model', activeEmb.model_name);
-            }
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error('Failed to load models:', err);
-            setModelError('Could not load model registry. Using manual input.');
+            setModelError('Could not load AI Registry. Using manual input.');
         } finally {
             setLoadingModels(false);
         }
-    }, [localSettings.embedding.model]);
+    }, []);
 
     useEffect(() => {
         loadModels();
     }, [loadModels]);
 
-    const handleChange = (section: keyof AdvancedSettingsProps['settings'], field: string, value: any) => {
+    // Sync default models to local settings on initial load (only if not already set)
+    useEffect(() => {
+        if (readOnly || loadingModels) return;
+        
+        // Use functional update to access current state and avoid stale closures
+        setLocalSettings(currentSettings => {
+            let needsUpdate = false;
+            const newSettings = { ...currentSettings };
+            
+            // Sync embedding model (model string + top-level embeddingModelId)
+            if (activeEmbedding && !hasSetDefaultEmbedding.current && !currentSettings.embeddingModelId) {
+                newSettings.embedding = {
+                    ...currentSettings.embedding,
+                    model: activeEmbedding.model_id,
+                };
+                newSettings.embeddingModelId = activeEmbedding.id;
+                hasSetDefaultEmbedding.current = true;
+                needsUpdate = true;
+            }
+            
+            // Sync LLM model (model string + top-level llmModelId)
+            if (activeLLM && !hasSetDefaultLLM.current && !currentSettings.llmModelId) {
+                newSettings.llm = {
+                    ...currentSettings.llm,
+                    model: activeLLM.model_id,
+                };
+                newSettings.llmModelId = activeLLM.id;
+                hasSetDefaultLLM.current = true;
+                needsUpdate = true;
+            }
+            
+            if (needsUpdate) {
+                // Use setTimeout to call onChange after state update to avoid batching issues
+                setTimeout(() => onChange(newSettings), 0);
+                return newSettings;
+            }
+            return currentSettings;
+        });
+    }, [activeEmbedding, activeLLM, loadingModels, readOnly, onChange]);
+
+    const handleChange = (section: keyof AdvancedSettingsProps['settings'], field: string, value: unknown) => {
         if (readOnly) return;
         const newSettings = {
             ...localSettings,
@@ -216,12 +284,23 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
     const handleEmbeddingSelect = async (modelId: number) => {
         if (readOnly || activatingId) return;
         const model = embeddingModels.find(m => m.id === modelId);
-        if (!model || model.is_active === 1) return;
+        if (!model || model.is_default) return;
 
         setActivatingId(modelId);
         setActivationMsg(null);
         try {
-            await activateEmbeddingModel(modelId);
+            await setAIModelDefault('embedding', modelId);
+            // Update local settings with model_id string and top-level embeddingModelId
+            const newSettings = {
+                ...localSettings,
+                embedding: {
+                    ...localSettings.embedding,
+                    model: model.model_id,
+                },
+                embeddingModelId: model.id,  // Store at top level
+            };
+            setLocalSettings(newSettings);
+            onChange(newSettings);
             setActivationMsg(`✓ Switched to ${model.display_name}`);
             await loadModels();
         } catch (err) {
@@ -236,12 +315,23 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
     const handleLLMSelect = async (modelId: number) => {
         if (readOnly || activatingId) return;
         const model = llmModels.find(m => m.id === modelId);
-        if (!model || model.is_active === 1) return;
+        if (!model || model.is_default) return;
 
         setActivatingId(modelId);
         setActivationMsg(null);
         try {
-            await activateLLMModel(modelId);
+            await setAIModelDefault('llm', modelId);
+            // Update local settings with model_id string and top-level llmModelId
+            const newSettings = {
+                ...localSettings,
+                llm: {
+                    ...localSettings.llm,
+                    model: model.model_id,
+                },
+                llmModelId: model.id,  // Store at top level
+            };
+            setLocalSettings(newSettings);
+            onChange(newSettings);
             setActivationMsg(`✓ Switched to ${model.display_name}`);
             await loadModels();
         } catch (err) {
@@ -249,47 +339,6 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
         } finally {
             setActivatingId(null);
             setTimeout(() => setActivationMsg(null), 4000);
-        }
-    };
-
-    // Handle Custom Model Registration
-    const handleRegisterModel = async (type: 'embedding' | 'llm') => {
-        setActivationMsg(null);
-        try {
-            if (type === 'embedding') {
-                await registerEmbeddingModel({
-                    provider: newModelForm.provider,
-                    model_name: newModelForm.model_name,
-                    display_name: newModelForm.display_name,
-                    dimensions: newModelForm.dimensions,
-                    max_tokens: newModelForm.max_tokens
-                });
-                setShowRegisterEmbedding(false);
-            } else {
-                await registerLLMModel({
-                    provider: newModelForm.provider,
-                    model_name: newModelForm.model_name,
-                    display_name: newModelForm.display_name,
-                    context_length: newModelForm.context_length,
-                    max_output_tokens: newModelForm.max_output_tokens,
-                    parameters: { temperature: 0.0 }
-                });
-                setShowRegisterLLM(false);
-            }
-            setActivationMsg(`✓ Successfully registered model ${newModelForm.display_name}`);
-            // Reset form
-            setNewModelForm({
-                provider: 'huggingface',
-                model_name: '',
-                display_name: '',
-                dimensions: 768,
-                max_tokens: 512,
-                context_length: 4096,
-                max_output_tokens: 1024
-            });
-            await loadModels();
-        } catch (err) {
-            setActivationMsg(`✗ Registration failed: ${handleApiError(err)}`);
         }
     };
 
@@ -440,8 +489,9 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                     ) : (
                         <div className="grid grid-cols-1 gap-2 sm:gap-3 mb-4">
                             {embeddingModels.map(m => {
-                                const isActive = m.is_active === 1;
+                                const isActive = m.is_default;
                                 const isLoading = activatingId === m.id;
+                                const isLocal = m.deployment_type === 'local';
                                 return (
                                     <button
                                         key={m.id}
@@ -457,11 +507,14 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex flex-wrap items-center gap-1 sm:gap-2 mb-1">
                                                     <span className={`text-xs sm:text-sm font-semibold ${isActive ? 'text-indigo-900' : 'text-gray-800'}`}>{m.display_name}</span>
-                                                    {isActive && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">Active</span>}
-                                                    {m.is_custom === 1 && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">Custom</span>}
+                                                    {isActive && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">Default</span>}
+                                                    {/* Deployment Type Badge */}
+                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${isLocal ? 'bg-orange-100 text-orange-700' : 'bg-sky-100 text-sky-700'}`}>
+                                                        {isLocal ? 'Local' : 'Cloud'}
+                                                    </span>
                                                 </div>
-                                                <p className="text-[10px] sm:text-xs text-gray-500 truncate">{m.provider} • {m.model_name}</p>
-                                                <p className="text-[10px] text-gray-400 mt-1">{m.dimensions}d • Max {m.max_tokens}</p>
+                                                <p className="text-[10px] sm:text-xs text-gray-500 truncate">{m.provider_name} • {m.model_id}</p>
+                                                <p className="text-[10px] text-gray-400 mt-1">{m.dimensions}d{m.max_input_tokens ? ` • Max ${m.max_input_tokens}` : ''}</p>
                                             </div>
                                             {!isLoading && !isActive && !readOnly && <span className="text-[10px] sm:text-xs text-indigo-500 font-medium flex-shrink-0">Select →</span>}
                                         </div>
@@ -469,54 +522,18 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                 );
                             })}
 
-                            {/* Add Custom Embedded Model Button */}
+                            {/* Link to AI Registry */}
                             {!readOnly && (
                                 <button
                                     type="button"
-                                    onClick={() => setShowRegisterEmbedding(!showRegisterEmbedding)}
-                                    className="border-2 border-dashed border-gray-300 rounded-lg p-3 sm:p-4 flex flex-col items-center justify-center text-gray-500 hover:bg-gray-50 hover:border-gray-400 hover:text-gray-700 transition-colors"
+                                    onClick={() => window.open('/ai-registry', '_blank')}
+                                    className="mt-2 inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium"
                                 >
-                                    <svg className="w-5 h-5 sm:w-6 sm:h-6 mb-1 sm:mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                                    <span className="text-xs sm:text-sm font-medium">Register Custom Model</span>
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                    Add new model in AI Registry
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
                                 </button>
                             )}
-                        </div>
-                    )}
-
-                    {/* Registration Form */}
-                    {showRegisterEmbedding && !readOnly && (
-                        <div className="mt-4 p-3 sm:p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <h4 className="text-xs sm:text-sm font-medium text-gray-900 mb-3">Register New Embedding Model</h4>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-4">
-                                <div>
-                                    <label className="block text-[10px] sm:text-xs font-medium text-gray-700 mb-1">Provider</label>
-                                    <select value={newModelForm.provider} onChange={e => setNewModelForm({ ...newModelForm, provider: e.target.value })} className="w-full text-xs sm:text-sm border-gray-300 rounded-md p-1.5 border">
-                                        <option value="huggingface">HuggingFace</option>
-                                        <option value="openai">OpenAI</option>
-                                        <option value="sentence-transformers">Sentence Transformers</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="block text-[10px] sm:text-xs font-medium text-gray-700 mb-1">Display Name</label>
-                                    <input type="text" placeholder="e.g. My Custom BGE" value={newModelForm.display_name} onChange={e => setNewModelForm({ ...newModelForm, display_name: e.target.value })} className="w-full text-xs sm:text-sm rounded-md p-1.5 border border-gray-300" />
-                                </div>
-                                <div className="sm:col-span-2">
-                                    <label className="block text-[10px] sm:text-xs font-medium text-gray-700 mb-1">Model ID / Name</label>
-                                    <input type="text" placeholder="e.g. BAAI/bge-large-en-v1.5" value={newModelForm.model_name} onChange={e => setNewModelForm({ ...newModelForm, model_name: e.target.value })} className="w-full text-xs sm:text-sm rounded-md p-1.5 border border-gray-300" />
-                                </div>
-                                <div>
-                                    <label className="block text-[10px] sm:text-xs font-medium text-gray-700 mb-1">Dimensions</label>
-                                    <input type="number" value={newModelForm.dimensions} onChange={e => setNewModelForm({ ...newModelForm, dimensions: parseInt(e.target.value) })} className="w-full text-xs sm:text-sm rounded-md p-1.5 border border-gray-300" />
-                                </div>
-                                <div>
-                                    <label className="block text-[10px] sm:text-xs font-medium text-gray-700 mb-1">Max Tokens</label>
-                                    <input type="number" value={newModelForm.max_tokens} onChange={e => setNewModelForm({ ...newModelForm, max_tokens: parseInt(e.target.value) })} className="w-full text-xs sm:text-sm rounded-md p-1.5 border border-gray-300" />
-                                </div>
-                            </div>
-                            <div className="flex justify-end gap-2">
-                                <button type="button" onClick={() => setShowRegisterEmbedding(false)} className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 font-medium">Cancel</button>
-                                <button type="button" onClick={() => handleRegisterModel('embedding')} disabled={!newModelForm.model_name || !newModelForm.display_name} className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 font-medium disabled:opacity-50">Register</button>
-                            </div>
                         </div>
                     )}
                         </div>
@@ -573,9 +590,10 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                 <label className="block text-sm font-medium text-gray-700 mb-2">Select LLM Model</label>
                                 <div className="space-y-2 mb-4">
                                     {llmModels.map(m => {
-                                        const isActive = m.is_active === 1;
+                                        const isActive = m.is_default;
                                         const isCompatible = compatibleLLMs.some(c => c.id === m.id);
                                         const isLoading = activatingId === m.id;
+                                        const isLocal = m.deployment_type === 'local';
                                         return (
                                             <button
                                                 key={m.id}
@@ -589,13 +607,17 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                             >
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex-1 min-w-0">
-                                                        <div className="flex items-center gap-2">
+                                                        <div className="flex flex-wrap items-center gap-1 sm:gap-2">
                                                             <span className={`text-sm font-semibold ${isActive ? 'text-purple-900' : 'text-gray-800'}`}>{m.display_name}</span>
-                                                            {isActive && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">Active</span>}
+                                                            {isActive && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">Default</span>}
                                                             {isCompatible && !isActive && <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                                                            {!isCompatible && !isActive && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600">Incompatible</span>}
+                                                            {!isCompatible && !isActive && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-600">Incompatible</span>}
+                                                            {/* Deployment Type Badge */}
+                                                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${isLocal ? 'bg-orange-100 text-orange-700' : 'bg-sky-100 text-sky-700'}`}>
+                                                                {isLocal ? 'Local' : 'Cloud'}
+                                                            </span>
                                                         </div>
-                                                        <p className="text-xs text-gray-500 mt-0.5">{m.provider} • {m.model_name}</p>
+                                                        <p className="text-xs text-gray-500 mt-0.5">{m.provider_name} • {m.model_id}</p>
                                                     </div>
                                                     {!isLoading && !isActive && !readOnly && <span className="text-xs text-purple-500 font-medium ml-2 flex-shrink-0">Select →</span>}
                                                 </div>
@@ -603,46 +625,19 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                         );
                                     })}
 
+                                    {/* Link to AI Registry */}
                                     {!readOnly && (
                                         <button
                                             type="button"
-                                            onClick={() => setShowRegisterLLM(!showRegisterLLM)}
-                                            className="w-full border-2 border-dashed border-gray-300 rounded-lg p-3 flex items-center justify-center text-gray-500 hover:bg-gray-50 hover:border-gray-400 hover:text-gray-700 transition-colors"
+                                            onClick={() => window.open('/ai-registry', '_blank')}
+                                            className="mt-2 w-full inline-flex items-center justify-center gap-1 text-xs text-purple-600 hover:text-purple-800 font-medium py-2"
                                         >
-                                            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                                            <span className="text-sm font-medium">Register Custom LLM</span>
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                            Add new model in AI Registry
+                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
                                         </button>
                                     )}
                                 </div>
-
-                                {/* Registration Form */}
-                                {showRegisterLLM && !readOnly && (
-                                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                                        <h4 className="text-sm font-medium text-gray-900 mb-3">Register Custom LLM Model</h4>
-                                        <div className="grid grid-cols-2 gap-4 mb-4">
-                                            <div>
-                                                <label className="block text-xs font-medium text-gray-700 mb-1">Provider</label>
-                                                <select value={newModelForm.provider} onChange={e => setNewModelForm({ ...newModelForm, provider: e.target.value })} className="w-full text-sm border-gray-300 rounded-md p-1.5 border">
-                                                    <option value="openai">OpenAI</option>
-                                                    <option value="anthropic">Anthropic</option>
-                                                    <option value="ollama">Ollama</option>
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-gray-700 mb-1">Display Name</label>
-                                                <input type="text" placeholder="e.g. My Llama 3" value={newModelForm.display_name} onChange={e => setNewModelForm({ ...newModelForm, display_name: e.target.value })} className="w-full text-sm rounded-md p-1.5 border border-gray-300" />
-                                            </div>
-                                            <div className="col-span-2">
-                                                <label className="block text-xs font-medium text-gray-700 mb-1">Model Name</label>
-                                                <input type="text" placeholder="e.g. llama3.1:latest" value={newModelForm.model_name} onChange={e => setNewModelForm({ ...newModelForm, model_name: e.target.value })} className="w-full text-sm rounded-md p-1.5 border border-gray-300" />
-                                            </div>
-                                        </div>
-                                        <div className="flex justify-end gap-2">
-                                            <button type="button" onClick={() => setShowRegisterLLM(false)} className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 font-medium">Cancel</button>
-                                            <button type="button" onClick={() => handleRegisterModel('llm')} disabled={!newModelForm.model_name || !newModelForm.display_name} className="px-3 py-1.5 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 font-medium disabled:opacity-50">Register Model</button>
-                                        </div>
-                                    </div>
-                                )}
                             </div>
 
                             {/* Block 2: Hyperparameters & Compatibility */}
@@ -933,15 +928,57 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                             </p>
 
                             <div className={`transition-opacity duration-200 ${localSettings.retriever.rerankEnabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-                                <label className="block text-xs font-medium text-gray-700 mb-1">Reranker Model</label>
-                                <input
-                                    type="text"
-                                    value={localSettings.retriever.rerankerModel}
-                                    onChange={(e) => handleChange('retriever', 'rerankerModel', e.target.value)}
-                                    disabled={readOnly || !localSettings.retriever.rerankEnabled}
-                                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500 sm:text-sm p-2 border"
-                                />
-                                <p className="mt-1 text-[10px] text-gray-400">HuggingFace Model ID (e.g. BAAI/bge-reranker-base)</p>
+                                {/* AI Registry Reranker Selector */}
+                                {aiRegistry.rerankerModels.length > 0 ? (
+                                    <AIModelSelector
+                                        modelType="reranker"
+                                        models={aiRegistry.rerankerModels}
+                                        selectedModelId={localSettings.retriever.rerankerModel || null}
+                                        onSelect={(modelId) => {
+                                            // Look up the model to get the database ID
+                                            const model = aiRegistry.rerankerModels.find(m => m.model_id === modelId);
+                                            const newSettings = {
+                                                ...localSettings,
+                                                retriever: {
+                                                    ...localSettings.retriever,
+                                                    rerankerModel: modelId,
+                                                },
+                                                rerankerModelId: model?.id,  // Store at top level
+                                            };
+                                            setLocalSettings(newSettings);
+                                            onChange(newSettings);
+                                        }}
+                                        disabled={readOnly || !localSettings.retriever.rerankEnabled}
+                                        isLoading={aiRegistry.isLoading}
+                                        label="Reranker Model"
+                                        compact={true}
+                                    />
+                                ) : (
+                                    <>
+                                        <label className="block text-xs font-medium text-gray-700 mb-1">Reranker Model</label>
+                                        <input
+                                            type="text"
+                                            value={localSettings.retriever.rerankerModel}
+                                            onChange={(e) => handleChange('retriever', 'rerankerModel', e.target.value)}
+                                            disabled={readOnly || !localSettings.retriever.rerankEnabled}
+                                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500 sm:text-sm p-2 border"
+                                        />
+                                        <p className="mt-1 text-[10px] text-gray-400">HuggingFace Model ID (e.g. BAAI/bge-reranker-base)</p>
+                                    </>
+                                )}
+
+                                {/* Link to AI Registry */}
+                                {!readOnly && (
+                                    <button
+                                        type="button"
+                                        onClick={() => window.open('/ai-registry', '_blank')}
+                                        className="mt-3 inline-flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 font-medium"
+                                    >
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                        Add new model in AI Registry
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>

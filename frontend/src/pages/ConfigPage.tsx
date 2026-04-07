@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { generateSystemPrompt, publishSystemPrompt, getPromptHistory, getActiveConfigMetadata, handleApiError, startEmbeddingJob, rollbackToVersion, listEmbeddingJobs } from '../services/api';
+import { generateSystemPrompt, publishSystemPrompt, getPromptHistory, getActiveConfigMetadata, handleApiError, startEmbeddingJob, rollbackToVersion, listEmbeddingJobs, type DataSource } from '../services/api';
 import type { IngestionResponse } from '../services/api';
 import { formatDateTime, formatDate } from '../utils/datetime';
-import ConnectionManager from '../components/ConnectionManager';
-import SchemaSelector from '../components/SchemaSelector';
 import DictionaryUploader from '../components/DictionaryUploader';
-import FileUploadSource from '../components/FileUploadSource';
 import FileColumnSelector from '../components/FileColumnSelector';
 import { DocumentPreview } from '../components/config/DocumentPreview';
+import DataSourceSelector from '../components/config/DataSourceSelector';
 import PromptEditor from '../components/PromptEditor';
 import PromptHistory from '../components/PromptHistory';
 import ConfigSummary from '../components/ConfigSummary';
@@ -25,7 +23,7 @@ import { APP_CONFIG } from '../config';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/Toast';
 import type { Agent } from '../types/agent';
-import { canEditPrompt, canManageConnections, canPublishPrompt } from '../utils/permissions';
+import { canEditPrompt, canPublishPrompt } from '../utils/permissions';
 import { ArrowLeftIcon, Cog6ToothIcon, CheckCircleIcon, CommandLineIcon, AdjustmentsVerticalIcon, ArrowPathRoundedSquareIcon, UserGroupIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { MessageList, ChatInput } from '../components/chat';
 import { chatService } from '../services/chatService';
@@ -57,8 +55,11 @@ const ConfigPage: React.FC = () => {
     const initialStep = searchParams.get('step') ? parseInt(searchParams.get('step')!) : 1;
     const [currentStep, setCurrentStep] = useState(initialStep);
     const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
-    const [connectionId, setConnectionId] = useState<number | null>(null);
-    const [connectionName, setConnectionName] = useState<string>(''); // Added for naming
+    
+    // Selected data source (replaces connectionId/fileUploadResult)
+    const [selectedDataSource, setSelectedDataSource] = useState<DataSource | null>(null);
+    const [connectionId, setConnectionId] = useState<number | null>(null); // Keep for SchemaSelector compatibility
+    const [connectionName, setConnectionName] = useState<string>(''); // Keep for display
     const [selectedSchema, setSelectedSchema] = useState<Record<string, string[]>>({});
     const [dataDictionary, setDataDictionary] = useState('');
 
@@ -77,9 +78,9 @@ const ConfigPage: React.FC = () => {
         diagnostics: Array<{ level: string; message: string }>;
     } | null>(null);
 
-    // Data source type: 'database' or 'file'
-    const [dataSourceType, setDataSourceType] = useState<'database' | 'file'>('database');
-    const [fileUploadResult, setFileUploadResult] = useState<IngestionResponse | null>(null);
+    // Data source type derived from selected data source
+    const dataSourceType = selectedDataSource?.source_type || 'database';
+    const [fileUploadResult, setFileUploadResult] = useState<IngestionResponse | null>(null); // Keep for file column selection
     const [selectedFileColumns, setSelectedFileColumns] = useState<string[]>([]);
     const [reasoning, setReasoning] = useState<Record<string, string>>({});
     const [exampleQuestions, setExampleQuestions] = useState<string[]>([]);
@@ -162,8 +163,31 @@ const ConfigPage: React.FC = () => {
     useEffect(() => {
         if (isLoading) return;
 
-        // Fetch dynamic system settings for defaults to prevent mismatched configs
-        const fetchDefaults = async () => {
+        const syncFromUrl = async () => {
+            // Sync / Auto-select Agent
+            const agentIdParam = searchParams.get('agent_id');
+            const currentAgentId = selectedAgent ? selectedAgent.id.toString() : null;
+
+            if (agentIdParam && agentIdParam !== lastProcessedAgentId.current && agentIdParam !== currentAgentId) {
+                lastProcessedAgentId.current = agentIdParam;
+                try {
+                    const { getAgent } = await import('../services/api');
+                    const agent = await getAgent(agentIdParam);
+                    setSelectedAgent(agent);
+                } catch (e) {
+                    console.error("Failed to auto-select agent", e);
+                }
+            }
+        };
+
+        syncFromUrl();
+    }, [isLoading, searchParams, selectedAgent]);
+
+    // Lazy load system settings when entering Advanced Settings step (step 4)
+    useEffect(() => {
+        if (currentStep !== 4) return;
+
+        const loadSystemDefaults = async () => {
             try {
                 const { getSystemSettings } = await import('../services/api');
                 const [embSettings, ragSettings, llmSettings, chunkingSettings] = await Promise.all([
@@ -178,14 +202,12 @@ const ConfigPage: React.FC = () => {
                     if (embSettings && embSettings.model_name) {
                         next.embedding.model = embSettings.model_name;
                     }
-                    // Chunking settings from dedicated 'chunking' category
                     if (chunkingSettings) {
                         if (chunkingSettings.parent_chunk_size) next.chunking.parentChunkSize = chunkingSettings.parent_chunk_size;
                         if (chunkingSettings.parent_chunk_overlap) next.chunking.parentChunkOverlap = chunkingSettings.parent_chunk_overlap;
                         if (chunkingSettings.child_chunk_size) next.chunking.childChunkSize = chunkingSettings.child_chunk_size;
                         if (chunkingSettings.child_chunk_overlap) next.chunking.childChunkOverlap = chunkingSettings.child_chunk_overlap;
                     }
-                    // Retriever settings from 'rag' category
                     if (ragSettings) {
                         if (ragSettings.top_k_initial) next.retriever.topKInitial = ragSettings.top_k_initial;
                         if (ragSettings.top_k_final) next.retriever.topKFinal = ragSettings.top_k_final;
@@ -204,28 +226,8 @@ const ConfigPage: React.FC = () => {
             }
         };
 
-        const syncFromUrl = async () => {
-            // Sync / Auto-select Agent
-            const agentIdParam = searchParams.get('agent_id');
-            const currentAgentId = selectedAgent ? selectedAgent.id.toString() : null;
-
-            if (agentIdParam && agentIdParam !== lastProcessedAgentId.current && agentIdParam !== currentAgentId) {
-                lastProcessedAgentId.current = agentIdParam;
-                try {
-                    const { getAgents } = await import('../services/api');
-                    const agentList = await getAgents();
-
-                    const agent = agentList.find(a => a.id === agentIdParam);
-                    if (agent) setSelectedAgent(agent);
-                } catch (e) {
-                    console.error("Failed to auto-select agent", e);
-                }
-            }
-        };
-
-        fetchDefaults();
-        syncFromUrl();
-    }, [isLoading, searchParams, selectedAgent]);
+        loadSystemDefaults();
+    }, [currentStep]);
 
     // Sync state TO URL
     useEffect(() => {
@@ -254,9 +256,14 @@ const ConfigPage: React.FC = () => {
             if (config) {
                 setActiveConfig(config);
                 // Pre-fill state
-                if (config.connection_id) {
+                // Set connection name from data_source title first
+                if (config.data_source?.title) {
+                    setConnectionName(config.data_source.title);
+                    // Still set connectionId for legacy compatibility if needed
+                    if (config.connection_id) setConnectionId(config.connection_id);
+                } else if (config.connection_id) {
                     setConnectionId(config.connection_id);
-                    // Also fetch name for UI consistency
+                    // Legacy fallback: fetch connection name
                     import('../services/api').then(api => {
                         api.getConnections().then(conns => {
                             const c = conns.find(x => x.id === config.connection_id);
@@ -295,13 +302,12 @@ const ConfigPage: React.FC = () => {
                 if (ret) newSettings.retriever = { ...newSettings.retriever, ...ret };
                 setAdvancedSettings(newSettings);
 
-                // Fetch Vector DB Status if possible
+                // Fetch Vector DB Status using config ID
                 try {
-                    const embConf = config.embedding_config ? JSON.parse(config.embedding_config) : {};
-                    const vDbName = embConf.vectorDbName || (config.data_source_type === 'database' && config.connection_id ? `db_connection_${config.connection_id}_data` : 'default_vector_db');
-                    if (vDbName) {
+                    const configId = config.id || config.prompt_id;
+                    if (configId) {
                         import('../services/api').then(api => {
-                            api.getVectorDbStatus(vDbName).then(status => {
+                            api.getVectorDbStatusByConfig(configId).then(status => {
                                 setVectorDbStatus(status);
                             }).catch(err => {
                                 console.log("Vector DB not found or error:", err);
@@ -392,18 +398,14 @@ const ConfigPage: React.FC = () => {
 
     const handleNext = () => {
         if (currentStep === 1) {
-            if (dataSourceType === 'database' && !connectionId) {
-                setError("Please select a database connection.");
-                return;
-            }
-            if (dataSourceType === 'file' && !fileUploadResult) {
-                setError("Please upload a file first.");
+            if (!selectedDataSource) {
+                setError("Please select a data source.");
                 return;
             }
         }
-        if (currentStep === 2 && dataSourceType === 'database' && Object.keys(selectedSchema).length === 0) {
-            setError("Please select at least one table/column.");
-            return;
+        if (currentStep === 2 && dataSourceType === 'database') {
+            // For databases, schema selection is temporarily disabled
+            // Just proceed to next step
         }
         if (currentStep === 2 && dataSourceType === 'file' && selectedFileColumns.length === 0) {
             setError("Please select at least one column.");
@@ -417,52 +419,17 @@ const ConfigPage: React.FC = () => {
         if (currentStep > 0) setCurrentStep(currentStep - 1);
     };
 
-    const handleFileExtractionComplete = (result: IngestionResponse) => {
-        setFileUploadResult(result);
-        // Default: select all columns
-        if (result.columns) {
-            setSelectedFileColumns(result.columns);
-        }
-    };
-
     const handleStartNew = async () => {
         // Reset state for fresh config
+        setSelectedDataSource(null);
         setConnectionId(null);
         setSelectedSchema({});
         setDataDictionary('');
         setDraftPrompt('');
-        setDataSourceType('database');
         setFileUploadResult(null);
         setSelectedFileColumns([]);
         setCurrentStep(1);
-
-        // Re-fetch backend defaults
-        try {
-            const { getSystemSettings } = await import('../services/api');
-            const [embSettings, chunkingSettings, llmSettings] = await Promise.all([
-                getSystemSettings('embedding').catch(() => null),
-                getSystemSettings('chunking').catch(() => null),
-                getSystemSettings('llm').catch(() => null)
-            ]);
-
-            setAdvancedSettings(prev => {
-                const next = { ...prev };
-                if (embSettings && embSettings.model_name) next.embedding.model = embSettings.model_name;
-                if (chunkingSettings) {
-                    if (chunkingSettings.parent_chunk_size) next.chunking.parentChunkSize = chunkingSettings.parent_chunk_size;
-                    if (chunkingSettings.parent_chunk_overlap) next.chunking.parentChunkOverlap = chunkingSettings.parent_chunk_overlap;
-                    if (chunkingSettings.child_chunk_size) next.chunking.childChunkSize = chunkingSettings.child_chunk_size;
-                    if (chunkingSettings.child_chunk_overlap) next.chunking.childChunkOverlap = chunkingSettings.child_chunk_overlap;
-                }
-                if (llmSettings) {
-                    if (llmSettings.temperature !== undefined) next.llm.temperature = llmSettings.temperature;
-                    if (llmSettings.max_tokens) next.llm.maxTokens = llmSettings.max_tokens;
-                }
-                return next;
-            });
-        } catch (err) {
-            console.warn("Failed to reload backend defaults", err);
-        }
+        // System settings will be loaded when user reaches step 4
     };
 
     const handleEditCurrent = () => {
@@ -854,11 +821,10 @@ const ConfigPage: React.FC = () => {
                                                                     showSuccess('Embeddings Generated', 'Knowledge base updated successfully');
                                                                     setEmbeddingJobId(null);
                                                                     if (activeConfig) {
-                                                                        const embConf = activeConfig.embedding_config ? (typeof activeConfig.embedding_config === 'string' ? JSON.parse(activeConfig.embedding_config) : activeConfig.embedding_config) : {};
-                                                                        const vDbName = embConf.vectorDbName || (activeConfig.data_source_type === 'database' && activeConfig.connection_id ? `db_connection_${activeConfig.connection_id}_data` : 'default_vector_db');
-                                                                        if (vDbName) {
+                                                                        const configId = activeConfig.id || activeConfig.prompt_id;
+                                                                        if (configId) {
                                                                             import('../services/api').then(api => {
-                                                                                api.getVectorDbStatus(vDbName).then(status => setVectorDbStatus(status)).catch(err => console.log(err));
+                                                                                api.getVectorDbStatusByConfig(configId).then(status => setVectorDbStatus(status)).catch(err => console.log(err));
                                                                             });
                                                                         }
                                                                     }
@@ -1340,92 +1306,70 @@ const ConfigPage: React.FC = () => {
                                     />
                                 )}
                                 {currentStep === 1 && (
-                                    <div className="max-w-2xl mx-auto">
-                                        <h2 className="text-xl font-semibold mb-4">Connect Data Source</h2>
-                                        <p className="text-gray-500 text-sm mb-4">
-                                            Choose how you want to provide data to this agent.
+                                    <div className="max-w-4xl mx-auto">
+                                        <h2 className="text-xl font-semibold mb-2">Select Data Source</h2>
+                                        <p className="text-gray-500 text-sm mb-6">
+                                            Choose an existing data source for this agent. You can create new data sources in the{' '}
+                                            <a href="/data-sources" className="text-blue-600 hover:underline">Data Sources</a> page.
                                         </p>
 
-                                        {/* Data Source Toggle */}
-                                        <div className="flex rounded-lg border border-gray-200 overflow-hidden mb-6">
-                                            <button
-                                                type="button"
-                                                onClick={() => { setDataSourceType('database'); setFileUploadResult(null); }}
-                                                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2
-                                                    ${dataSourceType === 'database'
-                                                        ? 'bg-blue-600 text-white'
-                                                        : 'bg-white text-gray-600 hover:bg-gray-50'
-                                                    }`}
-                                            >
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-                                                </svg>
-                                                Database
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => { setDataSourceType('file'); setConnectionId(null); }}
-                                                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2
-                                                    ${dataSourceType === 'file'
-                                                        ? 'bg-blue-600 text-white'
-                                                        : 'bg-white text-gray-600 hover:bg-gray-50'
-                                                    }`}
-                                            >
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                                                </svg>
-                                                File Upload
-                                            </button>
-                                        </div>
-
-                                        {/* Database Source */}
-                                        {dataSourceType === 'database' && (
-                                            <>
-                                                <p className="text-gray-500 text-sm mb-4">
-                                                    Choose the database you want to generate insights from.
-                                                </p>
-                                                <ConnectionManager
-                                                    onSelect={(id, name) => {
-                                                        setConnectionId(id);
-                                                        setConnectionName(name || '');
-                                                    }}
-                                                    selectedId={connectionId}
-                                                    readOnly={!canManageConnections(user)}
-                                                />
-                                            </>
-                                        )}
-
-                                        {/* File Upload Source */}
-                                        {dataSourceType === 'file' && (
-                                            <>
-                                                <p className="text-gray-500 text-sm mb-4">
-                                                    Upload a CSV or Excel file to extract and select columns from.
-                                                </p>
-                                                <FileUploadSource
-                                                    onExtractionComplete={handleFileExtractionComplete}
-                                                    disabled={!canEdit}
-                                                />
-                                            </>
-                                        )}
+                                        <DataSourceSelector
+                                            selectedId={selectedDataSource?.id || null}
+                                            onSelect={(ds) => {
+                                                setSelectedDataSource(ds);
+                                                setConnectionName(ds.title);
+                                                // For database sources, we need to handle connection ID mapping
+                                                // For file sources, build the fileUploadResult from data source
+                                                if (ds.source_type === 'file' && ds.columns_json) {
+                                                    try {
+                                                        const columns = JSON.parse(ds.columns_json);
+                                                        const columnNames = columns.map((c: any) => c.name || c);
+                                                        setFileUploadResult({
+                                                            status: 'success',
+                                                            file_name: ds.original_file_path || ds.title,
+                                                            file_type: ds.file_type || 'csv',
+                                                            total_documents: ds.row_count || 0,
+                                                            table_name: ds.duckdb_table_name,
+                                                            columns: columnNames,
+                                                            column_details: columns,
+                                                            row_count: ds.row_count,
+                                                        });
+                                                        // Auto-select all columns
+                                                        setSelectedFileColumns(columnNames);
+                                                    } catch {
+                                                        setFileUploadResult(null);
+                                                        setSelectedFileColumns([]);
+                                                    }
+                                                } else {
+                                                    setFileUploadResult(null);
+                                                    setSelectedFileColumns([]);
+                                                }
+                                            }}
+                                        />
                                     </div>
                                 )}
 
-                                {currentStep === 2 && dataSourceType === 'database' && connectionId && (
+                                {currentStep === 2 && selectedDataSource?.source_type === 'database' && (
                                     <div className="max-w-4xl mx-auto">
                                         <h2 className="text-xl font-semibold mb-4">Select Tables</h2>
                                         <p className="text-gray-500 text-sm mb-6">
                                             Select which tables contain relevant data for analysis. The AI will only be aware of the tables you select.
                                         </p>
-                                        <SchemaSelector
-                                            connectionId={connectionId}
-                                            onSelectionChange={setSelectedSchema}
-                                            readOnly={!canEdit}
-                                            reasoning={reasoning}
-                                        />
+                                        {/* TODO: Create new SchemaSelector that works with data source ID instead of connection ID */}
+                                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+                                            <p className="text-yellow-800 font-medium mb-2">Database Schema Selection</p>
+                                            <p className="text-yellow-700 text-sm">
+                                                Database: <strong>{selectedDataSource.title}</strong>
+                                            </p>
+                                            <p className="text-yellow-600 text-sm mt-2">
+                                                Schema selection for database sources will be available in the next update.
+                                                For now, all tables will be included for analysis.
+                                            </p>
+                                        </div>
                                     </div>
                                 )}
 
-                                {currentStep === 2 && dataSourceType === 'file' && fileUploadResult && (
+                                {currentStep === 2 && selectedDataSource?.source_type === 'file' && fileUploadResult && (
                                     <div className="max-w-4xl mx-auto space-y-6">
                                         <h2 className="text-xl font-semibold mb-1">Select Columns</h2>
                                         <p className="text-gray-500 text-sm mb-4">
@@ -1524,7 +1468,7 @@ const ConfigPage: React.FC = () => {
                                             settings={advancedSettings}
                                             onChange={setAdvancedSettings}
                                             readOnly={!canEdit}
-                                            dataSourceName={dataSourceType === 'file' && fileUploadResult ? fileUploadResult.file_name.split('.')[0] : (connectionName || `db_connection_${connectionId || 'default'}`)}
+                                            dataSourceName={selectedDataSource?.title || 'default'}
                                             singleAccordionMode={true}
                                         />
                                     </div>
@@ -1671,10 +1615,10 @@ const ConfigPage: React.FC = () => {
                                         )}
 
                                         <ConfigSummary
-                                            connectionId={connectionId}
-                                            connectionName={connectionName}
+                                            connectionId={null}
+                                            connectionName={selectedDataSource?.title || ''}
                                             dataSourceType={dataSourceType}
-                                            fileInfo={fileUploadResult ? { name: fileUploadResult.file_name, type: fileUploadResult.file_type } : undefined}
+                                            fileInfo={selectedDataSource?.source_type === 'file' ? { name: selectedDataSource.title, type: selectedDataSource.file_type || 'csv' } : undefined}
                                             schema={selectedSchema}
                                             dataDictionary={dataDictionary}
                                             activePromptVersion={history.find(p => p.is_active)?.version || null}
@@ -1767,9 +1711,9 @@ const ConfigPage: React.FC = () => {
                                 ) : (
                                     <button
                                         onClick={handleNext}
-                                        disabled={generating || publishing || (currentStep === 1 && dataSourceType === 'database' && !connectionId) || (currentStep === 1 && dataSourceType === 'file' && !fileUploadResult)}
+                                        disabled={generating || publishing || (currentStep === 1 && !selectedDataSource)}
                                         className={`px-6 py-2 rounded-md font-medium text-white transition-colors duration-200 flex items-center
-                                ${generating || publishing || (currentStep === 1 && dataSourceType === 'database' && !connectionId) || (currentStep === 1 && dataSourceType === 'file' && !fileUploadResult) ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 shadow-md'}`}
+                                ${generating || publishing || (currentStep === 1 && !selectedDataSource) ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 shadow-md'}`}
                                     >
                                         {publishing ? 'Publishing...' : currentStep === 7 ? 'Done' : 'Next'}
                                     </button>

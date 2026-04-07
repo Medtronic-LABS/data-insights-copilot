@@ -40,7 +40,8 @@ const AuditLogsPage: React.FC = () => {
             loadLogs();
             loadActionTypes();
         }
-    }, [hasAccess]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Run once on mount, not on hasAccess change
 
     const loadLogs = async () => {
         setLoading(true);
@@ -51,10 +52,11 @@ const AuditLogsPage: React.FC = () => {
             if (filters.action) params.set('action', filters.action);
             if (filters.resource_type) params.set('resource_type', filters.resource_type);
 
-            const res = await apiClient.get(`/api/v1/audit/logs?${params.toString()}`);
-            setLogs(res.data);
-        } catch (err: any) {
-            setError(err.response?.data?.detail || err.message || 'Failed to load audit logs');
+            const res = await apiClient.get(`/api/v1/audit?${params.toString()}`);
+            setLogs(res.data?.items || res.data || []);
+        } catch {
+            // Silently fail - audit logs are non-critical
+            setLogs([]);
         } finally {
             setLoading(false);
         }
@@ -63,9 +65,10 @@ const AuditLogsPage: React.FC = () => {
     const loadActionTypes = async () => {
         try {
             const res = await apiClient.get('/api/v1/audit/actions');
-            setActionTypes(res.data);
-        } catch (err) {
-            console.error('Failed to load action types', err);
+            setActionTypes(res.data || []);
+        } catch {
+            // Silently fail
+            setActionTypes([]);
         }
     };
 
@@ -164,7 +167,7 @@ const AuditLogsPage: React.FC = () => {
                                     className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
                                 >
                                     <option value="">All Categories</option>
-                                    {Array.from(new Set(actionTypes.map(a => a.split('.')[0]))).map(cat => (
+                                    {Array.from(new Set(actionTypes.map(a => a.split('.')[0]))).filter(Boolean).map(cat => (
                                         <option key={cat} value={cat}>
                                             {cat.charAt(0).toUpperCase() + cat.slice(1)}
                                         </option>

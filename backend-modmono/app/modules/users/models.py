@@ -4,8 +4,8 @@ SQLAlchemy ORM models for users module.
 Defines database tables for user management and authentication.
 """
 from datetime import datetime
-from uuid import uuid4
-from sqlalchemy import String, Boolean, DateTime, Text
+from sqlalchemy import String, Boolean, DateTime, Text, text
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database.connection import Base
 
@@ -19,10 +19,13 @@ class UserModel(Base):
     """
     __tablename__ = "users"
     
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), 
+        primary_key=True, 
+        server_default=text("gen_random_uuid()")
+    )
     username: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String, unique=True, nullable=True, index=True)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(String, nullable=False, default="user")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

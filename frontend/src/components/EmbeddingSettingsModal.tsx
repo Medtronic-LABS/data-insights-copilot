@@ -37,7 +37,14 @@ const EmbeddingSettingsModal: React.FC<EmbeddingSettingsModalProps> = ({
     defaultSettings,
 }) => {
     // Get settings from system settings context (loaded from backend)
-    const { getEmbeddingModalDefaults, isLoading: settingsLoading } = useSystemSettings();
+    const { getEmbeddingModalDefaults, isLoading: settingsLoading, ensureLoaded } = useSystemSettings();
+    
+    // Ensure settings are loaded when modal opens
+    useEffect(() => {
+        if (isOpen) {
+            ensureLoaded();
+        }
+    }, [isOpen, ensureLoaded]);
     
     // Build config from system settings
     const systemDefaults = getEmbeddingModalDefaults();

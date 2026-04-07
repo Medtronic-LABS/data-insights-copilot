@@ -89,28 +89,11 @@ export interface MedicalContextConfig {
 
 /**
  * Request model for starting a new embedding job.
- * All optional fields have sensible defaults on the backend.
+ * Only config_id is required - all settings are read from agent_config table.
  */
 export interface EmbeddingJobCreate {
     config_id: number;
-    
-    // Batch Processing Config
-    batch_size?: number;            // 10-500, default 50
-    max_concurrent?: number;        // 1-20, default 5
-    incremental?: boolean;          // default true
-    
-    // Chunking Config (optional)
-    chunking?: ChunkingConfig;
-    
-    // Parallelization Config (optional)
-    parallelization?: ParallelizationConfig;
-    
-    // Medical Context Config (optional - improves clinical data search)
-    medical_context_config?: MedicalContextConfig;
-    
-    // Circuit Breaker Config
-    max_consecutive_failures?: number;  // 1-20, default 5
-    retry_attempts?: number;            // 1-10, default 3
+    incremental?: boolean;  // default false
 }
 
 // ============================================

@@ -5,6 +5,7 @@ Defines request/response models for user operations.
 """
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from app.core.models.auth import Role
 
@@ -15,7 +16,7 @@ from app.core.models.auth import Role
 
 class UserBase(BaseModel):
     """Base user schema with common fields."""
-    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    username: str = Field(..., min_length=3, max_length=100)  # Allow email format as username
     email: Optional[EmailStr] = None
     full_name: Optional[str] = Field(None, max_length=200)
 
@@ -24,6 +25,7 @@ class UserCreate(UserBase):
     """Schema for creating a new user via OIDC/Keycloak JIT provisioning."""
     role: str = Field(default="user")
     external_id: str = Field(..., description="OIDC subject (sub) claim from Keycloak")
+    is_active: bool = Field(default=True)
     
     @field_validator('role')
     @classmethod
@@ -62,13 +64,18 @@ class User(UserBase):
     created_at: datetime
     updated_at: datetime
     
+    @field_validator('id', mode='before')
+    @classmethod
+    def convert_uuid_to_str(cls, v):
+        """Convert UUID to string if needed."""
+        if isinstance(v, UUID):
+            return str(v)
+        return v
+    
     model_config = {"from_attributes": True}
 
 
-
-
-# Note: Password and authentication schemas removed - handled by Keycloak
-# Users authenticate via Keycloak, tokens come from identity provider
+# Note: Password management schemas removed - handled by Keycloak/OIDC
 
 
 # ============================================

@@ -1,103 +1,76 @@
 """
-Business logic for agent management.
+Business logic for agents and configurations.
+
+Provides:
+- AgentService: Agent CRUD with access control
+- UserAgentService: User-agent access control
+- AgentConfigService: Configuration versioning and updates
+
+Note: DataSourceService is in app.modules.data_sources.service
 """
-import json
 from typing import List, Optional, Tuple, Dict, Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config.defaults import get_system_defaults
-from app.core.exceptions import AppException, ErrorCode
-from app.modules.agents.repository import AgentRepository
-from app.modules.agents.schemas import (
-    Agent, AgentCreate, AgentUpdate, AgentWithConfig,
-    UserAgentAccess, UserAgentResponse,
-    SystemPromptCreate, SystemPromptResponse,
-    PromptConfigCreate, PromptConfigResponse,
+from app.core.utils.exceptions import AppException, ErrorCode
+from app.modules.agents.repository import (
+    AgentRepository, AgentConfigRepository, UserAgentRepository,
+    _config_to_dict
 )
+from app.modules.agents.schemas import (
+    AgentCreate, AgentUpdate, AgentResponse, AgentWithRole,
+    AgentDetailResponse, AgentListResponse,
+    AgentConfigResponse, AgentConfigListResponse,
+    AgentConfigSummary, AgentConfigHistoryResponse,
+    UserAgentResponse, UserAgentListResponse,
+)
+# Import data source repository for config validation
+from app.modules.data_sources.repository import DataSourceRepository
 
 
 class AgentService:
     """
-    Service for agent management operations.
+    Service for agent management.
     
     Handles:
-    - Agent CRUD with default configuration initialization
-    - Agent configuration management (8 config types)
-    - User-agent access control (RBAC)
-    - System prompt versioning
+    - Agent CRUD with creator access
+    - Agent listing with user roles
+    - Agent deletion (cascades to configs)
     """
     
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.repo = AgentRepository(db)
-    
-    # ==========================================
-    # Agent CRUD Operations
-    # ==========================================
+        self.agents = AgentRepository(db)
+        self.user_agents = UserAgentRepository(db)
+        self.configs = AgentConfigRepository(db)
     
     async def create_agent(
         self,
-        agent_data: AgentCreate,
+        data: AgentCreate,
         created_by: UUID,
-        initialize_defaults: bool = True,
-    ) -> Agent:
+    ) -> AgentResponse:
         """
-        Create a new agent with optional default configuration.
+        Create a new agent.
         
-        Args:
-            agent_data: Agent creation data
-            created_by: User ID creating the agent
-            initialize_defaults: If True, creates system prompt with default configs
-        
-        Returns:
-            Created agent
-        
-        Raises:
-            AppException: If agent name already exists
+        Automatically grants creator admin access.
         """
-        # Check if agent name already exists
-        existing = await self.repo.get_by_name(agent_data.name)
+        # Check title uniqueness
+        existing = await self.agents.get_by_title(data.title)
         if existing:
             raise AppException(
                 error_code=ErrorCode.RESOURCE_ALREADY_EXISTS,
-                message=f"Agent with name '{agent_data.name}' already exists",
+                message=f"Agent with title '{data.title}' already exists",
                 status_code=409,
             )
         
         # Create agent
-        agent_dict = agent_data.model_dump()
+        agent_dict = data.model_dump()
         agent_dict["created_by"] = created_by
-        agent = await self.repo.create(agent_data)
-        
-        # Initialize with default configuration if requested
-        if initialize_defaults:
-            defaults = get_system_defaults()
-            default_config = defaults.get_agent_creation_defaults()
-            
-            # Create initial system prompt
-            prompt_text = default_config["system_prompts"]["base_system_prompt"]
-            prompt_id = await self.repo.create_system_prompt(
-                agent_id=agent.id,
-                prompt_text=prompt_text,
-                version=1,
-                is_active=True,
-                created_by=str(created_by),
-            )
-            
-            # Create prompt config with defaults
-            config_data = {
-                "data_source_type": agent_data.type,
-                "chunking_config": default_config["chunking"],
-                "embedding_config": default_config["embedding"],
-                "retriever_config": default_config["rag"],
-                "llm_config": default_config["llm"],
-            }
-            await self.repo.create_prompt_config(prompt_id, config_data)
+        agent = await self.agents.create(data)
         
         # Grant creator admin access
-        await self.repo.grant_user_access(
+        await self.user_agents.grant_access(
             user_id=created_by,
             agent_id=agent.id,
             role="admin",
@@ -106,108 +79,101 @@ class AgentService:
         
         return agent
     
-    async def get_agent(self, agent_id: UUID) -> Optional[Agent]:
+    async def get_agent(self, agent_id: UUID) -> Optional[AgentResponse]:
         """Get agent by ID."""
-        return await self.repo.get_by_id(agent_id)
+        return await self.agents.get_by_id(agent_id)
     
-    async def get_agent_with_config(self, agent_id: UUID) -> Optional[AgentWithConfig]:
-        """Get agent with full active configuration."""
-        agent_dict = await self.repo.get_with_config(agent_id)
-        if agent_dict:
-            return AgentWithConfig(**agent_dict)
+    async def get_agent_detail(self, agent_id: UUID) -> Optional[AgentDetailResponse]:
+        """Get agent with active configuration."""
+        data = await self.agents.get_with_active_config(agent_id)
+        if data:
+            return AgentDetailResponse(**data)
         return None
     
     async def update_agent(
         self,
         agent_id: UUID,
-        agent_data: AgentUpdate,
-    ) -> Optional[Agent]:
-        """
-        Update agent fields.
-        
-        Args:
-            agent_id: Agent ID to update
-            agent_data: Updated fields
-        
-        Returns:
-            Updated agent or None if not found
-        
-        Raises:
-            AppException: If new name already exists
-        """
-        # Check if agent exists
-        existing = await self.repo.get_by_id(agent_id)
+        data: AgentUpdate,
+    ) -> Optional[AgentResponse]:
+        """Update agent fields."""
+        existing = await self.agents.get_by_id(agent_id)
         if not existing:
             return None
         
-        # If updating name, check for duplicates
-        if agent_data.name and agent_data.name != existing.name:
-            name_exists = await self.repo.get_by_name(agent_data.name)
-            if name_exists:
+        # Check title uniqueness if changing
+        if data.title and data.title != existing.title:
+            title_exists = await self.agents.get_by_title(data.title)
+            if title_exists:
                 raise AppException(
                     error_code=ErrorCode.RESOURCE_ALREADY_EXISTS,
-                    message=f"Agent with name '{agent_data.name}' already exists",
+                    message=f"Agent with title '{data.title}' already exists",
                     status_code=409,
                 )
         
-        # Update
-        return await self.repo.update(agent_id, agent_data)
+        return await self.agents.update(agent_id, data)
     
     async def delete_agent(self, agent_id: UUID) -> bool:
-        """
-        Delete an agent (cascades to prompts, configs, user access).
-        
-        Returns:
-            True if deleted, False if not found
-        """
-        return await self.repo.delete(agent_id)
+        """Delete agent and all related data."""
+        return await self.agents.delete(agent_id)
     
-    async def search_agents(
+    async def list_agents(
+        self,
+        user_id: UUID,
+        query: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> AgentListResponse:
+        """
+        List agents accessible to user with their roles.
+        
+        Filters to only show agents the user has access to.
+        """
+        agents, total = await self.agents.get_accessible_agents(
+            user_id=user_id,
+            skip=skip,
+            limit=limit,
+        )
+        
+        # If query provided, filter results
+        if query:
+            query_lower = query.lower()
+            agents = [
+                a for a in agents
+                if query_lower in a.get("title", "").lower() 
+                or query_lower in (a.get("description") or "").lower()
+            ]
+            total = len(agents)
+        
+        return AgentListResponse(
+            agents=[AgentWithRole(**a) for a in agents],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
+    
+    async def search_all_agents(
         self,
         query: Optional[str] = None,
-        agent_type: Optional[str] = None,
         created_by: Optional[UUID] = None,
         skip: int = 0,
         limit: int = 50,
-    ) -> Tuple[List[Agent], int]:
-        """Search agents with filters and pagination."""
-        return await self.repo.search_agents(
+    ) -> Tuple[List[AgentResponse], int]:
+        """Search all agents (admin only)."""
+        return await self.agents.search_agents(
             query=query,
-            agent_type=agent_type,
             created_by=created_by,
             skip=skip,
             limit=limit,
         )
+
+
+class UserAgentService:
+    """Service for user-agent access control."""
     
-    async def get_accessible_agents(
-        self,
-        user_id: UUID,
-        role_filter: Optional[str] = None,
-        skip: int = 0,
-        limit: int = 50,
-    ) -> Tuple[List[Agent], int]:
-        """
-        Get agents accessible to a user.
-        
-        Args:
-            user_id: User ID to check access for
-            role_filter: Optional filter by user's role (user, editor, admin)
-            skip: Pagination offset
-            limit: Max results
-        
-        Returns:
-            Tuple of (agents, total_count)
-        """
-        return await self.repo.get_accessible_agents(
-            user_id=user_id,
-            role_filter=role_filter,
-            skip=skip,
-            limit=limit,
-        )
-    
-    # ==========================================
-    # User Access Management
-    # ==========================================
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.user_agents = UserAgentRepository(db)
+        self.agents = AgentRepository(db)
     
     async def grant_access(
         self,
@@ -215,320 +181,838 @@ class AgentService:
         agent_id: UUID,
         role: str = "user",
         granted_by: Optional[UUID] = None,
-    ) -> None:
-        """
-        Grant a user access to an agent.
-        
-        Args:
-            user_id: User to grant access to
-            agent_id: Agent to grant access for
-            role: Role to grant (user, editor, admin)
-            granted_by: User granting the access
-        
-        Raises:
-            AppException: If agent not found
-        """
+    ) -> UserAgentResponse:
+        """Grant user access to an agent."""
         # Verify agent exists
-        agent = await self.repo.get_by_id(agent_id)
+        agent = await self.agents.get_by_id(agent_id)
         if not agent:
             raise AppException(
                 error_code=ErrorCode.RESOURCE_NOT_FOUND,
-                message=f"Agent with ID {agent_id} not found",
+                message=f"Agent {agent_id} not found",
                 status_code=404,
             )
         
-        await self.repo.grant_user_access(
+        ua = await self.user_agents.grant_access(
             user_id=user_id,
             agent_id=agent_id,
             role=role,
             granted_by=granted_by,
         )
+        return UserAgentResponse.model_validate(ua)
     
     async def revoke_access(self, user_id: UUID, agent_id: UUID) -> bool:
-        """
-        Revoke a user's access to an agent.
-        
-        Returns:
-            True if access was revoked, False if no access existed
-        """
-        return await self.repo.revoke_user_access(user_id, agent_id)
+        """Revoke user's access to an agent."""
+        return await self.user_agents.revoke_access(user_id, agent_id)
     
-    async def update_access_role(
-        self,
-        user_id: UUID,
-        agent_id: UUID,
-        new_role: str,
-    ) -> bool:
-        """
-        Update a user's role on an agent.
-        
-        Returns:
-            True if updated, False if user had no access
-        """
-        return await self.repo.update_user_role(user_id, agent_id, new_role)
-    
-    async def get_agent_users(self, agent_id: UUID) -> List[UserAgentResponse]:
-        """
-        Get all users with access to an agent.
-        
-        Returns:
-            List of user-agent relationships
-        """
-        users_data = await self.repo.get_agent_users(agent_id)
-        return [UserAgentResponse(**data) for data in users_data]
-    
-    async def user_has_access(
+    async def has_access(
         self,
         user_id: UUID,
         agent_id: UUID,
         min_role: str = "user",
     ) -> bool:
-        """
-        Check if user has access to agent with minimum role.
-        
-        Args:
-            user_id: User to check
-            agent_id: Agent to check access for
-            min_role: Minimum required role
-        
-        Returns:
-            True if user has sufficient access
-        """
-        return await self.repo.user_has_access(user_id, agent_id, min_role)
+        """Check if user has access with minimum role."""
+        return await self.user_agents.has_access(user_id, agent_id, min_role)
     
-    # ==========================================
-    # System Prompt Management
-    # ==========================================
+    async def get_agent_users(self, agent_id: UUID) -> UserAgentListResponse:
+        """Get all users with access to an agent."""
+        users = await self.user_agents.get_agent_users(agent_id)
+        return UserAgentListResponse(
+            users=[UserAgentResponse.model_validate(u) for u in users],
+            total=len(users),
+        )
+
+
+class AgentConfigService:
+    """
+    Service for agent configuration management.
     
-    async def create_system_prompt(
+    Handles:
+    - Configuration CRUD with versioning
+    - Config activation (only one active per agent)
+    - Embedding status updates
+    """
+    
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.configs = AgentConfigRepository(db)
+        self.agents = AgentRepository(db)
+        self.sources = DataSourceRepository(db)
+    
+    async def create_config(
         self,
         agent_id: UUID,
-        prompt_data: SystemPromptCreate,
-        created_by: str,
-    ) -> int:
+        data_source_id: UUID,
+        config_data: Dict[str, Any],
+        is_active: bool = True,
+    ) -> AgentConfigResponse:
         """
-        Create a new system prompt version for an agent.
+        Create a new configuration for an agent.
         
-        Args:
-            agent_id: Agent to create prompt for
-            prompt_data: Prompt creation data
-            created_by: Username of creator
-        
-        Returns:
-            Created prompt ID
-        
-        Raises:
-            AppException: If agent not found
+        Auto-increments version. If is_active=True, deactivates other configs.
         """
         # Verify agent exists
-        agent = await self.repo.get_by_id(agent_id)
+        agent = await self.agents.get_by_id(agent_id)
         if not agent:
             raise AppException(
                 error_code=ErrorCode.RESOURCE_NOT_FOUND,
-                message=f"Agent with ID {agent_id} not found",
+                message=f"Agent {agent_id} not found",
                 status_code=404,
             )
         
-        return await self.repo.create_system_prompt(
+        # Verify data source exists
+        source = await self.sources.get_by_id(data_source_id)
+        if not source:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Data source {data_source_id} not found",
+                status_code=404,
+            )
+        
+        config = await self.configs.create(
             agent_id=agent_id,
-            prompt_text=prompt_data.prompt_text,
-            version=prompt_data.version,
-            is_active=prompt_data.is_active,
-            created_by=created_by,
+            data_source_id=data_source_id,
+            config_data=config_data,
+            is_active=is_active,
+        )
+        
+        return self._to_response(config)
+    
+    async def get_config(self, config_id: int) -> Optional[AgentConfigResponse]:
+        """Get config by ID (with resolved model info)."""
+        config = await self.configs.get_by_id(config_id)
+        if config:
+            return await self._to_response_with_models(config)
+        return None
+    
+    async def get_active_config(self, agent_id: UUID) -> Optional[AgentConfigResponse]:
+        """Get the active configuration for an agent (with resolved model info)."""
+        config = await self.configs.get_active_config(agent_id)
+        if config:
+            return await self._to_response_with_models(config)
+        return None
+    
+    async def update_config(
+        self,
+        config_id: int,
+        config_data: Dict[str, Any],
+    ) -> Optional[AgentConfigResponse]:
+        """Update a configuration."""
+        config = await self.configs.update(config_id, config_data)
+        if config:
+            return self._to_response(config)
+        return None
+    
+    async def activate_config(self, config_id: int) -> bool:
+        """Activate a config (deactivates others)."""
+        return await self.configs.activate_config(config_id)
+    
+    async def get_config_history(self, agent_id: UUID) -> AgentConfigListResponse:
+        """Get all config versions for an agent."""
+        configs = await self.configs.get_config_history(agent_id)
+        return AgentConfigListResponse(
+            configs=[self._to_response(c) for c in configs],
+            total=len(configs),
         )
     
-    async def activate_system_prompt(
+    async def get_config_history_paginated(
         self,
         agent_id: UUID,
-        prompt_id: int,
-    ) -> None:
-        """
-        Activate a system prompt (deactivates all others for the agent).
+        page: int = 1,
+        page_size: int = 10,
+    ) -> AgentConfigHistoryResponse:
+        """Get paginated config summaries for an agent.
         
-        Args:
-            agent_id: Agent the prompt belongs to
-            prompt_id: Prompt to activate
+        Returns limited fields suitable for table view.
         """
-        await self.repo.activate_system_prompt(prompt_id, agent_id)
+        from sqlalchemy import select
+        from ..ai_models.models import AIModel
+        
+        configs, total = await self.configs.get_config_history_paginated(
+            agent_id, page, page_size
+        )
+        
+        # Collect all model IDs to fetch in one query
+        all_model_ids = set()
+        for config in configs:
+            if config.llm_model_id:
+                all_model_ids.add(config.llm_model_id)
+            if config.embedding_model_id:
+                all_model_ids.add(config.embedding_model_id)
+        
+        # Fetch all model names at once
+        model_names = {}
+        if all_model_ids:
+            stmt = select(AIModel.id, AIModel.display_name).where(AIModel.id.in_(all_model_ids))
+            result = await self.configs.db.execute(stmt)
+            model_names = {row.id: row.display_name for row in result.all()}
+        
+        # Build summaries
+        summaries = []
+        for config in configs:
+            summary = AgentConfigSummary(
+                id=config.id,
+                agent_id=config.agent_id,
+                version=config.version,
+                is_active=bool(config.is_active),
+                status=config.status or "draft",
+                embedding_status=config.embedding_status or "not_started",
+                data_source_name=config.data_source.title if config.data_source else None,
+                llm_model_name=model_names.get(config.llm_model_id) if config.llm_model_id else None,
+                embedding_model_name=model_names.get(config.embedding_model_id) if config.embedding_model_id else None,
+                created_at=config.created_at,
+                updated_at=config.updated_at,
+            )
+            summaries.append(summary)
+        
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        
+        return AgentConfigHistoryResponse(
+            configs=summaries,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
     
-    async def get_active_prompt(self, agent_id: UUID) -> Optional[SystemPromptResponse]:
-        """Get the active system prompt for an agent."""
-        prompt_data = await self.repo.get_active_system_prompt(agent_id)
-        if prompt_data:
-            return SystemPromptResponse(**prompt_data)
-        return None
+    async def update_embedding_status(
+        self,
+        config_id: int,
+        status: str,
+        embedding_path: Optional[str] = None,
+        vector_collection_name: Optional[str] = None,
+    ) -> bool:
+        """Update embedding status for a config."""
+        return await self.configs.update_embedding_status(
+            config_id=config_id,
+            status=status,
+            embedding_path=embedding_path,
+            vector_collection_name=vector_collection_name,
+        )
     
-    # ==========================================
-    # Configuration Management
-    # ==========================================
-    
-    async def update_agent_config(
+    async def get_or_create_draft(
         self,
         agent_id: UUID,
-        config_data: PromptConfigCreate,
-        create_new_version: bool = False,
-        version: Optional[int] = None,
-        created_by: Optional[str] = None,
-    ) -> PromptConfigResponse:
+        data_source_id: UUID,
+    ) -> AgentConfigResponse:
         """
-        Update agent configuration.
+        Get existing draft or create a new one.
         
-        Args:
-            agent_id: Agent to update config for
-            config_data: New configuration data
-            create_new_version: If True, creates a new system prompt version
-            version: New version number (required if create_new_version=True)
-            created_by: Creator username (required if create_new_version=True)
-        
-        Returns:
-            Updated configuration
-        
-        Raises:
-            AppException: If agent not found or validation fails
+        If a draft exists for this agent, returns it.
+        Otherwise creates a new draft config.
         """
+        # Check for existing draft
+        draft = await self.configs.get_draft_config(agent_id)
+        if draft:
+            return self._to_response(draft)
+        
         # Verify agent exists
-        agent = await self.repo.get_by_id(agent_id)
+        agent = await self.agents.get_by_id(agent_id)
         if not agent:
             raise AppException(
                 error_code=ErrorCode.RESOURCE_NOT_FOUND,
-                message=f"Agent with ID {agent_id} not found",
+                message=f"Agent {agent_id} not found",
                 status_code=404,
             )
         
-        # Get or create system prompt
-        if create_new_version:
-            if version is None or created_by is None:
-                raise AppException(
-                    error_code=ErrorCode.VALIDATION_ERROR,
-                    message="version and created_by required when creating new version",
-                    status_code=400,
-                )
-            
-            # Get active prompt for template
-            active_prompt = await self.repo.get_active_system_prompt(agent_id)
-            prompt_text = active_prompt["prompt_text"] if active_prompt else agent.system_prompt or "Default prompt"
-            
-            prompt_id = await self.repo.create_system_prompt(
-                agent_id=agent_id,
-                prompt_text=prompt_text,
-                version=version,
-                is_active=True,
-                created_by=created_by,
+        # Verify data source exists
+        source = await self.sources.get_by_id(data_source_id)
+        if not source:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Data source {data_source_id} not found",
+                status_code=404,
             )
-        else:
-            # Use active prompt or create initial
-            active_prompt = await self.repo.get_active_system_prompt(agent_id)
-            if active_prompt:
-                prompt_id = active_prompt["id"]
-            else:
-                # Create initial prompt
-                prompt_id = await self.repo.create_system_prompt(
-                    agent_id=agent_id,
-                    prompt_text=agent.system_prompt or "Default system prompt",
-                    version=1,
-                    is_active=True,
-                    created_by=created_by or "system",
-                )
         
-        # Prepare config dict with JSON serialization
-        config_dict = {
-            "connection_id": config_data.connection_id,
-            "schema_selection": config_data.schema_selection,
-            "data_dictionary": config_data.data_dictionary,
-            "reasoning": config_data.reasoning,
-            "example_questions": config_data.example_questions,
-            "data_source_type": config_data.data_source_type,
-            "chunking_config": config_data.chunking_config.model_dump() if config_data.chunking_config else None,
-            "embedding_config": config_data.embedding_config.model_dump() if config_data.embedding_config else None,
-            "retriever_config": config_data.retriever_config.model_dump() if config_data.retriever_config else None,
-            "llm_config": config_data.llm_config.model_dump() if config_data.llm_config else None,
-        }
+        # Create new draft
+        draft = await self.configs.create_draft(
+            agent_id=agent_id,
+            data_source_id=data_source_id,
+        )
         
-        # Create or update config
-        await self.repo.create_prompt_config(prompt_id, config_dict)
-        
-        # Retrieve and return
-        config_response = await self.repo.get_prompt_config(prompt_id)
-        return PromptConfigResponse(**config_response)
+        return await self._to_response_with_models(draft)
     
-    async def get_agent_config(self, agent_id: UUID) -> Optional[PromptConfigResponse]:
-        """
-        Get active configuration for an agent.
-        
-        Returns:
-            Active configuration or None if no config exists
-        """
-        active_prompt = await self.repo.get_active_system_prompt(agent_id)
-        if not active_prompt:
-            return None
-        
-        config_data = await self.repo.get_prompt_config(active_prompt["id"])
-        if config_data:
-            return PromptConfigResponse(**config_data)
+    async def get_draft(self, agent_id: UUID) -> Optional[AgentConfigResponse]:
+        """Get draft config for an agent if exists (with resolved model info)."""
+        draft = await self.configs.get_draft_config(agent_id)
+        if draft:
+            return await self._to_response_with_models(draft)
         return None
     
-    async def get_config_by_type(
+    async def save_step(
         self,
-        agent_id: UUID,
-        config_type: str,
-    ) -> Optional[Dict[str, Any]]:
+        config_id: int,
+        step: int,
+        data: Dict[str, Any],
+    ) -> Optional[AgentConfigResponse]:
         """
-        Get specific configuration type for an agent.
+        Save step-specific data for a draft config.
         
-        Args:
-            agent_id: Agent ID
-            config_type: One of: chunking, embedding, retriever, llm
-        
-        Returns:
-            Configuration dict or None
+        Only saves fields relevant to the specified step.
+        Updates completed_step if progressing forward.
         """
-        config = await self.get_agent_config(agent_id)
+        config = await self.configs.get_by_id(config_id)
         if not config:
             return None
         
-        config_field = f"{config_type}_config"
-        return getattr(config, config_field, None)
+        # Only allow saving to draft configs
+        if config.status != "draft":
+            raise AppException(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Cannot update a published config. Create a new draft first.",
+                status_code=400,
+            )
+        
+        # If step 1 contains data_source_id, validate it
+        if step == 1 and "data_source_id" in data:
+            source = await self.sources.get_by_id(data["data_source_id"])
+            if not source:
+                raise AppException(
+                    error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                    message=f"Data source {data['data_source_id']} not found",
+                    status_code=404,
+                )
+        
+        updated = await self.configs.update_step_data(config_id, step, data)
+        if updated:
+            return self._to_response(updated)
+        return None
     
-    async def update_config_by_type(
+    async def publish_draft(self, config_id: int) -> Optional[AgentConfigResponse]:
+        """
+        Publish a draft config.
+        
+        Changes status from draft to published and activates it.
+        Deactivates any other active config for the agent.
+        """
+        config = await self.configs.get_by_id(config_id)
+        if not config:
+            return None
+        
+        if config.status != "draft":
+            raise AppException(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Config is not a draft",
+                status_code=400,
+            )
+        
+        published = await self.configs.publish_draft(config_id)
+        if published:
+            return self._to_response(published)
+        return None
+    
+    async def create_draft_from_config(
+        self,
+        config_id: int,
+    ) -> Optional[AgentConfigResponse]:
+        """
+        Create a new draft by cloning an existing config.
+        
+        Used for "Edit Config" functionality - creates a draft
+        copy to modify without affecting the published version.
+        """
+        config = await self.configs.get_by_id(config_id)
+        if not config:
+            return None
+        
+        # Check if there's already a draft for this agent
+        existing_draft = await self.configs.get_draft_config(config.agent_id)
+        if existing_draft:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_ALREADY_EXISTS,
+                message="A draft already exists for this agent. Delete or publish it first.",
+                status_code=409,
+            )
+        
+        draft = await self.configs.clone_config_as_draft(config_id)
+        if draft:
+            return self._to_response(draft)
+        return None
+    
+    async def delete_draft(self, config_id: int) -> bool:
+        """Delete a draft config."""
+        config = await self.configs.get_by_id(config_id)
+        if not config:
+            return False
+        
+        if config.status != "draft":
+            raise AppException(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Cannot delete a published config",
+                status_code=400,
+            )
+        
+        await self.db.delete(config)
+        await self.db.flush()
+        return True
+    
+    # ==========================================
+    # Per-Step Upsert Methods (named steps)
+    # ==========================================
+    
+    async def upsert_data_source_step(
         self,
         agent_id: UUID,
-        config_type: str,
-        config_data: Dict[str, Any],
-    ) -> PromptConfigResponse:
+        data_source_id: UUID,
+        version_id: Optional[int] = None,
+    ) -> AgentConfigResponse:
         """
-        Update specific configuration type for an agent.
+        Step: data-source.
+        If version_id provided, updates that version.
+        If not provided, creates a new draft version.
+        """
+        # Verify agent exists
+        agent = await self.agents.get_by_id(agent_id)
+        if not agent:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Agent {agent_id} not found",
+                status_code=404,
+            )
+        
+        # Verify data source exists
+        source = await self.sources.get_by_id(data_source_id)
+        if not source:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Data source {data_source_id} not found",
+                status_code=404,
+            )
+        
+        if version_id:
+            # Update existing version
+            config = await self.configs.get_by_id(version_id)
+            if not config:
+                raise AppException(
+                    error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                    message=f"Version {version_id} not found",
+                    status_code=404,
+                )
+            # Verify version belongs to this agent
+            if config.agent_id != agent_id:
+                raise AppException(
+                    error_code=ErrorCode.FORBIDDEN,
+                    message="Version does not belong to this agent",
+                    status_code=403,
+                )
+            updated = await self.configs.update(version_id, {
+                "data_source_id": data_source_id,
+                "completed_step": max(1, config.completed_step),
+            })
+            return self._to_response(updated)
+        else:
+            # Create new draft version
+            draft = await self.configs.create_draft(
+                agent_id=agent_id,
+                data_source_id=data_source_id,
+            )
+            return self._to_response(draft)
+    
+    async def upsert_schema_selection_step(
+        self,
+        version_id: int,
+        selected_schema: Dict[str, List[str]],
+    ) -> AgentConfigResponse:
+        """
+        Step: schema-selection.
+        Updates selected columns for an existing version.
         
         Args:
-            agent_id: Agent ID
-            config_type: One of: chunking, embedding, retriever, llm
-            config_data: New configuration data
+            selected_schema: Table to columns mapping { "table_name": ["col1", "col2"] }
+                            For files, uses the DuckDB table name.
+                            For databases, can have multiple tables.
+        """
+        config = await self.configs.get_by_id(version_id)
+        if not config:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Version {version_id} not found",
+                status_code=404,
+            )
+        
+        # Build the update data
+        update_data: Dict[str, Any] = {
+            "completed_step": max(2, config.completed_step),
+            "selected_columns": selected_schema,
+        }
+        
+        updated = await self.configs.update(version_id, update_data)
+        return self._to_response(updated)
+    
+    async def upsert_data_dictionary_step(
+        self,
+        version_id: int,
+        data_dictionary: Dict[str, Any],
+    ) -> AgentConfigResponse:
+        """
+        Step: data-dictionary.
+        Updates data dictionary for an existing version.
+        """
+        config = await self.configs.get_by_id(version_id)
+        if not config:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Version {version_id} not found",
+                status_code=404,
+            )
+        
+        updated = await self.configs.update(version_id, {
+            "data_dictionary": data_dictionary,
+            "completed_step": max(3, config.completed_step),
+        })
+        return self._to_response(updated)
+    
+    async def upsert_settings_step(
+        self,
+        version_id: int,
+        embedding_config: Optional[Dict[str, Any]] = None,
+        chunking_config: Optional[Dict[str, Any]] = None,
+        rag_config: Optional[Dict[str, Any]] = None,
+        llm_config: Optional[Dict[str, Any]] = None,
+        llm_model_id: Optional[int] = None,
+        embedding_model_id: Optional[int] = None,
+        reranker_model_id: Optional[int] = None,
+    ) -> AgentConfigResponse:
+        """
+        Step: settings.
+        Updates configs for an existing version.
+        Stores model IDs (foreign keys to ai_models.id) for easy querying.
+        When model IDs are provided, the redundant model name fields are stripped.
+        """
+        config = await self.configs.get_by_id(version_id)
+        if not config:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Version {version_id} not found",
+                status_code=404,
+            )
+        
+        update_data: Dict[str, Any] = {
+            "completed_step": max(4, config.completed_step),
+        }
+        
+        # Strip redundant model fields when model IDs are provided
+        if embedding_config is not None:
+            clean_embedding = {k: v for k, v in embedding_config.items() if k != "model" or not embedding_model_id}
+            update_data["embedding_config"] = clean_embedding
+        if chunking_config is not None:
+            update_data["chunking_config"] = chunking_config
+        if rag_config is not None:
+            clean_rag = {k: v for k, v in rag_config.items() if k != "reranker_model" or not reranker_model_id}
+            update_data["rag_config"] = clean_rag
+        if llm_config is not None:
+            clean_llm = {k: v for k, v in llm_config.items() if k != "model" or not llm_model_id}
+            update_data["llm_config"] = clean_llm
+        
+        # Store model IDs (foreign keys to ai_models.id)
+        if llm_model_id is not None:
+            update_data["llm_model_id"] = llm_model_id
+        if embedding_model_id is not None:
+            update_data["embedding_model_id"] = embedding_model_id
+        if reranker_model_id is not None:
+            update_data["reranker_model_id"] = reranker_model_id
+        
+        updated = await self.configs.update(version_id, update_data)
+        return self._to_response(updated)
+    
+    async def upsert_prompt_step(
+        self,
+        version_id: int,
+        system_prompt: str,
+        example_questions: Optional[List[str]] = None,
+    ) -> AgentConfigResponse:
+        """
+        Step: prompt.
+        Updates prompt for an existing version.
+        """
+        config = await self.configs.get_by_id(version_id)
+        if not config:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Version {version_id} not found",
+                status_code=404,
+            )
+        
+        updated = await self.configs.update(version_id, {
+            "system_prompt": system_prompt,
+            "example_questions": example_questions or [],
+            "completed_step": max(5, config.completed_step),
+        })
+        return self._to_response(updated)
+
+    async def upsert_publish_step(
+        self,
+        version_id: int,
+        system_prompt: str,
+        example_questions: Optional[List[str]] = None,
+    ) -> AgentConfigResponse:
+        """
+        Step: publish.
+        Saves final prompt and publishes the configuration.
+        """
+        config = await self.configs.get_by_id(version_id)
+        if not config:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Version {version_id} not found",
+                status_code=404,
+            )
+        
+        if config.status != "draft":
+            raise AppException(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Config is not a draft",
+                status_code=400,
+            )
+        
+        # Update prompt data
+        await self.configs.update(version_id, {
+            "system_prompt": system_prompt,
+            "example_questions": example_questions or [],
+            "completed_step": 5,
+        })
+        
+        # Publish the draft
+        published = await self.configs.publish_draft(version_id)
+        if not published:
+            raise AppException(
+                error_code=ErrorCode.INTERNAL_SERVER_ERROR,
+                message="Failed to publish configuration",
+                status_code=500,
+            )
+        
+        return await self._to_response_with_models(published)
+
+    def _to_response(self, config) -> AgentConfigResponse:
+        """Convert config model to response schema (without model info lookup)."""
+        data = _config_to_dict(config)
+        # Convert is_active int to bool
+        data["is_active"] = bool(data.get("is_active", 0))
+        return AgentConfigResponse(**data)
+    
+    async def _to_response_with_models(self, config) -> AgentConfigResponse:
+        """Convert config model to response schema WITH resolved model info."""
+        from sqlalchemy import select
+        from ..ai_models.models import AIModel
+        from .schemas import ModelInfo
+        
+        response = self._to_response(config)
+        
+        # Fetch model info for each model ID
+        model_ids = [
+            config.llm_model_id,
+            config.embedding_model_id,
+            config.reranker_model_id
+        ]
+        model_ids = [mid for mid in model_ids if mid is not None]
+        
+        if model_ids:
+            stmt = select(AIModel).where(AIModel.id.in_(model_ids))
+            result = await self.configs.db.execute(stmt)
+            models = {m.id: m for m in result.scalars().all()}
+            
+            # Set model info on response
+            if config.llm_model_id and config.llm_model_id in models:
+                m = models[config.llm_model_id]
+                response.llm_model = ModelInfo(
+                    id=m.id,
+                    provider_name=m.provider_name,
+                    display_name=m.display_name,
+                    model_id=m.model_id,
+                    model_type=m.model_type
+                )
+            
+            if config.embedding_model_id and config.embedding_model_id in models:
+                m = models[config.embedding_model_id]
+                response.embedding_model = ModelInfo(
+                    id=m.id,
+                    provider_name=m.provider_name,
+                    display_name=m.display_name,
+                    model_id=m.model_id,
+                    model_type=m.model_type
+                )
+            
+            if config.reranker_model_id and config.reranker_model_id in models:
+                m = models[config.reranker_model_id]
+                response.reranker_model = ModelInfo(
+                    id=m.id,
+                    provider_name=m.provider_name,
+                    display_name=m.display_name,
+                    model_id=m.model_id,
+                    model_type=m.model_type
+                )
+        
+        return response
+
+    async def generate_prompt(
+        self,
+        version_id: int,
+    ) -> Dict[str, Any]:
+        """
+        Generate a system prompt based on saved config data.
+        
+        Reads data_dictionary, selected_columns, and llm_config from DB,
+        then uses LLM to generate a production-ready system prompt.
         
         Returns:
-            Updated full configuration
+            Dict with draft_prompt, reasoning, and example_questions
         """
-        # Get current config
-        current_config = await self.get_agent_config(agent_id)
+        import json
+        import os
+        from langchain.schema import HumanMessage, SystemMessage
+        from app.core.llm import create_llm_provider
         
-        # Build update dict
-        update_data = {}
-        if current_config:
-            update_data = {
-                "connection_id": current_config.connection_id,
-                "schema_selection": current_config.schema_selection,
-                "data_dictionary": current_config.data_dictionary,
-                "reasoning": current_config.reasoning,
-                "example_questions": current_config.example_questions,
-                "data_source_type": current_config.data_source_type,
-                "chunking_config": current_config.chunking_config,
-                "embedding_config": current_config.embedding_config,
-                "retriever_config": current_config.retriever_config,
-                "llm_config": current_config.llm_config,
-            }
+        config = await self.configs.get_by_id(version_id)
+        if not config:
+            raise AppException(
+                error_code=ErrorCode.RESOURCE_NOT_FOUND,
+                message=f"Version {version_id} not found",
+                status_code=404,
+            )
         
-        # Update specific config type
-        config_field = f"{config_type}_config"
-        update_data[config_field] = config_data
+        # Parse JSON fields (stored as strings in DB)
+        data_dictionary = json.loads(config.data_dictionary) if config.data_dictionary else {}
+        selected_columns = json.loads(config.selected_columns) if config.selected_columns else {}
+        llm_config = json.loads(config.llm_config) if config.llm_config else {}
         
-        # Create PromptConfigCreate and update
-        prompt_config = PromptConfigCreate(**update_data)
-        return await self.update_agent_config(agent_id, prompt_config)
+        # Get data source type (database or file)
+        # For now, assume database as default
+        data_source_type = "database"
+        
+        # Build context for prompt generation
+        context_parts = []
+        
+        if selected_columns:
+            context_parts.append("SELECTED SCHEMA:")
+            context_parts.append(json.dumps(selected_columns, indent=2))
+        
+        if data_dictionary:
+            context_parts.append("\nDATA DICTIONARY:")
+            context_parts.append(json.dumps(data_dictionary, indent=2))
+        
+        data_context = "\n".join(context_parts) if context_parts else "No schema information provided."
+        
+        # Escape curly braces
+        safe_context = data_context.replace("{", "{{").replace("}", "}}")
+        
+        # Get LLM configuration from ai_models table using llm_model_id
+        from ..ai_models.models import AIModel
+        from app.core.encryption import decrypt_value
+        from app.core.config import get_settings
+        from sqlalchemy import select
+        
+        settings = get_settings()
+        
+        # Fetch AI model from database
+        ai_model = None
+        if config.llm_model_id:
+            stmt = select(AIModel).where(AIModel.id == config.llm_model_id)
+            result = await self.configs.db.execute(stmt)
+            ai_model = result.scalar_one_or_none()
+        
+        # Get model name, provider, and API key
+        if ai_model:
+            model_id = ai_model.model_id  # e.g., "openai/gpt-4o"
+            provider_name = ai_model.provider_name.lower()  # e.g., "openai"
+            api_base_url = ai_model.api_base_url
+            
+            # Get API key - try env var first, then encrypted key
+            api_key = None
+            if ai_model.api_key_env_var:
+                api_key = os.environ.get(ai_model.api_key_env_var)
+            if not api_key and ai_model.api_key_encrypted:
+                api_key = decrypt_value(ai_model.api_key_encrypted)
+            if not api_key:
+                api_key = settings.openai_api_key
+        else:
+            # Fallback to config or default
+            model_id = llm_config.get("model", "openai/gpt-4o-mini")
+            provider_name = "openai"
+            api_key = settings.openai_api_key
+            api_base_url = None
+        
+        # Get temperature from llm_config
+        temperature = llm_config.get("temperature", 0.0)
+        
+        # Validate API key is available
+        if not api_key:
+            raise AppException(
+                message="No API key configured. Please either set OPENAI_API_KEY environment variable or configure an LLM model with API key in AI Registry.",
+                status_code=400,
+                error_code=ErrorCode.BAD_REQUEST
+            )
+        
+        # Extract model name from model_id format "provider/model"
+        if "/" in model_id:
+            model_name = model_id.split("/", 1)[1]
+        else:
+            model_name = model_id
+        
+        # Create LLM provider using core/llm abstraction
+        provider_config = {
+            "model": model_name,
+            "temperature": temperature,
+            "api_key": api_key,
+        }
+        if api_base_url:
+            provider_config["base_url"] = api_base_url
+        
+        provider = create_llm_provider(provider_name, provider_config)
+        llm = provider.get_langchain_llm()
+        
+        # Build prompt
+        system_role = "You are a Data Architect and AI System Prompt Engineer specializing in creating precise, production-ready system prompts."
+        
+        instruction = f"""Your task is to engineer a highly rigorous SYSTEM PROMPT for a Data Analysis Assistant connected to a database.
+
+SCHEMA CONTEXT:
+{safe_context}
+
+REQUIREMENTS:
+1. Create a clear CORE IDENTITY section defining the agent's role
+2. Include the DATA DICTIONARY with all field definitions
+3. Add OPERATIONAL RULES for query handling
+4. Define RESPONSE FORMAT guidelines
+5. Include a Zero-Hallucination Mandate
+
+Return ONLY the system prompt text.
+
+---
+ADDITIONALLY, after your system prompt, add a separator '---REASONING---' followed by a JSON object with:
+1. 'selection_reasoning': A dict mapping key schema elements to why they're important for queries.
+2. 'example_questions': A list of 5 representative questions this agent could answer based on the data.
+
+Example format after ---REASONING---:
+{{"selection_reasoning": {{"field_name": "reason"}}, "example_questions": ["Question 1?", "Question 2?"]}}"""
+
+        messages = [
+            SystemMessage(content=system_role),
+            HumanMessage(content=instruction)
+        ]
+        
+        # Invoke LLM
+        response = llm.invoke(messages)
+        full_text = response.content
+        
+        # Parse output
+        if "---REASONING---" in full_text:
+            parts = full_text.split("---REASONING---")
+            prompt_content = parts[0].strip()
+            try:
+                reasoning_json = parts[1].strip()
+                reasoning_json = reasoning_json.replace("```json", "").replace("```", "").strip()
+                parsed = json.loads(reasoning_json)
+                reasoning = parsed.get("selection_reasoning", {})
+                questions = parsed.get("example_questions", [])
+            except (json.JSONDecodeError, IndexError):
+                reasoning = {}
+                questions = []
+        else:
+            prompt_content = full_text
+            reasoning = {}
+            questions = []
+        
+        return {
+            "draft_prompt": prompt_content,
+            "reasoning": reasoning,
+            "example_questions": questions,
+        }

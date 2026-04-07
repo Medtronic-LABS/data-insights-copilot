@@ -75,7 +75,7 @@ export function useNotifications(options: UseNotificationsOptions = {}): UseNoti
     const optionsRef = useRef({ limit, unreadOnly, pollingInterval, enableWebSocket });
     optionsRef.current = { limit, unreadOnly, pollingInterval, enableWebSocket };
 
-    // Fetch notifications from API
+    // Fetch notifications from API - silently handle errors
     const fetchNotifications = useCallback(async () => {
         try {
             const { limit: lim, unreadOnly: unread } = optionsRef.current;
@@ -85,16 +85,17 @@ export function useNotifications(options: UseNotificationsOptions = {}): UseNoti
             }
 
             const [notifs, countResult] = await Promise.all([
-                getNotifications(params),
-                getUnreadNotificationCount()
+                getNotifications(params).catch(() => []),
+                getUnreadNotificationCount().catch(() => ({ count: 0 }))
             ]);
 
             setNotifications(notifs);
             setUnreadCount(countResult.count);
             setError(null);
-        } catch (e) {
-            console.error('Failed to fetch notifications:', e);
-            setError('Failed to load notifications');
+        } catch {
+            // Silently fail - notifications are non-critical
+            setNotifications([]);
+            setUnreadCount(0);
         } finally {
             setIsLoading(false);
         }
@@ -282,9 +283,8 @@ export function useNotifications(options: UseNotificationsOptions = {}): UseNoti
                 );
             }
             setUnreadCount(prev => Math.max(0, prev - 1));
-        } catch (e) {
-            console.error('Failed to mark notification as read:', e);
-            throw e;
+        } catch {
+            // Silently fail - API might not be available
         }
     }, []); // No dependencies - uses refs
 
@@ -300,9 +300,8 @@ export function useNotifications(options: UseNotificationsOptions = {}): UseNoti
                 setNotifications(prev => prev.map(n => ({ ...n, status: 'read' as const })));
             }
             setUnreadCount(0);
-        } catch (e) {
-            console.error('Failed to mark all as read:', e);
-            throw e;
+        } catch {
+            // Silently fail - API might not be available
         }
     }, []); // No dependencies - uses refs
 
@@ -319,9 +318,8 @@ export function useNotifications(options: UseNotificationsOptions = {}): UseNoti
             if (notification?.status === 'unread') {
                 setUnreadCount(prev => Math.max(0, prev - 1));
             }
-        } catch (e) {
-            console.error('Failed to dismiss notification:', e);
-            throw e;
+        } catch {
+            // Silently fail - API might not be available
         }
     }, []);
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 
 interface ColumnDetail {
     name: string;
@@ -10,6 +10,8 @@ interface FileColumnSelectorProps {
     columns?: string[];
     /** Column details with types (preferred if available) */
     columnDetails?: ColumnDetail[];
+    /** Currently selected columns (controlled) */
+    selectedColumns?: string[];
     /** Callback with selected column names */
     onSelectionChange: (selectedColumns: string[]) => void;
     /** If true, disable all interaction */
@@ -28,7 +30,7 @@ const TYPE_BADGES: Record<string, string> = {
 };
 
 const getBadgeClass = (type: string) => {
-    const upper = type.toUpperCase();
+    const upper = (type || '').toUpperCase();
     for (const [key, cls] of Object.entries(TYPE_BADGES)) {
         if (upper.includes(key)) return cls;
     }
@@ -42,6 +44,7 @@ const getBadgeClass = (type: string) => {
 const FileColumnSelector: React.FC<FileColumnSelectorProps> = ({
     columns,
     columnDetails,
+    selectedColumns,
     onSelectionChange,
     readOnly = false,
 }) => {
@@ -52,8 +55,34 @@ const FileColumnSelector: React.FC<FileColumnSelectorProps> = ({
         return [];
     }, [columns, columnDetails]);
 
-    // Initialize all columns as selected
-    const [selected, setSelected] = useState<Set<string>>(() => new Set(items.map(c => c.name)));
+    // Selection state - controlled by parent when selectedColumns is provided
+    const [selected, setSelected] = useState<Set<string>>(() => {
+        if (selectedColumns && selectedColumns.length > 0) {
+            return new Set(selectedColumns);
+        }
+        return new Set(items.map(c => c.name));
+    });
+    
+    // Track if we've initialized
+    const initializedRef = useRef(false);
+    
+    // Sync selection with parent's selectedColumns prop
+    useEffect(() => {
+        if (selectedColumns && selectedColumns.length > 0) {
+            setSelected(new Set(selectedColumns));
+            initializedRef.current = true;
+        }
+    }, [selectedColumns]);
+    
+    // Auto-select all columns when items are loaded and no selection exists (new upload case)
+    useEffect(() => {
+        if (!initializedRef.current && items.length > 0 && (!selectedColumns || selectedColumns.length === 0)) {
+            const all = items.map(c => c.name);
+            setSelected(new Set(all));
+            onSelectionChange(all);
+            initializedRef.current = true;
+        }
+    }, [items.length, selectedColumns, onSelectionChange]);
 
     const allSelected = selected.size === items.length && items.length > 0;
     const noneSelected = selected.size === 0;

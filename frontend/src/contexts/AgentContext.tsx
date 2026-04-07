@@ -1,12 +1,21 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { Agent } from '../types/agent';
-import { getActiveConfigMetadata, getPromptHistory, listEmbeddingJobs, getConnections, getVectorDbStatus } from '../services/api';
+import { getActiveConfigMetadata, getPromptHistory, listEmbeddingJobs, getConnections, getVectorDbStatusByConfig } from '../services/api';
 import { useSystemSettings } from './SystemSettingsContext';
 import type { AdvancedSettings } from './SystemSettingsContext';
 
 // Re-export AdvancedSettings type from SystemSettingsContext
 export type { AdvancedSettings } from './SystemSettingsContext';
+
+// Model info interface (from ai_models table)
+export interface ModelInfo {
+    id: number;
+    provider_name: string;
+    display_name: string;
+    model_id: string;
+    model_type: string;
+}
 
 // Types for active config
 export interface ActiveConfig {
@@ -29,7 +38,36 @@ export interface ActiveConfig {
     ingestion_documents?: string;
     created_by_username?: string;
     created_at?: string;
+    updated_at?: string;
     is_active?: boolean;
+    status?: string;
+    completed_step?: number;
+    
+    // Embedding status
+    embedding_status?: string;
+    embedding_path?: string;
+    vector_collection_name?: string;
+    
+    // Model IDs (FK to ai_models)
+    llm_model_id?: number;
+    embedding_model_id?: number;
+    reranker_model_id?: number;
+    
+    // Resolved model info (populated by backend)
+    llm_model?: ModelInfo;
+    embedding_model?: ModelInfo;
+    reranker_model?: ModelInfo;
+    
+    // Data source info
+    data_source?: {
+        id: string;
+        title: string;
+        source_type: string;
+        db_url?: string;
+        original_filename?: string;
+        file_type?: string;
+        row_count?: number;
+    };
 }
 
 export interface PromptVersion {
@@ -120,10 +158,9 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     const refreshVectorDbStatus = useCallback(async () => {
         if (!activeConfig) return;
         try {
-            const embConf = activeConfig.embedding_config ? JSON.parse(activeConfig.embedding_config) : {};
-            const vDbName = embConf.vectorDbName || (activeConfig.data_source_type === 'database' && activeConfig.connection_id ? `db_connection_${activeConfig.connection_id}_data` : 'default_vector_db');
-            if (vDbName) {
-                const status = await getVectorDbStatus(vDbName);
+            const configId = activeConfig.id || activeConfig.prompt_id;
+            if (configId) {
+                const status = await getVectorDbStatusByConfig(configId);
                 setVectorDbStatus(status);
             }
         } catch (err) {
@@ -154,23 +191,25 @@ export function AgentProvider({ children }: { children: ReactNode }) {
                 if (ret) newSettings.retriever = { ...newSettings.retriever, ...ret };
                 setAdvancedSettings(newSettings);
 
-                // Fetch connection name
-                if (config.connection_id) {
+                // Set connection name from data_source title (no separate lookup needed)
+                if (config.data_source?.title) {
+                    setConnectionName(config.data_source.title);
+                } else if (config.connection_id) {
+                    // Legacy fallback
                     try {
                         const conns = await getConnections();
-                        const c = conns.find((x: any) => x.id === config.connection_id);
+                        const c = conns.find((x: { id: number }) => x.id === config.connection_id);
                         if (c) setConnectionName(c.name);
                     } catch (e) {
                         console.error("Failed to fetch connection name", e);
                     }
                 }
 
-                // Fetch Vector DB Status
+                // Fetch Vector DB Status using config ID
                 try {
-                    const embConf = config.embedding_config ? JSON.parse(config.embedding_config) : {};
-                    const vDbName = embConf.vectorDbName || (config.data_source_type === 'database' && config.connection_id ? `db_connection_${config.connection_id}_data` : 'default_vector_db');
-                    if (vDbName) {
-                        const status = await getVectorDbStatus(vDbName);
+                    const configId = config.id || config.prompt_id;
+                    if (configId) {
+                        const status = await getVectorDbStatusByConfig(configId);
                         setVectorDbStatus(status);
                     }
                 } catch (e) {

@@ -6,16 +6,19 @@ import { useAuth } from './AuthContext';
 /**
  * Advanced settings structure that matches the backend system settings.
  * All values come from the Settings page - nothing is hardcoded.
+ * 
+ * Note: Model IDs (embeddingModelId, llmModelId, rerankerModelId) are sent
+ * at the top level of the API request, not inside these config objects.
  */
 export interface AdvancedSettings {
     embedding: {
-        model: string;
+        model: string;  // model_id string like "huggingface/BAAI/bge-m3"
         vectorDbName?: string;
     };
     llm: {
         temperature: number;
         maxTokens: number;
-        model?: string;
+        model?: string;  // model_id string like "openai/gpt-4o"
     };
     chunking: {
         parentChunkSize: number;
@@ -28,8 +31,12 @@ export interface AdvancedSettings {
         topKFinal: number;
         hybridWeights: [number, number];
         rerankEnabled: boolean;
-        rerankerModel: string;
+        rerankerModel: string;  // model_id string like "huggingface/BAAI/bge-reranker-v2-m3"
     };
+    // AI Registry model IDs (foreign keys to ai_models.id) - sent at request top level
+    embeddingModelId?: number;
+    llmModelId?: number;
+    rerankerModelId?: number;
 }
 
 /**
@@ -54,6 +61,7 @@ interface SystemSettingsContextType {
     
     // Actions
     refreshSettings: () => Promise<void>;
+    ensureLoaded: () => Promise<void>;
     
     // Helper to get settings for embedding modal
     getEmbeddingModalDefaults: () => {
@@ -108,7 +116,7 @@ export function SystemSettingsProvider({ children }: { children: ReactNode }) {
     const { isAuthenticated, isLoading: authLoading } = useAuth();
     const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(FALLBACK_SETTINGS);
     const [embeddingJobSettings, setEmbeddingJobSettings] = useState<EmbeddingJobSettings>(FALLBACK_EMBEDDING_JOB_SETTINGS);
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(false);  // Start as false, set true when loading
     const [isLoaded, setIsLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -203,15 +211,21 @@ export function SystemSettingsProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
-    // Load settings only when authenticated
+    // Lazy loading - don't auto-load on auth
+    // Settings are loaded on-demand when ensureLoaded() is called
     useEffect(() => {
-        if (!authLoading && isAuthenticated) {
-            refreshSettings();
-        } else if (!authLoading && !isAuthenticated) {
+        if (!authLoading && !isAuthenticated) {
             // Not authenticated - use fallback settings, stop loading
             setIsLoading(false);
         }
-    }, [refreshSettings, isAuthenticated, authLoading]);
+    }, [authLoading, isAuthenticated]);
+
+    // Ensure settings are loaded (call this before accessing settings)
+    const ensureLoaded = useCallback(async () => {
+        if (!isLoaded && !isLoading && isAuthenticated) {
+            await refreshSettings();
+        }
+    }, [isLoaded, isLoading, isAuthenticated, refreshSettings]);
 
     // Helper to get embedding modal defaults in the expected format
     const getEmbeddingModalDefaults = useCallback(() => {
@@ -241,6 +255,7 @@ export function SystemSettingsProvider({ children }: { children: ReactNode }) {
         isLoaded,
         error,
         refreshSettings,
+        ensureLoaded,
         getEmbeddingModalDefaults,
     };
 

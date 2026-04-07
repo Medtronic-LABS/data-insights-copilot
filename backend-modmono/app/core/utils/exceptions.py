@@ -3,8 +3,37 @@ Custom exception classes and error handling.
 
 Provides standardized exceptions and error responses across the application.
 """
+from enum import Enum
 from typing import Optional, Any, Dict
 from fastapi import HTTPException, status
+
+
+class ErrorCode(str, Enum):
+    """Standard error codes for API responses."""
+    # Authentication errors
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    TOKEN_EXPIRED = "TOKEN_EXPIRED"
+    INVALID_TOKEN = "INVALID_TOKEN"
+    
+    # Authorization errors
+    INSUFFICIENT_PERMISSIONS = "INSUFFICIENT_PERMISSIONS"
+    
+    # Resource errors
+    RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
+    RESOURCE_ALREADY_EXISTS = "RESOURCE_ALREADY_EXISTS"
+    RESOURCE_CONFLICT = "RESOURCE_CONFLICT"
+    
+    # Validation errors
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    INVALID_INPUT = "INVALID_INPUT"
+    
+    # Request errors
+    REQUEST_CANCELLED = "REQUEST_CANCELLED"
+    
+    # General errors
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
+    BAD_REQUEST = "BAD_REQUEST"
 
 
 class AppException(Exception):

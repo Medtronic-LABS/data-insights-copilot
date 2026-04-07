@@ -4,6 +4,7 @@ FastAPI application entry point.
 This module initializes the FastAPI application with all middleware,
 routers, and lifecycle handlers.
 """
+import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +50,11 @@ async def lifespan(app: FastAPI):
         db = init_database(db_config)
         await db.connect()
         logger.info("Database connected", database=settings.postgres_db)
+        
+        # Note: Run 'alembic upgrade head' to apply migrations
+        # For development, you can enable auto-create tables below:
+        # from app.core.database.connection import create_tables
+        # await create_tables()
     except Exception as e:
         logger.error("Failed to connect to database", error=str(e))
         raise
@@ -96,13 +102,13 @@ app = FastAPI(
 # Middleware
 # ============================================
 
-# CORS
+# CORS - must be added before other middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
-    allow_credentials=settings.cors_allow_credentials,
-    allow_methods=settings.cors_methods_list,
-    allow_headers=settings.cors_allow_headers.split(","),
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Trusted hosts (optional security)
@@ -127,7 +133,15 @@ async def log_requests(request: Request, call_next):
         path=request.url.path
     )
     
-    logger.info("Request started")
+    # Log request immediately when received (before processing)
+    logger.info(
+        "Request received",
+        method=request.method,
+        path=request.url.path
+    )
+    
+    # Flush to ensure log is written immediately
+    sys.stdout.flush()
     
     try:
         response = await call_next(request)
@@ -141,6 +155,15 @@ async def log_requests(request: Request, call_next):
         response.headers["X-Request-ID"] = request_id
         
         return response
+    except Exception as e:
+        # Log any unhandled exceptions that would otherwise crash silently
+        logger.error(
+            "Request crashed",
+            error=str(e),
+            error_type=type(e).__name__
+        )
+        sys.stdout.flush()
+        raise
     finally:
         clear_context()
 
@@ -268,21 +291,32 @@ app.include_router(users_router, prefix=f"{settings.api_v1_prefix}/users", tags=
 # Observability & Audit
 from app.modules.observability.routes import router as observability_router
 
-# Agents
+# Agents and Configs
 from app.modules.agents.routes import router as agents_router
 
+# Data Sources
+from app.modules.data_sources.routes import router as data_sources_router
+
+# AI Models Registry
+from app.modules.ai_models.routes import router as ai_registry_router
+
 app.include_router(observability_router, prefix=f"{settings.api_v1_prefix}", tags=["Observability"])
-app.include_router(agents_router, prefix=f"{settings.api_v1_prefix}/agents", tags=["Agents"])
+# Note: agents_router already has /agents, /config prefixes and tags internally
+app.include_router(agents_router, prefix=f"{settings.api_v1_prefix}")
+# Note: data_sources_router already has /data-sources prefix and tags internally
+app.include_router(data_sources_router, prefix=f"{settings.api_v1_prefix}")
+# AI Registry - flexible provider/model management
+app.include_router(ai_registry_router, prefix=f"{settings.api_v1_prefix}")
 
-# TODO: Add these module routers as they are implemented:
-# from app.modules.chat.presentation.routes import router as chat_router
-# app.include_router(chat_router, prefix=f"{settings.api_v1_prefix}/chat", tags=["Chat"])
+# Embeddings - job management and progress tracking
+from app.modules.embeddings.routes import router as embeddings_router
+from app.modules.embeddings.websocket import router as embeddings_ws_router
+app.include_router(embeddings_router, prefix=f"{settings.api_v1_prefix}", tags=["Embedding Jobs"])
+app.include_router(embeddings_ws_router, prefix=f"{settings.api_v1_prefix}/ws", tags=["WebSocket"])
 
-# from app.modules.embeddings.presentation.routes import router as embeddings_router
-# app.include_router(embeddings_router, prefix=f"{settings.api_v1_prefix}/embeddings", tags=["Embeddings"])
-
-# from app.modules.ingestion.presentation.routes import router as ingestion_router
-# app.include_router(ingestion_router, prefix=f"{settings.api_v1_prefix}/ingestion", tags=["Ingestion"])
+# Chat - RAG query processing
+from app.modules.chat.routes import router as chat_router
+app.include_router(chat_router, prefix=f"{settings.api_v1_prefix}", tags=["Chat"])
 
 
 # ============================================

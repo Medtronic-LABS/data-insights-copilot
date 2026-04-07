@@ -14,18 +14,24 @@ import AuditLogsPage from './pages/AuditLogsPage';
 import CallbackPage from './pages/CallbackPage';
 import NotificationsPage from './pages/NotificationsPage';
 import DataManagementPage from './pages/DataManagementPage';
+import DataSourcesPage from './pages/DataSourcesPage';
+import AIRegistryPage from './pages/AIRegistryPage';
 
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationsProvider } from './contexts/NotificationsContext';
 import type { UserRole } from './types';
 import { roleAtLeast } from './utils/permissions';
 
-// Create a client
+// Create a client with disabled retries to prevent infinite API loops
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
-      retry: 1,
+      retry: false,           // Disable retries to prevent infinite loops on 404/500
+      staleTime: 5 * 60 * 1000, // 5 minutes - reduce unnecessary refetches
+    },
+    mutations: {
+      retry: false,
     },
   },
 });
@@ -171,6 +177,22 @@ function App() {
                     element={
                       <ProtectedRoute allowedRoles={['admin']}>
                         <DataManagementPage />
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
+                    path="/data-sources"
+                    element={
+                      <ProtectedRoute allowedRoles={['admin']}>
+                        <DataSourcesPage />
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
+                    path="/ai-registry"
+                    element={
+                      <ProtectedRoute allowedRoles={['admin']}>
+                        <AIRegistryPage />
                       </ProtectedRoute>
                     }
                   />

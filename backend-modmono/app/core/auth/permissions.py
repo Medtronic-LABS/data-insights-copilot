@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database.session import get_db_session
 from app.core.auth.security import decode_oidc_token, extract_user_claims
 from app.core.config import get_settings
-from app.core.models.auth import User, Role, TokenData
+from app.core.models.auth import Role, TokenData
+from app.modules.users.schemas import User  # Use module User schema (matches repository)
 from app.core.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,6 +33,7 @@ security = HTTPBearer()
 ROLE_HIERARCHY: List[str] = [
     Role.SUPER_ADMIN.value,
     Role.ADMIN.value,
+    Role.EDITOR.value,
     Role.USER.value,
 ]
 
@@ -201,7 +203,7 @@ async def get_current_user(
             claims = extract_user_claims(payload, role_claim=settings.oidc_role_claim)
             
             # Get or create user (JIT provisioning)
-            from app.modules.users.infrastructure.user_repository import UserRepository
+            from app.modules.users.repository import UserRepository
             user_repo = UserRepository(session)
             
             user = await user_repo.get_by_external_id(claims.sub)
@@ -218,25 +220,29 @@ async def get_current_user(
                 keycloak_role = map_keycloak_role(claims.roles)
                 if keycloak_role == Role.SUPER_ADMIN.value and user.role != Role.SUPER_ADMIN.value:
                     # Promote to super_admin
-                    from app.modules.users.presentation.schemas import UserUpdate
+                    from app.modules.users.schemas import UserUpdate
                     await user_repo.update(user.id, UserUpdate(role=Role.SUPER_ADMIN.value))
                     user.role = Role.SUPER_ADMIN.value
                 elif keycloak_role != Role.SUPER_ADMIN.value and user.role == Role.SUPER_ADMIN.value:
                     # Demote from super_admin
-                    from app.modules.users.presentation.schemas import UserUpdate
+                    from app.modules.users.schemas import UserUpdate
                     await user_repo.update(user.id, UserUpdate(role=keycloak_role))
                     user.role = keycloak_role
                 
                 return user
             else:
                 # Create new user (JIT provisioning)
-                from app.modules.users.presentation.schemas import UserCreate
+                from app.modules.users.schemas import UserCreate
                 role = map_keycloak_role(claims.roles)
                 
+                # Use email as username for OIDC users
+                username = claims.email or claims.preferred_username or claims.sub
+                
                 user = await user_repo.create(UserCreate(
+                    username=username,
                     external_id=claims.sub,
                     email=claims.email,
-                    name=claims.name,
+                    full_name=claims.name,
                     role=role,
                     is_active=True
                 ))
@@ -292,6 +298,7 @@ def require_role(required_role: Role) -> Callable:
 
 # Convenience dependencies for common role checks
 require_user = require_role(Role.USER)
+require_editor = require_role(Role.EDITOR)
 require_admin = require_role(Role.ADMIN)
 require_super_admin = require_role(Role.SUPER_ADMIN)
 

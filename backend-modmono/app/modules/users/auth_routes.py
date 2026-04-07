@@ -34,8 +34,4 @@ async def get_current_user_info(
     Returns the user profile of the currently authenticated user based 
     on the Keycloak token in the Authorization header.
     """
-    return BaseResponse(
-        status="success",
-        message="Current user retrieved",
-        data=current_user
-    )
+    return BaseResponse.ok(data=current_user)

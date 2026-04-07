@@ -16,9 +16,10 @@ class Role(str, Enum):
     User role hierarchy.
     
     Roles are ordered by permission level (lowest to highest):
-    USER < ADMIN < SUPER_ADMIN
+    USER < EDITOR < ADMIN < SUPER_ADMIN
     """
     USER = "user"                    # Can view and query
+    EDITOR = "editor"                # Can edit configurations
     ADMIN = "admin"                  # Can manage users and agents
     SUPER_ADMIN = "super_admin"      # Full system access
     
@@ -27,8 +28,9 @@ class Role(str, Enum):
         """Get numeric level for role comparison."""
         hierarchy = {
             cls.USER: 0,
-            cls.ADMIN: 1,
-            cls.SUPER_ADMIN: 2
+            cls.EDITOR: 1,
+            cls.ADMIN: 2,
+            cls.SUPER_ADMIN: 3
         }
         return hierarchy.get(role, -1)
     
@@ -139,6 +141,5 @@ class TokenData(BaseModel):
     )
 
 
-class TokenResponse(BaseModel):
 # Note: TokenResponse and LoginRequest removed - authentication handled by Keycloak
 # Users authenticate via Keycloak and receive tokens directly from the identity provider

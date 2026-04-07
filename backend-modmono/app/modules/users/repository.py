@@ -28,16 +28,8 @@ class UserRepository(BaseRepository[UserModel, UserCreate, UserUpdate, User]):
     def _to_orm(self, data: UserCreate) -> UserModel:
         """
         Convert UserCreate to UserModel.
-        
-        Note: Password hashing should be done in the service layer,
-        not in the repository.
         """
-        values = data.model_dump(exclude_none=True, exclude={"password"})
-        
-        # If password is provided, it should already be hashed
-        if hasattr(data, 'password') and data.password:
-            values['password_hash'] = data.password
-        
+        values = data.model_dump(exclude_none=True)
         return UserModel(**values)
     
     async def get_by_username(self, username: str) -> Optional[User]:
@@ -113,28 +105,6 @@ class UserRepository(BaseRepository[UserModel, UserCreate, UserUpdate, User]):
             
         except Exception as e:
             logger.error(f"Error fetching user by external_id {external_id}: {e}")
-            raise
-    
-    async def get_with_password(self, username: str) -> Optional[UserModel]:
-        """
-        Get user with password hash for authentication.
-        
-        Returns UserModel (not Pydantic) to access password_hash.
-        
-        Args:
-            username: Username to search for
-        
-        Returns:
-            UserModel instance or None if not found
-        """
-        try:
-            result = await self.session.execute(
-                select(UserModel).where(UserModel.username == username)
-            )
-            return result.scalar_one_or_none()
-            
-        except Exception as e:
-            logger.error(f"Error fetching user with password for {username}: {e}")
             raise
     
     async def search_users(
@@ -234,31 +204,6 @@ class UserRepository(BaseRepository[UserModel, UserCreate, UserUpdate, User]):
             
         except Exception as e:
             logger.error(f"Error counting users: {e}")
-            raise
-    
-    async def update_password(self, user_id: str, password_hash: str) -> bool:
-        """
-        Update user password hash.
-        
-        Args:
-            user_id: User ID
-            password_hash: New password hash
-        
-        Returns:
-            True if updated successfully
-        """
-        try:
-            user = await self.session.get(UserModel, user_id)
-            if not user:
-                return False
-            
-            user.password_hash = password_hash
-            await self.session.flush()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error updating password for user {user_id}: {e}")
             raise
     
     async def deactivate(self, user_id: str) -> bool:

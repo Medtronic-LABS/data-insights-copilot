@@ -1,11 +1,74 @@
 """
-Pydantic schemas for agent requests and responses.
+Pydantic schemas for agents and configurations.
+
+Schema structure:
+- agents: Core agent entity
+- agent_configs: Links agent ↔ data source with all configs
+
+Note: Data source schemas are in app.modules.data_sources.schemas
 """
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Import DataSourceResponse for use in AgentConfigResponse
+from app.modules.data_sources.schemas import DataSourceResponse
+
+
+# ==========================================
+# Config Sub-Schemas (reusable)
+# ==========================================
+
+class LLMConfig(BaseModel):
+    """LLM configuration options."""
+    model: Optional[str] = Field(None, description="AI Registry model_id (provider/model) - optional when llmModelId is provided")
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=4096, ge=1, alias="maxTokens")
+    
+    model_config = {"populate_by_name": True}
+
+
+class EmbeddingConfig(BaseModel):
+    """Embedding model configuration."""
+    model: Optional[str] = Field(None, description="AI Registry model_id - optional when embeddingModelId is provided")
+    vector_db_name: Optional[str] = Field(None, alias="vectorDbName", description="Vector DB collection name")
+    dimensions: int = Field(default=1536, ge=1)
+    batch_size: int = Field(default=100, ge=1, alias="batchSize")
+    
+    model_config = {"populate_by_name": True}
+
+
+class ChunkingConfig(BaseModel):
+    """Text chunking configuration."""
+    parent_chunk_size: int = Field(default=512, ge=100, alias="parentChunkSize")
+    parent_chunk_overlap: int = Field(default=100, ge=0, alias="parentChunkOverlap")
+    child_chunk_size: int = Field(default=128, ge=50, alias="childChunkSize")
+    child_chunk_overlap: int = Field(default=25, ge=0, alias="childChunkOverlap")
+    
+    model_config = {"populate_by_name": True}
+
+
+class RAGConfig(BaseModel):
+    """RAG retrieval configuration."""
+    top_k_initial: int = Field(default=50, ge=1, le=200, alias="topKInitial")
+    top_k_final: int = Field(default=10, ge=1, le=50, alias="topKFinal")
+    hybrid_weights: List[float] = Field(default=[0.75, 0.25], alias="hybridWeights")
+    reranking_enabled: bool = Field(default=False, alias="rerankEnabled")
+    reranker_model: Optional[str] = Field(None, alias="rerankerModel", description="AI Registry model_id for reranker")
+    similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, alias="similarityThreshold")
+    
+    model_config = {"populate_by_name": True}
+    
+    @field_validator("hybrid_weights")
+    @classmethod
+    def validate_hybrid_weights(cls, v: List[float]) -> List[float]:
+        if len(v) != 2:
+            raise ValueError("hybrid_weights must have exactly 2 values")
+        if abs(sum(v) - 1.0) > 0.01:
+            raise ValueError("hybrid_weights must sum to 1.0")
+        return v
 
 
 # ==========================================
@@ -13,24 +76,9 @@ from pydantic import BaseModel, Field, field_validator
 # ==========================================
 
 class AgentBase(BaseModel):
-    """Base agent schema with common fields."""
-    name: str = Field(..., min_length=1, max_length=255, description="Unique agent name")
+    """Base agent schema."""
+    title: str = Field(..., min_length=1, max_length=255, description="Unique agent title")
     description: Optional[str] = Field(None, description="Agent description")
-    type: str = Field(default="sql", description="Agent type: sql, rag, or hybrid")
-    db_connection_uri: Optional[str] = Field(None, description="Database connection URI")
-    system_prompt: Optional[str] = Field(None, description="Default system prompt")
-    embedding_model: Optional[str] = Field(default="bge-m3", description="Embedding model name")
-    embedding_dimension: Optional[int] = Field(default=1024, description="Embedding dimensions")
-    embedding_provider: Optional[str] = Field(default="sentence-transformers", description="Embedding provider")
-    
-    @field_validator("type")
-    @classmethod
-    def validate_type(cls, v: str) -> str:
-        """Validate agent type."""
-        allowed_types = {"sql", "rag", "hybrid"}
-        if v not in allowed_types:
-            raise ValueError(f"Agent type must be one of: {', '.join(allowed_types)}")
-        return v
 
 
 class AgentCreate(AgentBase):
@@ -40,256 +88,282 @@ class AgentCreate(AgentBase):
 
 class AgentUpdate(BaseModel):
     """Schema for updating an agent (all fields optional)."""
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
-    type: Optional[str] = None
-    db_connection_uri: Optional[str] = None
-    system_prompt: Optional[str] = None
-    embedding_model: Optional[str] = None
-    embedding_dimension: Optional[int] = None
-    embedding_provider: Optional[str] = None
-    
-    @field_validator("type")
-    @classmethod
-    def validate_type(cls, v: Optional[str]) -> Optional[str]:
-        """Validate agent type if provided."""
-        if v is not None:
-            allowed_types = {"sql", "rag", "hybrid"}
-            if v not in allowed_types:
-                raise ValueError(f"Agent type must be one of: {', '.join(allowed_types)}")
-        return v
 
 
-class Agent(AgentBase):
-    """Schema for agent response."""
+class AgentResponse(AgentBase):
+    """Agent response schema."""
     id: UUID
     created_by: Optional[UUID] = None
     created_at: datetime
+    updated_at: datetime
     
     model_config = {"from_attributes": True}
 
 
-class AgentWithConfig(Agent):
-    """Agent response with full configuration."""
-    active_system_prompt: Optional[Dict[str, Any]] = None
-    config: Optional[Dict[str, Any]] = None
+class AgentWithRole(AgentResponse):
+    """Agent response with user's role included."""
+    user_role: str = Field(default="user", description="User's role for this agent")
+
+
+class AgentDetailResponse(AgentResponse):
+    """Detailed agent response with active config."""
+    active_config: Optional["AgentConfigResponse"] = None
+
+
+class AgentListResponse(BaseModel):
+    """Paginated list of agents."""
+    agents: List[AgentWithRole]
+    total: int
+    skip: int
+    limit: int
 
 
 # ==========================================
-# User-Agent Relationship Schemas
+# Agent Config Schemas
 # ==========================================
 
-class UserAgentAccess(BaseModel):
-    """Schema for granting user access to agent."""
-    user_id: UUID
+class AgentConfigBase(BaseModel):
+    """Base agent configuration schema."""
+    # Data selection
+    selected_columns: Optional[List[str]] = Field(None, description="Columns to embed/query")
+    data_dictionary: Optional[Dict[str, Any]] = Field(None, description="Column descriptions")
+    
+    # Model configs
+    llm_config: Optional[LLMConfig] = None
+    embedding_config: Optional[EmbeddingConfig] = None
+    chunking_config: Optional[ChunkingConfig] = None
+    rag_config: Optional[RAGConfig] = None
+    
+    # Prompt
+    system_prompt: Optional[str] = None
+    example_questions: Optional[List[str]] = None
+
+
+class AgentConfigCreate(AgentConfigBase):
+    """Create a new agent configuration."""
     agent_id: UUID
+    data_source_id: UUID
+    is_active: bool = Field(default=False, description="Whether this is the active config")
+    status: str = Field(default="draft", description="draft or published")
+    completed_step: int = Field(default=0, ge=0, le=6, description="Highest completed wizard step (0 = none)")
+
+
+class AgentConfigUpdate(AgentConfigBase):
+    """Update an agent configuration."""
+    data_source_id: Optional[UUID] = None
+    is_active: Optional[bool] = None
+    status: Optional[str] = None
+    completed_step: Optional[int] = Field(None, ge=0, le=6)
+
+
+# ==========================================
+# Per-Step Request Schemas (named steps)
+# ==========================================
+
+class DataSourceStepRequest(BaseModel):
+    """Step: data-source. Creates new version if version_id not provided."""
+    data_source_id: UUID = Field(..., description="Data source to use")
+    version_id: Optional[int] = Field(None, description="Existing version ID to update (optional, creates new if not provided)")
+
+
+class SchemaSelectionStepRequest(BaseModel):
+    """Step: schema-selection. Select tables and columns from data source."""
+    # Unified format for both file and database: table -> columns mapping
+    selected_schema: Dict[str, List[str]] = Field(..., description="Table to columns mapping")
+
+
+class DataDictionaryStepRequest(BaseModel):
+    """Step: data-dictionary. Add context/descriptions."""
+    data_dictionary: Dict[str, Any] = Field(default_factory=dict, description="Column descriptions and context")
+
+
+class SettingsStepRequest(BaseModel):
+    """Step: settings. Configure embedding, chunking, RAG, LLM."""
+    embedding_config: Optional[EmbeddingConfig] = Field(None, alias="embeddingConfig")
+    chunking_config: Optional[ChunkingConfig] = Field(None, alias="chunkingConfig")
+    rag_config: Optional[RAGConfig] = Field(None, alias="ragConfig")
+    llm_config: Optional[LLMConfig] = Field(None, alias="llmConfig")
+    
+    # AI Registry model IDs (foreign keys to ai_models.id)
+    llm_model_id: Optional[int] = Field(None, alias="llmModelId", description="LLM model ID from ai_models table")
+    embedding_model_id: Optional[int] = Field(None, alias="embeddingModelId", description="Embedding model ID from ai_models table")
+    reranker_model_id: Optional[int] = Field(None, alias="rerankerModelId", description="Reranker model ID from ai_models table")
+    
+    model_config = {"populate_by_name": True}
+
+
+class PromptStepRequest(BaseModel):
+    """Step: prompt. Configure system prompt and example questions."""
+    system_prompt: str = Field(..., min_length=1, description="System prompt for the agent")
+    example_questions: Optional[List[str]] = Field(default_factory=list, description="Example questions for users")
+
+
+class PublishStepRequest(BaseModel):
+    """Step: publish. Save final prompt and publish the configuration."""
+    system_prompt: str = Field(..., min_length=1, description="Final system prompt for the agent")
+    example_questions: Optional[List[str]] = Field(default_factory=list, description="Example questions for users")
+
+
+class GeneratePromptResponse(BaseModel):
+    """Response from generate-prompt endpoint."""
+    draft_prompt: str = Field(..., description="Generated system prompt")
+    reasoning: Dict[str, str] = Field(default_factory=dict, description="Reasoning for key schema elements")
+    example_questions: List[str] = Field(default_factory=list, description="Example questions the agent can answer")
+
+
+class ModelInfo(BaseModel):
+    """Resolved model information from ai_models table."""
+    id: int
+    provider_name: str
+    display_name: str  # display name
+    model_id: str      # actual model ID (e.g., "openai/gpt-4o")
+    model_type: str    # "llm", "embedding", "reranker"
+
+
+class AgentConfigResponse(BaseModel):
+    """Agent configuration response."""
+    id: int
+    agent_id: UUID
+    data_source_id: UUID
+    
+    # Data selection (parsed from JSON)
+    # For files: List[str] of column names
+    # For databases: Dict[table_name, List[column_names]]
+    selected_columns: Optional[Union[List[str], Dict[str, List[str]]]] = None
+    data_dictionary: Optional[Dict[str, Any]] = None
+    
+    # Model configs (parsed from JSON)
+    llm_config: Optional[Dict[str, Any]] = None
+    embedding_config: Optional[Dict[str, Any]] = None
+    chunking_config: Optional[Dict[str, Any]] = None
+    rag_config: Optional[Dict[str, Any]] = None
+    
+    # AI Registry model IDs (foreign keys to ai_models.id)
+    llm_model_id: Optional[int] = None
+    embedding_model_id: Optional[int] = None
+    reranker_model_id: Optional[int] = None
+    
+    # Resolved model info (populated when model IDs are set)
+    llm_model: Optional[ModelInfo] = None
+    embedding_model: Optional[ModelInfo] = None
+    reranker_model: Optional[ModelInfo] = None
+    
+    # Prompt
+    system_prompt: Optional[str] = None
+    example_questions: Optional[List[str]] = None
+    
+    # Vector store
+    embedding_path: Optional[str] = None
+    vector_collection_name: Optional[str] = None
+    embedding_status: str = "not_started"
+    
+    # Version & Status
+    version: int
+    is_active: bool
+    status: str = "draft"
+    completed_step: int = 0
+    
+    # Timestamps
+    created_at: datetime
+    updated_at: datetime
+    
+    # Related data source
+    data_source: Optional[DataSourceResponse] = None
+    
+    model_config = {"from_attributes": True}
+
+
+class AgentConfigSummary(BaseModel):
+    """Summary of agent configuration for table view (limited fields)."""
+    id: int
+    agent_id: UUID
+    version: int
+    is_active: bool
+    status: str
+    embedding_status: str
+    data_source_name: Optional[str] = None
+    llm_model_name: Optional[str] = None
+    embedding_model_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+
+class AgentConfigHistoryResponse(BaseModel):
+    """Paginated list of agent config summaries for history table."""
+    configs: List[AgentConfigSummary]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class AgentConfigListResponse(BaseModel):
+    """List of agent configurations (history)."""
+    configs: List[AgentConfigResponse]
+    total: int
+
+
+# ==========================================
+# User-Agent RBAC Schemas
+# ==========================================
+
+class UserAgentGrantRequest(BaseModel):
+    """Request to grant user access to an agent."""
+    user_id: UUID
     role: str = Field(default="user", description="Role: user, editor, or admin")
     
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        """Validate agent-specific role."""
-        allowed_roles = {"user", "editor", "admin"}
-        if v not in allowed_roles:
-            raise ValueError(f"Role must be one of: {', '.join(allowed_roles)}")
+        allowed = {"user", "editor", "admin"}
+        if v not in allowed:
+            raise ValueError(f"Role must be one of: {', '.join(allowed)}")
         return v
 
 
 class UserAgentResponse(BaseModel):
-    """Response for user-agent relationship."""
+    """User-agent relationship response."""
     user_id: UUID
+    agent_id: UUID
     role: str
     granted_at: datetime
     granted_by: Optional[UUID] = None
-
-
-# ==========================================
-# System Prompt Schemas
-# ==========================================
-
-class SystemPromptCreate(BaseModel):
-    """Schema for creating a system prompt."""
-    prompt_text: str = Field(..., min_length=1, description="System prompt text")
-    version: int = Field(..., ge=1, description="Prompt version number")
-    is_active: bool = Field(default=False, description="Whether prompt is active")
-
-
-class SystemPromptResponse(BaseModel):
-    """Response for system prompt."""
-    id: int
-    prompt_text: str
-    version: int
-    created_at: datetime
-    created_by: Optional[str] = None
-
-
-# ==========================================
-# Prompt Config Schemas
-# ==========================================
-
-class ChunkingConfig(BaseModel):
-    """Chunking configuration."""
-    parent_chunk_size: int = Field(default=2000, ge=100)
-    child_chunk_size: int = Field(default=400, ge=50)
-    overlap: int = Field(default=200, ge=0)
-    min_chunk_length: int = Field(default=50, ge=1)
-    separators: List[str] = Field(default_factory=lambda: ["\n\n", "\n", ". ", " ", ""])
-
-
-class PIIConfig(BaseModel):
-    """PII exclusion configuration."""
-    exclude_patient_names: bool = True
-    exclude_patient_ids: bool = False
-    exclude_ssn: bool = True
-    exclude_phone_numbers: bool = True
-    exclude_emails: bool = False
-    exclude_addresses: bool = True
-    exclude_dob: bool = False
-    exclude_medical_record_numbers: bool = False
-    custom_patterns: List[str] = Field(default_factory=list)
-
-
-class MedicalContextConfig(BaseModel):
-    """Medical terminology configuration."""
-    include_icd_codes: bool = True
-    include_cpt_codes: bool = True
-    include_medications: bool = True
-    include_lab_results: bool = True
-    include_vital_signs: bool = True
-    include_diagnoses: bool = True
-    include_procedures: bool = True
-    terminology_systems: List[str] = Field(default_factory=lambda: ["ICD-10", "CPT", "SNOMED", "LOINC", "RxNorm"])
-
-
-class RAGConfig(BaseModel):
-    """RAG (Retrieval Augmented Generation) configuration."""
-    top_k: int = Field(default=5, ge=1, le=50)
-    similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    reranking_enabled: bool = False
-    reranking_top_k: int = Field(default=10, ge=1)
-    max_context_length: int = Field(default=4000, ge=100)
-    use_parent_chunks: bool = True
-    use_child_chunks: bool = True
-    hybrid_search: bool = False
-    hybrid_alpha: float = Field(default=0.5, ge=0.0, le=1.0)
-
-
-class EmbeddingConfig(BaseModel):
-    """Embedding model configuration."""
-    provider: str = Field(default="openai")
-    model: str = Field(default="text-embedding-3-small")
-    dimensions: int = Field(default=1536, ge=1)
-    batch_size: int = Field(default=100, ge=1)
-    max_input_tokens: int = Field(default=8191, ge=1)
-    normalize: bool = True
-
-
-class LLMConfig(BaseModel):
-    """LLM configuration."""
-    provider: str = Field(default="openai")
-    model: str = Field(default="gpt-4o-mini")
-    temperature: float = Field(default=0.3, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=2000, ge=1)
-    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
-    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
-    presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
-    streaming: bool = True
-
-
-class VectorStoreConfig(BaseModel):
-    """Vector store configuration."""
-    provider: str = Field(default="chroma")
-    collection_prefix: str = Field(default="agent")
-    distance_metric: str = Field(default="cosine")
-    index_type: str = Field(default="hnsw")
-    persist_directory: str = Field(default="./data/indexes")
-
-
-class SystemPromptConfig(BaseModel):
-    """System prompt templates configuration."""
-    base_system_prompt: str = Field(
-        default="""You are a helpful AI assistant specialized in analyzing healthcare data.
-
-You have access to clinical information and should:
-1. Provide accurate, evidence-based responses
-2. Cite specific data sources when possible
-3. Acknowledge uncertainty when information is incomplete
-4. Never fabricate or guess clinical information
-5. Respect patient privacy and confidentiality
-
-Always ground your responses in the provided context."""
-    )
-    query_prefix: str = Field(
-        default="""Using the following clinical context, answer the user's question accurately and concisely.
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-    )
-    sql_system_prompt: str = Field(
-        default="""You are an expert SQL query generator for healthcare databases.
-
-Generate safe, read-only SQL queries based on user questions. Follow these rules:
-1. Only generate SELECT queries (no INSERT, UPDATE, DELETE, DROP)
-2. Use proper JOINs and WHERE clauses
-3. Include LIMIT clauses to prevent large result sets
-4. Use descriptive column aliases
-5. Add comments explaining complex logic
-
-Always validate queries before execution."""
-    )
-
-
-class PromptConfigCreate(BaseModel):
-    """Schema for creating/updating prompt configuration."""
-    connection_id: Optional[int] = None
-    schema_selection: Optional[str] = None
-    data_dictionary: Optional[str] = None
-    reasoning: Optional[str] = None
-    example_questions: Optional[str] = None
-    data_source_type: str = Field(default="database")
     
-    # Configuration objects
-    chunking_config: Optional[ChunkingConfig] = None
-    embedding_config: Optional[EmbeddingConfig] = None
-    retriever_config: Optional[RAGConfig] = None  # Aliased as retriever_config in DB
-    llm_config: Optional[LLMConfig] = None
+    model_config = {"from_attributes": True}
 
 
-class PromptConfigResponse(BaseModel):
-    """Response for prompt configuration."""
-    prompt_id: int
-    connection_id: Optional[int] = None
-    schema_selection: Optional[str] = None
-    data_dictionary: Optional[str] = None
-    reasoning: Optional[str] = None
-    example_questions: Optional[str] = None
-    data_source_type: str
-    chunking_config: Optional[Dict[str, Any]] = None
-    embedding_config: Optional[Dict[str, Any]] = None
-    retriever_config: Optional[Dict[str, Any]] = None
-    llm_config: Optional[Dict[str, Any]] = None
+class UserAgentListResponse(BaseModel):
+    """List of users with access to an agent."""
+    users: List[UserAgentResponse]
+    total: int
 
 
 # ==========================================
-# Agent Search & Query Schemas
+# Search Schema
 # ==========================================
 
 class AgentSearchParams(BaseModel):
     """Search parameters for agents."""
-    query: Optional[str] = Field(None, description="Search in name/description")
-    type: Optional[str] = Field(None, description="Filter by agent type")
+    query: Optional[str] = Field(None, description="Search in title/description")
     created_by: Optional[UUID] = Field(None, description="Filter by creator")
     skip: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=100)
 
 
-class AgentListResponse(BaseModel):
-    """Response for agent list with pagination."""
-    agents: List[Agent]
-    total: int
-    skip: int
-    limit: int
+# ==========================================
+# Embedding Status Schema
+# ==========================================
+
+class EmbeddingStatusUpdate(BaseModel):
+    """Update embedding status for a config."""
+    status: Literal["not_started", "in_progress", "completed", "failed"]
+    embedding_path: Optional[str] = None
+    vector_collection_name: Optional[str] = None
+
+
+# Forward reference resolution
+AgentDetailResponse.model_rebuild()

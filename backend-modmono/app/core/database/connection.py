@@ -348,3 +348,30 @@ def get_database() -> Optional[DatabaseConnection]:
         DatabaseConnection instance or None
     """
     return _database
+
+
+async def create_tables() -> None:
+    """
+    Create all database tables defined in ORM models.
+    
+    This imports all model modules to ensure they are registered
+    with SQLAlchemy's Base.metadata before creating tables.
+    
+    For production, use proper migrations (Alembic). This is for development.
+    """
+    if not _database or not _database.engine:
+        raise RuntimeError("Database not connected. Call init_database() and connect() first.")
+    
+    # Import all models to register them with Base.metadata
+    # These imports trigger model registration
+    from app.modules.users.models import UserModel  # noqa: F401
+    from app.modules.agents.models import AgentModel, AgentConfigModel, UserAgentModel  # noqa: F401
+    from app.modules.data_sources.models import DataSourceModel  # noqa: F401
+    from app.modules.observability.models import AuditLogModel  # noqa: F401
+    
+    logger.info("Creating database tables...")
+    
+    async with _database.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    logger.info("Database tables created successfully")

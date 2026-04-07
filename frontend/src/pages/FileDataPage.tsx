@@ -256,7 +256,7 @@ export default function FileDataPage() {
                             </div>
                           </div>
                           <span className={`px-2 py-0.5 text-xs font-medium rounded ${table.file_type === 'csv' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-                            {table.file_type.toUpperCase()}
+                            {(table.file_type || 'file').toUpperCase()}
                           </span>
                         </div>
                       </div>

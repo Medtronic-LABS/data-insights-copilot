@@ -1,7 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
 import PromptEditor from '../../PromptEditor';
-import PromptHistory from '../../PromptHistory';
-import type { PromptVersion } from '../../PromptHistory';
 import { canEditPrompt } from '../../../utils/permissions';
 import { useAuth } from '../../../contexts/AuthContext';
 
@@ -9,48 +7,117 @@ interface ReviewPublishStepProps {
     draftPrompt: string;
     setDraftPrompt: (value: string) => void;
     exampleQuestions: string[];
-    history: PromptVersion[];
+    onGeneratePrompt?: () => Promise<void>;
+    isGenerating?: boolean;
 }
 
 export const ReviewPublishStep: React.FC<ReviewPublishStepProps> = ({
     draftPrompt,
     setDraftPrompt,
     exampleQuestions,
-    history
+    onGeneratePrompt,
+    isGenerating = false,
 }) => {
     const { user } = useAuth();
     const canEdit = canEditPrompt(user);
-    const [showHistory, setShowHistory] = useState(false);
-    const [replaceConfirm, setReplaceConfirm] = useState<{ show: boolean; version: PromptVersion | null }>({ show: false, version: null });
 
+    // If no prompt exists yet, show the generate prompt UI
+    if (!draftPrompt) {
+        return (
+            <div className="h-full flex flex-col items-center justify-center p-8">
+                <div className="max-w-lg w-full text-center">
+                    {/* Icon */}
+                    <div className="mx-auto w-20 h-20 rounded-full bg-gradient-to-br from-blue-100 to-purple-100 flex items-center justify-center mb-6">
+                        <svg className="w-10 h-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                    </div>
+
+                    {/* Title */}
+                    <h2 className="text-2xl font-bold text-gray-900 mb-3">Generate System Prompt</h2>
+                    
+                    {/* Description */}
+                    <p className="text-gray-600 mb-8 leading-relaxed">
+                        Based on your data dictionary and settings, we'll use AI to generate 
+                        a production-ready system prompt tailored for your agent. You can 
+                        edit and refine it before publishing.
+                    </p>
+
+                    {/* What will be generated */}
+                    <div className="bg-gray-50 rounded-lg p-4 mb-8 text-left">
+                        <h4 className="text-sm font-semibold text-gray-700 mb-3">This will generate:</h4>
+                        <ul className="space-y-2">
+                            <li className="flex items-start gap-2 text-sm text-gray-600">
+                                <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span><strong>System Prompt</strong> - Instructions for the AI based on your schema</span>
+                            </li>
+                            <li className="flex items-start gap-2 text-sm text-gray-600">
+                                <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span><strong>Example Questions</strong> - Sample queries users can ask</span>
+                            </li>
+                            <li className="flex items-start gap-2 text-sm text-gray-600">
+                                <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span><strong>Schema Context</strong> - Table and field explanations</span>
+                            </li>
+                        </ul>
+                    </div>
+
+                    {/* Generate Button */}
+                    <button
+                        onClick={onGeneratePrompt}
+                        disabled={isGenerating || !canEdit}
+                        className={`w-full px-6 py-3 rounded-lg font-semibold text-white transition-all duration-200 flex items-center justify-center gap-3
+                            ${isGenerating 
+                                ? 'bg-gradient-to-r from-blue-500 to-purple-500 animate-pulse cursor-wait' 
+                                : !canEdit 
+                                    ? 'bg-gray-400 cursor-not-allowed' 
+                                    : 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
+                            }`}
+                    >
+                        {isGenerating ? (
+                            <>
+                                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span>Generating with AI...</span>
+                            </>
+                        ) : (
+                            <>
+                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                </svg>
+                                <span>Generate Prompt</span>
+                            </>
+                        )}
+                    </button>
+
+                    {!canEdit && (
+                        <p className="mt-3 text-sm text-gray-500 italic">
+                            You have read-only access. Contact an admin to generate prompts.
+                        </p>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    // Once prompt exists, show the editor view
     return (
         <div className="h-full flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3 sm:mb-4">
-                <h2 className="text-lg sm:text-xl font-semibold">Review & Configuration</h2>
-                <button
-                    onClick={() => setShowHistory(!showHistory)}
-                    className={`text-xs sm:text-sm px-3 py-1.5 rounded border self-start sm:self-auto ${showHistory ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                >
-                    {showHistory ? 'Hide History' : 'Show History'}
-                </button>
-            </div>
-
-            {/* History Panel - Shows below header when expanded */}
-            {showHistory && (
-                <div className="mb-3 sm:mb-4 max-h-[200px] sm:max-h-[250px] overflow-hidden rounded-lg border border-gray-200">
-                    <PromptHistory
-                        history={history}
-                        onSelect={(item) => {
-                            if (!draftPrompt.trim()) {
-                                setDraftPrompt(item.prompt_text);
-                            } else {
-                                setReplaceConfirm({ show: true, version: item });
-                            }
-                        }}
-                    />
+                <div>
+                    <h2 className="text-lg sm:text-xl font-semibold text-gray-900">Review & Edit Prompt</h2>
+                    <p className="text-sm text-gray-500 mt-0.5">Review the generated prompt, make edits, and publish when ready.</p>
                 </div>
-            )}
+            </div>
 
             {/* Editor - Takes remaining space */}
             <div className="flex-1 min-h-[400px] sm:min-h-[500px]">
@@ -74,50 +141,6 @@ export const ReviewPublishStep: React.FC<ReviewPublishStepProps> = ({
                                 {q}
                             </span>
                         ))}
-                    </div>
-                </div>
-            )}
-
-            {/* Replace Version Confirmation Modal */}
-            {replaceConfirm.show && replaceConfirm.version && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-4 sm:p-6">
-                        <div className="flex items-center gap-3 mb-4">
-                            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                                <svg className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                </svg>
-                            </div>
-                            <div className="min-w-0">
-                                <h3 className="text-base sm:text-lg font-semibold text-gray-900">Replace Current Draft</h3>
-                                <p className="text-xs sm:text-sm text-gray-500">Load version {replaceConfirm.version.version}</p>
-                            </div>
-                        </div>
-                        <p className="text-sm text-gray-600 mb-4 sm:mb-6">
-                            This will replace your current draft with the content from <strong>v{replaceConfirm.version.version}</strong>.
-                            Any unsaved changes will be lost.
-                        </p>
-                        <div className="flex justify-end gap-2 sm:gap-3">
-                            <button
-                                type="button"
-                                onClick={() => setReplaceConfirm({ show: false, version: null })}
-                                className="px-3 sm:px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 font-medium text-sm"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    if (replaceConfirm.version) {
-                                        setDraftPrompt(replaceConfirm.version.prompt_text);
-                                    }
-                                    setReplaceConfirm({ show: false, version: null });
-                                }}
-                                className="px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium text-sm"
-                            >
-                                Replace Draft
-                            </button>
-                        </div>
                     </div>
                 </div>
             )}

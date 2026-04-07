@@ -8,6 +8,12 @@
     "frontend": "cd frontend && npm run dev",
     "backend": "python -m uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000",
     "backend-env": "conda activate fhir_rag_env && python -m uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000",
+    "backend-modmono": "cd backend-modmono && python -m uvicorn app.app:app --reload --host 0.0.0.0 --port 8000",
+    "db:migrate": "cd backend-modmono && alembic upgrade head",
+    "db:revision": "cd backend-modmono && alembic revision --autogenerate -m",
+    "db:downgrade": "cd backend-modmono && alembic downgrade -1",
+    "db:current": "cd backend-modmono && alembic current",
+    "db:history": "cd backend-modmono && alembic history",
     "start": "concurrently \"npm run frontend\" \"npm run backend\""
   },
   "author": "",

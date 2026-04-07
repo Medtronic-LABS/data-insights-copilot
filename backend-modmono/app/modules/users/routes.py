@@ -1,7 +1,8 @@
 """
 User management routes.
 
-Handles user CRUD operations, password management, and user search.
+Handles user CRUD operations and user search.
+Note: Password management is handled by Keycloak/OIDC.
 """
 from typing import Annotated
 from fastapi import APIRouter, Depends, status, Query
@@ -12,14 +13,13 @@ from app.core.models.common import BaseResponse, PaginatedResponse
 from app.core.auth.permissions import require_admin, require_user, get_current_user
 from app.modules.users.service import UserService
 from app.modules.users.schemas import (
-    User, UserCreate, UserUpdate, UserSearchParams,
-    PasswordChangeRequest, PasswordResetRequest
+    User, UserCreate, UserUpdate, UserSearchParams
 )
 
 router = APIRouter()
 
 
-@router.get("", response_model=PaginatedResponse[User])
+@router.get("", response_model=BaseResponse[PaginatedResponse[User]])
 async def list_users(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
@@ -34,18 +34,18 @@ async def list_users(
     service = UserService(session)
     users = await service.list_users(skip=skip, limit=limit)
     total = await service.repository.count()
+    pages = (total + limit - 1) // limit  # Ceiling division
     
-    return PaginatedResponse(
-        status="success",
-        message=f"Retrieved {len(users)} users",
-        data=users,
+    return BaseResponse.ok(data=PaginatedResponse(
+        items=users,
         total=total,
-        skip=skip,
-        limit=limit
-    )
+        page=skip // limit,
+        size=limit,
+        pages=pages
+    ))
 
 
-@router.get("/search", response_model=PaginatedResponse[User])
+@router.get("/search", response_model=BaseResponse[PaginatedResponse[User]])
 async def search_users(
     query: str = Query(default=None, description="Search query (username, email, or name)"),
     role: str = Query(default=None, description="Filter by role"),
@@ -73,15 +73,15 @@ async def search_users(
         skip=skip,
         limit=limit
     )
+    pages = (total + limit - 1) // limit  # Ceiling division
     
-    return PaginatedResponse(
-        status="success",
-        message=f"Found {total} matching users",
-        data=users,
+    return BaseResponse.ok(data=PaginatedResponse(
+        items=users,
         total=total,
-        skip=skip,
-        limit=limit
-    )
+        page=skip // limit,
+        size=limit,
+        pages=pages
+    ))
 
 
 @router.get("/{user_id}", response_model=BaseResponse[User])
@@ -98,11 +98,7 @@ async def get_user(
     service = UserService(session)
     user = await service.get_user(user_id)
     
-    return BaseResponse(
-        status="success",
-        message="User retrieved",
-        data=user
-    )
+    return BaseResponse.ok(data=user)
 
 
 @router.post("", response_model=BaseResponse[User], status_code=status.HTTP_201_CREATED)
@@ -121,11 +117,7 @@ async def create_user(
     service = UserService(session)
     user = await service.create_user(data)
     
-    return BaseResponse(
-        status="success",
-        message="User created successfully",
-        data=user
-    )
+    return BaseResponse.ok(data=user, message="User created successfully")
 
 
 @router.put("/{user_id}", response_model=BaseResponse[User])
@@ -145,11 +137,7 @@ async def update_user(
     service = UserService(session)
     user = await service.update_user(user_id, data)
     
-    return BaseResponse(
-        status="success",
-        message="User updated successfully",
-        data=user
-    )
+    return BaseResponse.ok(data=user, message="User updated successfully")
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -167,72 +155,6 @@ async def delete_user(
     """
     service = UserService(session)
     await service.delete_user(user_id)
-
-
-# ============================================
-# Password Management
-# ============================================
-
-@router.post("/{user_id}/change-password", response_model=BaseResponse[dict])
-async def change_password(
-    user_id: str,
-    data: PasswordChangeRequest,
-    session: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Change user password.
-    
-    **Permission:** Users can change their own password, admins can change any user's password.
-    
-    **Note:** Requires current password for verification (unless admin).
-    """
-    # Users can only change their own password
-    if current_user.id != user_id:
-        from app.core.auth.permissions import can_manage_users
-        if not can_manage_users(current_user.role):
-            from fastapi import HTTPException, status
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot change password for other users"
-            )
-    
-    service = UserService(session)
-    await service.change_password(
-        user_id=user_id,
-        current_password=data.current_password,
-        new_password=data.new_password
-    )
-    
-    return BaseResponse(
-        status="success",
-        message="Password changed successfully",
-        data={}
-    )
-
-
-@router.post("/{user_id}/reset-password", response_model=BaseResponse[dict])
-async def reset_password(
-    user_id: str,
-    data: PasswordResetRequest,
-    session: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Admin password reset (no current password required).
-    
-    **Required Permission:** ADMIN
-    
-    **Use case:** When user forgets password and admin needs to reset it.
-    """
-    service = UserService(session)
-    await service.reset_password(user_id, data.new_password)
-    
-    return BaseResponse(
-        status="success",
-        message="Password reset successfully",
-        data={}
-    )
 
 
 # ============================================
@@ -255,11 +177,7 @@ async def deactivate_user(
     service = UserService(session)
     await service.deactivate_user(user_id)
     
-    return BaseResponse(
-        status="success",
-        message="User deactivated successfully",
-        data={}
-    )
+    return BaseResponse.ok(message="User deactivated successfully")
 
 
 @router.post("/{user_id}/activate", response_model=BaseResponse[dict])
@@ -278,8 +196,4 @@ async def activate_user(
     service = UserService(session)
     await service.activate_user(user_id)
     
-    return BaseResponse(
-        status="success",
-        message="User activated successfully",
-        data={}
-    )
+    return BaseResponse.ok(message="User activated successfully")

@@ -10,11 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.users.repository import UserRepository
 from app.modules.users.schemas import (
-    User, UserCreate, UserUpdate, TokenResponse, LoginRequest
+    User, UserCreate, UserUpdate
 )
-from app.core.auth.security import (
-    hash_password, verify_password, create_access_token
-)
+# Note: password/JWT functions removed - auth handled by Keycloak/OIDC
 from app.core.config import get_settings
 from app.core.utils.logging import get_logger
 from app.core.utils.exceptions import (
@@ -208,71 +206,7 @@ class UserService:
         
         return True
     
-    async def change_password(
-        self,
-        user_id: str,
-        current_password: str,
-        new_password: str
-    ) -> bool:
-        """
-        Change user password.
-        
-        Args:
-            user_id: User ID
-            current_password: Current password for verification
-            new_password: New password
-        
-        Returns:
-            True if password changed
-        
-        Raises:
-            ResourceNotFoundError: If user not found
-            AuthenticationError: If current password is incorrect
-        """
-        # Get user with password hash
-        user = await self.repository.get_with_password(user_id)
-        if not user:
-            raise ResourceNotFoundError(resource_type="User", resource_id=user_id)
-        
-        # Verify current password
-        if not verify_password(current_password, user.password_hash):
-            raise AuthenticationError("Current password is incorrect")
-        
-        # Hash and update new password
-        new_hash = hash_password(new_password)
-        success = await self.repository.update_password(user_id, new_hash)
-        
-        if success:
-            logger.info(f"Password changed", user_id=user_id)
-        
-        return success
-    
-    async def reset_password(self, user_id: str, new_password: str) -> bool:
-        """
-        Admin password reset (no current password verification).
-        
-        Args:
-            user_id: User ID
-            new_password: New password
-        
-        Returns:
-            True if password reset
-        
-        Raises:
-            ResourceNotFoundError: If user not found
-        """
-        user = await self.repository.get_by_id(user_id)
-        if not user:
-            raise ResourceNotFoundError(resource_type="User", resource_id=user_id)
-        
-        # Hash and update password
-        new_hash = hash_password(new_password)
-        success = await self.repository.update_password(user_id, new_hash)
-        
-        if success:
-            logger.info(f"Password reset by admin", user_id=user_id)
-        
-        return success
+    # Note: change_password and reset_password removed - handled by Keycloak/OIDC
     
     async def deactivate_user(self, user_id: str) -> bool:
         """
@@ -316,56 +250,5 @@ class UserService:
         
         return True
     
-    async def authenticate(self, credentials: LoginRequest) -> TokenResponse:
-        """
-        Authenticate user and return token.
-        
-        Args:
-            credentials: Login credentials
-        
-        Returns:
-            Token response with user data
-        
-        Raises:
-            AuthenticationError: If authentication fails
-        """
-        # Get user with password hash
-        user_model = await self.repository.get_with_password(credentials.username)
-        
-        if not user_model:
-            raise AuthenticationError("Invalid username or password")
-        
-        # Verify password
-        if not verify_password(credentials.password, user_model.password_hash):
-            raise AuthenticationError("Invalid username or password")
-        
-        # Check if user is active
-        if not user_model.is_active:
-            raise AuthenticationError("User account is inactive")
-        
-        # Create access token
-        token_data = {
-            "sub": user_model.id,
-            "username": user_model.username,
-            "role": user_model.role
-        }
-        
-        expires_delta = timedelta(minutes=self.settings.access_token_expire_minutes)
-        access_token = create_access_token(
-            data=token_data,
-            secret_key=self.settings.secret_key,
-            algorithm=self.settings.algorithm,
-            expires_delta=expires_delta
-        )
-        
-        # Convert to Pydantic User
-        user = self.repository._to_pydantic(user_model)
-        
-        logger.info(f"User authenticated", user_id=user.id, username=user.username)
-        
-        return TokenResponse(
-            access_token=access_token,
-            token_type="bearer",
-            expires_in=self.settings.access_token_expire_minutes * 60,
-            user=user
-        )
+    # Note: authenticate() method removed - authentication is handled by Keycloak/OIDC
+    # Users authenticate via Keycloak and receive tokens directly from the identity provider

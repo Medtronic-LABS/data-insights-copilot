@@ -9,16 +9,16 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database.session import get_db_session
-from app.core.models.common import PaginatedResponse
+from app.core.models.common import BaseResponse, PaginatedResponse
 from app.core.auth.permissions import require_admin, require_user
 from app.modules.observability.service import AuditService
 from app.modules.observability.schemas import AuditLog
-from app.modules.users.presentation.schemas import User
+from app.modules.users.schemas import User
 
 router = APIRouter()
 
 
-@router.get("/audit", response_model=PaginatedResponse[AuditLog])
+@router.get("/audit", response_model=BaseResponse[PaginatedResponse[AuditLog]])
 async def query_audit_logs(
     actor_id: Optional[str] = Query(default=None, description="Filter by actor user ID"),
     actor_username: Optional[str] = Query(default=None, description="Filter by actor username"),
@@ -58,18 +58,18 @@ async def query_audit_logs(
         skip=skip,
         limit=limit
     )
+    pages = (total + limit - 1) // limit  # Ceiling division
     
-    return PaginatedResponse(
-        status="success",
-        message=f"Retrieved {len(logs)} audit logs",
-        data=logs,
+    return BaseResponse.ok(data=PaginatedResponse(
+        items=logs,
         total=total,
-        skip=skip,
-        limit=limit
-    )
+        page=skip // limit,
+        size=limit,
+        pages=pages
+    ))
 
 
-@router.get("/audit/recent", response_model=PaginatedResponse[AuditLog])
+@router.get("/audit/recent", response_model=BaseResponse[PaginatedResponse[AuditLog]])
 async def get_recent_audit_logs(
     limit: int = Query(default=100, ge=1, le=1000),
     session: AsyncSession = Depends(get_db_session),
@@ -85,17 +85,16 @@ async def get_recent_audit_logs(
     service = AuditService(session)
     logs = await service.get_recent_logs(limit=limit)
     
-    return PaginatedResponse(
-        status="success",
-        message=f"Retrieved {len(logs)} recent audit logs",
-        data=logs,
+    return BaseResponse.ok(data=PaginatedResponse(
+        items=logs,
         total=len(logs),
-        skip=0,
-        limit=limit
-    )
+        page=0,
+        size=limit,
+        pages=1
+    ))
 
 
-@router.get("/audit/user/{user_id}", response_model=PaginatedResponse[AuditLog])
+@router.get("/audit/user/{user_id}", response_model=BaseResponse[PaginatedResponse[AuditLog]])
 async def get_user_activity(
     user_id: str,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -122,11 +121,10 @@ async def get_user_activity(
     service = AuditService(session)
     logs = await service.get_user_activity(actor_id=user_id, limit=limit)
     
-    return PaginatedResponse(
-        status="success",
-        message=f"Retrieved {len(logs)} activity logs for user",
-        data=logs,
+    return BaseResponse.ok(data=PaginatedResponse(
+        items=logs,
         total=len(logs),
-        skip=0,
-        limit=limit
-    )
+        page=0,
+        size=limit,
+        pages=1
+    ))

@@ -321,7 +321,7 @@ const UsersPage: React.FC = () => {
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <div className="flex items-center">
                                                     <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-semibold">
-                                                        {(u.full_name || u.username).charAt(0).toUpperCase()}
+                                                        {(u.full_name || u.username || u.email || 'U').charAt(0).toUpperCase()}
                                                     </div>
                                                     <div className="ml-4">
                                                         <div className="text-sm font-medium text-gray-900">{u.full_name || u.username}</div>
