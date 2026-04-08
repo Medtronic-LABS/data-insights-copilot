@@ -560,6 +560,156 @@ class SQLService:
             return f"Error: {str(e)}"
 
 
+
+
+class SQLServiceForCSV(SQLService):
+    """
+    SQL Service that queries CSV files directly using DuckDB's read_csv_auto.
+    
+    This is used when a file data source doesn't have a pre-built DuckDB database,
+    allowing queries against the raw CSV file.
+    """
+    
+    def __init__(
+        self,
+        csv_path: str,
+        table_name: str = "data",
+        max_result_rows: int = 100,
+        enable_few_shot: bool = True,
+    ):
+        """
+        Initialize CSV SQL service.
+        
+        Args:
+            csv_path: Path to the CSV file
+            table_name: Virtual table name for the CSV (used in queries)
+            max_result_rows: Maximum rows to return
+            enable_few_shot: Enable few-shot example retrieval
+        """
+        self._csv_path = csv_path
+        self._table_name = table_name
+        self._max_result_rows = max_result_rows
+        self._cached_schema: Optional[str] = None
+        self._settings = get_settings()
+        self._enable_few_shot = enable_few_shot
+        self._engine = None
+        self._table_names = [table_name]
+        
+        # Use in-memory DuckDB that reads from CSV
+        self._db_url = ":memory:"
+        
+        # Initialize SQL examples store for few-shot learning
+        self._sql_examples_store: Optional[SQLExamplesStore] = None
+        if enable_few_shot:
+            try:
+                self._sql_examples_store = get_sql_examples_store()
+            except Exception as e:
+                logger.warning(f"Failed to initialize SQL examples store: {e}")
+    
+    def _is_duckdb(self) -> bool:
+        """This is always DuckDB."""
+        return True
+    
+    def _get_engine(self) -> Engine:
+        """Get DuckDB engine - creates a view for the CSV file."""
+        if self._engine is not None:
+            return self._engine
+        
+        import duckdb
+        
+        try:
+            # Create in-memory DuckDB connection
+            self._engine = create_engine("duckdb:///:memory:")
+            
+            # Create a view that reads from the CSV file
+            csv_path_escaped = self._csv_path.replace("'", "''")
+            with self._engine.connect() as conn:
+                conn.execute(text(f"""
+                    CREATE OR REPLACE VIEW {self._table_name} AS 
+                    SELECT * FROM read_csv_auto('{csv_path_escaped}', header=true)
+                """))
+                conn.commit()
+            
+            logger.info(f"Created DuckDB view '{self._table_name}' for CSV: {self._csv_path}")
+            return self._engine
+            
+        except Exception as e:
+            logger.error(f"Failed to create DuckDB engine for CSV: {e}")
+            raise
+    
+    def _discover_tables(self) -> List[str]:
+        """Return the virtual table name for this CSV."""
+        return [self._table_name]
+    
+    def get_schema_context(self, max_tables: int = 10) -> str:
+        """Get schema by inspecting the CSV file structure."""
+        if self._cached_schema:
+            return self._cached_schema
+        
+        try:
+            import duckdb
+            
+            csv_path_escaped = self._csv_path.replace("'", "''")
+            conn = duckdb.connect(":memory:")
+            
+            # Get column info using DESCRIBE
+            result = conn.execute(f"""
+                DESCRIBE SELECT * FROM read_csv_auto('{csv_path_escaped}', header=true, sample_size=1000)
+            """).fetchall()
+            conn.close()
+            
+            columns = []
+            for row in result:
+                col_name = row[0]
+                col_type = str(row[1]) if row[1] else "VARCHAR"
+                columns.append(f"{col_name} ({col_type})")
+            
+            col_desc = ", ".join(columns[:30])  # Limit to 30 columns for prompt
+            self._cached_schema = f"Tables:\n- {self._table_name}: {col_desc}"
+            
+            logger.info(f"Discovered {len(columns)} columns in CSV")
+            return self._cached_schema
+            
+        except Exception as e:
+            logger.error(f"Failed to get CSV schema: {e}")
+            return f"Tables: {self._table_name}"
+    
+    def execute_query(self, sql: str) -> Tuple[List[Dict[str, Any]], int]:
+        """Execute SQL query against the CSV file."""
+        import duckdb
+        
+        # Add LIMIT if not present
+        sql_upper = sql.upper()
+        if "LIMIT" not in sql_upper and "SELECT" in sql_upper:
+            sql = f"{sql.rstrip(';')} LIMIT {self._max_result_rows}"
+        
+        try:
+            csv_path_escaped = self._csv_path.replace("'", "''")
+            conn = duckdb.connect(":memory:")
+            
+            # Create view for the CSV
+            conn.execute(f"""
+                CREATE OR REPLACE VIEW {self._table_name} AS 
+                SELECT * FROM read_csv_auto('{csv_path_escaped}', header=true)
+            """)
+            
+            # Execute the query
+            result = conn.execute(sql)
+            rows = result.fetchall()
+            columns = [desc[0] for desc in result.description]
+            conn.close()
+            
+            # Convert to list of dicts
+            results = [dict(zip(columns, row)) for row in rows]
+            
+            logger.info(f"CSV query executed", rows=len(results), sql=sql[:100])
+            return results, len(results)
+            
+        except Exception as e:
+            logger.error(f"CSV query execution failed: {e}", sql=sql[:200])
+            raise
+
+
 class SQLServiceFactory:
     """Factory for creating SQLService instances from data sources."""
     
@@ -614,7 +764,18 @@ class SQLServiceFactory:
                         db_url=f"duckdb://{duckdb_path}",
                         enable_few_shot=enable_few_shot
                     )
-                logger.warning(f"File data source {data_source_id} has no duckdb_file_path")
+                
+                # Fallback: Create DuckDB service that reads CSV directly
+                # This handles cases where duckdb_file_path is null but we have the original CSV
+                if data_source.original_file_path:
+                    logger.info(f"Creating DuckDB service for CSV file: {data_source.original_file_path}")
+                    return SQLServiceForCSV(
+                        csv_path=data_source.original_file_path,
+                        table_name=data_source.duckdb_table_name or "data",
+                        enable_few_shot=enable_few_shot
+                    )
+                
+                logger.warning(f"File data source {data_source_id} has no duckdb_file_path or original_file_path")
                 return None
                     
             logger.warning(f"Data source type not supported: {data_source.source_type}")
