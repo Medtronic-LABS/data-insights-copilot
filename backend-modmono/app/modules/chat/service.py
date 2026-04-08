@@ -9,12 +9,13 @@ Handles:
 - LLM response generation
 - Conversation memory
 - Tracing & observability
+- Chart generation
 """
 import uuid
 import time
 import asyncio
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timezone
 
 from fastapi import Request
@@ -38,6 +39,8 @@ from app.modules.chat.tracing import TracingContext, generate_trace_id
 from app.modules.chat.memory import get_conversation_memory, rewrite_query_with_context
 from app.modules.chat.followup import get_followup_service, generate_followups_background
 from app.modules.chat.cancellation import RequestCancelled, check_cancelled
+from app.modules.chat.chart_parser import parse_chart_data
+from app.core.prompts import get_chart_generator_prompt, get_data_analyst_prompt, get_rag_synthesis_prompt
 
 logger = get_logger(__name__)
 
@@ -56,6 +59,7 @@ class ChatService:
     3. Generate response with LLM
     4. Add conversation to memory
     5. Generate follow-up questions (async)
+    6. Generate chart visualizations (for SQL queries)
     """
     
     def __init__(self, db: AsyncSession):
@@ -83,7 +87,7 @@ class ChatService:
             fastapi_request: Optional FastAPI request for cancellation detection
             
         Returns:
-            ChatResponse with answer, sources, and metadata
+            ChatResponse with answer, sources, chart_data, and metadata
         """
         trace_id = generate_trace_id()
         start_time = time.time()
@@ -164,6 +168,7 @@ class ChatService:
                 
                 # Step 4: Route based on intent
                 answer = ""
+                chart_data: Optional[ChartData] = None
                 sources: List[SourceChunk] = []
                 reasoning_steps: List[ReasoningStep] = []
                 embedding_info = None
@@ -178,9 +183,9 @@ class ChatService:
                     final_intent = QueryIntent.FALLBACK.value
                 
                 if final_intent == QueryIntent.SQL_ONLY.value:
-                    # Intent A: SQL only
+                    # Intent A: SQL only (with chart generation)
                     await check_cancelled(fastapi_request)
-                    answer, reasoning_steps = await self._handle_sql_intent(
+                    answer, reasoning_steps, chart_data = await self._handle_sql_intent(
                         rewritten_query, sql_service, agent_config, tracing_ctx
                     )
                     
@@ -231,6 +236,7 @@ class ChatService:
                     intent=final_intent,
                     duration_ms=int(duration * 1000),
                     sources_count=len(sources),
+                    chart_generated=chart_data is not None,
                 )
                 
                 # Default embedding info if not set
@@ -244,7 +250,7 @@ class ChatService:
                 
                 return ChatResponse(
                     answer=answer,
-                    chart_data=None,  # TODO: Extract chart data from SQL results
+                    chart_data=chart_data,
                     suggested_questions=suggested_questions,
                     reasoning_steps=reasoning_steps,
                     sources=sources,
@@ -284,12 +290,13 @@ class ChatService:
         sql_service: Optional[SQLService],
         agent_config: Optional[Dict[str, Any]],
         tracing_ctx: TracingContext,
-    ) -> tuple[str, List[ReasoningStep]]:
-        """Handle Intent A: SQL-only queries."""
+    ) -> Tuple[str, List[ReasoningStep], Optional[ChartData]]:
+        """Handle Intent A: SQL-only queries. Returns answer, reasoning steps, and optional chart data."""
         reasoning_steps = []
+        chart_data = None
         
         if not sql_service:
-            return "No database connection configured for this agent.", reasoning_steps
+            return "No database connection configured for this agent.", reasoning_steps, None
         
         tracing_ctx.add_span("sql_query", input=query)
         
@@ -305,14 +312,22 @@ class ChatService:
             
             tracing_ctx.update_span("sql_query", output=result[:500])
             
-            # Optionally synthesize a more natural response with LLM
-            answer = await self._synthesize_sql_response(query, result, agent_config)
+            # Synthesize response with LLM (includes chart generation instructions)
+            raw_answer = await self._synthesize_sql_response_with_chart(query, result, agent_config)
             
-            return answer, reasoning_steps
+            # Parse chart data from LLM response
+            chart_data, answer = parse_chart_data(raw_answer)
+            
+            if chart_data:
+                logger.info(f"Chart generated: type={chart_data.type}, title={chart_data.title}")
+                tracing_ctx.add_span("chart_generation", input="SQL results")
+                tracing_ctx.update_span("chart_generation", output={"type": chart_data.type})
+            
+            return answer, reasoning_steps, chart_data
             
         except Exception as e:
             logger.error(f"SQL query failed: {e}")
-            return f"Failed to execute database query: {str(e)}", reasoning_steps
+            return f"Failed to execute database query: {str(e)}", reasoning_steps, None
     
     async def _handle_vector_intent(
         self,
@@ -320,7 +335,7 @@ class ChatService:
         agent_config: Optional[Dict[str, Any]],
         tracing_ctx: TracingContext,
         fastapi_request: Optional[Request] = None,
-    ) -> tuple[str, List[SourceChunk], List[ReasoningStep], EmbeddingInfo]:
+    ) -> Tuple[str, List[SourceChunk], List[ReasoningStep], EmbeddingInfo]:
         """Handle Intent B: Vector-only queries."""
         reasoning_steps = []
         
@@ -383,7 +398,7 @@ class ChatService:
         agent_config: Optional[Dict[str, Any]],
         tracing_ctx: TracingContext,
         fastapi_request: Optional[Request] = None,
-    ) -> tuple[str, List[SourceChunk], List[ReasoningStep], EmbeddingInfo]:
+    ) -> Tuple[str, List[SourceChunk], List[ReasoningStep], EmbeddingInfo]:
         """Handle Intent C: Hybrid (SQL filter + vector search)."""
         reasoning_steps = []
         
@@ -482,16 +497,49 @@ class ChatService:
         
         return answer, sources, reasoning_steps, emb_info
     
+    async def _synthesize_sql_response_with_chart(
+        self,
+        query: str,
+        sql_result: str,
+        agent_config: Optional[Dict[str, Any]],
+    ) -> str:
+        """Synthesize a natural language response from SQL results with chart generation."""
+        from openai import AsyncOpenAI
+        
+        base_prompt = get_data_analyst_prompt()
+        if agent_config and agent_config.get("system_prompt"):
+            base_prompt = agent_config["system_prompt"]
+        
+        # Append chart generation rules to the system prompt
+        system_prompt = base_prompt + get_chart_generator_prompt()
+        
+        client = AsyncOpenAI(api_key=self._settings.openai_api_key)
+        
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Query: {query}\n\nResults:\n{sql_result}\n\nProvide a clear, helpful summary of these results. If the data is suitable for visualization, include a chart JSON block."},
+                ],
+                temperature=0.0,
+                max_tokens=2000,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"SQL response synthesis failed: {e}")
+            return sql_result  # Return raw results as fallback
+    
     async def _synthesize_sql_response(
         self,
         query: str,
         sql_result: str,
         agent_config: Optional[Dict[str, Any]],
     ) -> str:
-        """Synthesize a natural language response from SQL results."""
+        """Synthesize a natural language response from SQL results (without chart)."""
         from openai import AsyncOpenAI
         
-        system_prompt = "You are a helpful data analyst. Explain the query results in a clear, conversational way."
+        system_prompt = get_data_analyst_prompt()
         if agent_config and agent_config.get("system_prompt"):
             system_prompt = agent_config["system_prompt"]
         
@@ -528,7 +576,7 @@ class ChatService:
         context = "\n\n".join(context_parts) if context_parts else "No relevant documents found."
         
         # Get system prompt
-        system_prompt = "You are a helpful assistant. Answer questions based on the provided context. If the context doesn't contain the answer, say so."
+        system_prompt = get_rag_synthesis_prompt()
         if agent_config and agent_config.get("system_prompt"):
             system_prompt = agent_config["system_prompt"]
         
@@ -569,7 +617,7 @@ class ChatService:
     
     async def _get_embedding_model(
         self, agent_config: Optional[Dict[str, Any]]
-    ) -> tuple[Any, Dict[str, Any]]:
+    ) -> Tuple[Any, Dict[str, Any]]:
         """Get the embedding model for the agent."""
         model_id = "huggingface/BAAI/bge-base-en-v1.5"
         dimensions = 768
@@ -625,7 +673,7 @@ class ChatService:
         collection_name: str,
         top_k: int = 5,
         metadata_filter: Optional[Dict] = None,
-    ) -> tuple[List[SourceChunk], float]:
+    ) -> Tuple[List[SourceChunk], float]:
         """Search the vector database for similar documents."""
         start_time = time.time()
         
