@@ -58,6 +58,7 @@ def upgrade():
         
         # Timestamps
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),
         sa.Column('started_at', sa.DateTime(), nullable=True),
         sa.Column('embedding_started_at', sa.DateTime(), nullable=True),
         sa.Column('completed_at', sa.DateTime(), nullable=True),
@@ -78,7 +79,7 @@ def upgrade():
         sa.Column('phase', sa.String(50), nullable=False),
         sa.Column('checkpoint_data', postgresql.JSON(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.func.now(), onupdate=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),
     )
     
     # Create index for vector_db_name
