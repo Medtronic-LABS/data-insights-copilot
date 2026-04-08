@@ -9,6 +9,7 @@ Features:
 - Natural language to SQL conversion
 - Direct SQL execution
 - Result formatting for LLM consumption
+- Query relevance checking to filter irrelevant queries early
 """
 import asyncio
 import re
@@ -22,9 +23,25 @@ from app.core.utils.logging import get_logger
 from app.core.settings import get_settings
 from app.core.prompts import get_sql_generator_prompt
 from app.core.encryption import decrypt_value
+from app.core.utils.exceptions import IrrelevantQueryException
 from app.modules.sql_examples.store import get_sql_examples_store, SQLExamplesStore
+from app.modules.chat.query.query_relevance_checker import (
+    get_query_relevance_checker,
+    QueryRelevanceChecker,
+    IRRELEVANT_PII,
+    IRRELEVANT_CONTEXT,
+)
 
 logger = get_logger(__name__)
+
+# Relevance check statistics (for monitoring, not logged with query content)
+_relevance_stats = {
+    "total_checked": 0,
+    "rejected_pii": 0,
+    "rejected_context": 0,
+    "rejected_syntax": 0,
+    "passed": 0,
+}
 
 # Cache for database engines (connection pooling)
 _ENGINE_CACHE: Dict[str, Engine] = {}
@@ -119,6 +136,17 @@ class SQLService:
         self._table_names: List[str] = []
         self._settings = get_settings()
         self._enable_few_shot = enable_few_shot
+        
+        # Initialize query relevance checker
+        self._enable_relevance_check = getattr(self._settings, 'enable_query_relevance_check', True)
+        self._relevance_checker: Optional[QueryRelevanceChecker] = None
+        if self._enable_relevance_check:
+            try:
+                self._relevance_checker = get_query_relevance_checker()
+                logger.info("Query relevance checker initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize relevance checker: {e}")
+                self._relevance_checker = None
         
         # Initialize SQL examples store for few-shot learning
         self._sql_examples_store: Optional[SQLExamplesStore] = None
@@ -444,15 +472,72 @@ class SQLService:
         Execute a natural language query using LLM to generate SQL (async version).
         
         This is the main entry point for Intent A (SQL-only) queries with few-shot learning.
+        Includes relevance checking to filter out irrelevant queries early.
         
         Args:
             natural_language_query: User's question in natural language
             
         Returns:
             Formatted response string with query results
+            
+        Raises:
+            IrrelevantQueryException: If query is not relevant to the database
         """
         from app.core.llm import create_llm_provider
         from langchain_core.prompts import ChatPromptTemplate
+        
+        # Check query relevance first (if enabled)
+        if self._enable_relevance_check and self._relevance_checker:
+            table_names = self._discover_tables()
+            is_relevant, classification = self._relevance_checker.check(
+                question=natural_language_query,
+                table_names=table_names
+            )
+            
+            # Update statistics (without logging query content for privacy)
+            _relevance_stats["total_checked"] += 1
+            
+            if not is_relevant:
+                if classification == IRRELEVANT_PII or "<IRRELEVANT:PII>" in classification:
+                    _relevance_stats["rejected_pii"] += 1
+                    logger.info(
+                        "Query rejected: PII request (total_checked=%d, rejected_pii=%d)",
+                        _relevance_stats["total_checked"],
+                        _relevance_stats["rejected_pii"]
+                    )
+                    raise IrrelevantQueryException(
+                        "This query requests personally identifiable information which cannot be disclosed for privacy reasons.",
+                        "<IRRELEVANT:PII>"
+                    )
+                elif classification == IRRELEVANT_CONTEXT or "<IRRELEVANT:CONTEXT>" in classification:
+                    _relevance_stats["rejected_context"] += 1
+                    logger.info(
+                        "Query rejected: out of context (total_checked=%d, rejected_context=%d)",
+                        _relevance_stats["total_checked"],
+                        _relevance_stats["rejected_context"]
+                    )
+                    raise IrrelevantQueryException(
+                        "This question cannot be answered using the available data. Please ask about topics covered in the database.",
+                        "<IRRELEVANT:CONTEXT>"
+                    )
+                else:
+                    _relevance_stats["rejected_syntax"] += 1
+                    logger.info(
+                        "Query rejected: syntax/other (total_checked=%d, rejected_syntax=%d)",
+                        _relevance_stats["total_checked"],
+                        _relevance_stats["rejected_syntax"]
+                    )
+                    raise IrrelevantQueryException(
+                        "Unable to process this query. Please rephrase as a clear question about the data.",
+                        classification
+                    )
+            else:
+                _relevance_stats["passed"] += 1
+                logger.debug(
+                    "Query passed relevance check (total_checked=%d, passed=%d)",
+                    _relevance_stats["total_checked"],
+                    _relevance_stats["passed"]
+                )
         
         schema = self.get_schema_context()
         
