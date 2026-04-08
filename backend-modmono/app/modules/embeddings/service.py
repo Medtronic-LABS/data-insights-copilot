@@ -15,9 +15,12 @@ import math
 import time
 import asyncio
 import threading
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from collections import OrderedDict
+import hashlib
+import multiprocessing
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -39,6 +42,140 @@ logger = get_logger(__name__)
 
 # Thread pool for running embedding jobs without blocking the event loop
 _embedding_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="embedding_job_")
+
+# =============================================================================
+# Query Embedding Cache (Performance Optimization)
+# =============================================================================
+# embed_query() is deterministic: same text → same embedding.
+# Queries repeat frequently (follow-ups, retries, similar phrasing).
+# 512 entries ≈ 2MB for 1024-dim embeddings.
+_QUERY_EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
+_QUERY_CACHE_MAX = 512
+
+
+def get_cached_query_embedding(text: str, embed_fn) -> List[float]:
+    """
+    Get query embedding with LRU caching.
+    
+    Caching avoids re-computing embeddings (~50-200ms per query).
+    512 entries ≈ 2MB for 1024-dim vectors.
+    """
+    cache_key = text.strip()
+    
+    if cache_key in _QUERY_EMBEDDING_CACHE:
+        _QUERY_EMBEDDING_CACHE.move_to_end(cache_key)
+        return _QUERY_EMBEDDING_CACHE[cache_key]
+    
+    # Cache miss — compute embedding
+    if asyncio.iscoroutinefunction(embed_fn):
+        loop = asyncio.get_event_loop()
+        embedding = loop.run_until_complete(embed_fn([text]))[0]
+    else:
+        embedding = embed_fn([text])[0]
+    
+    _QUERY_EMBEDDING_CACHE[cache_key] = embedding
+    if len(_QUERY_EMBEDDING_CACHE) > _QUERY_CACHE_MAX:
+        _QUERY_EMBEDDING_CACHE.popitem(last=False)
+    
+    return embedding
+
+
+# =============================================================================
+# Parallel Delta Worker for Incremental Updates
+# =============================================================================
+
+def _parallel_delta_worker(
+    doc_batch: List[Dict[str, Any]], 
+    existing_checksums: Dict[str, str]
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Worker function for parallel delta checking during incremental updates.
+    
+    Calculates checksums for documents and identifies which need re-embedding.
+    Runs in separate process via ProcessPoolExecutor for CPU parallelism.
+    """
+    processed = []
+    stale_ids = []
+    
+    for doc in doc_batch:
+        content = doc.get("content", "")
+        doc_id = doc.get("id", str(uuid.uuid4()))
+        
+        # Calculate checksum
+        doc_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+        
+        # Add checksum to metadata
+        if "metadata" not in doc:
+            doc["metadata"] = {}
+        doc["metadata"]["checksum"] = doc_hash
+        doc["metadata"]["source_id"] = doc_id
+        
+        # Check if document exists and has changed
+        if doc_id in existing_checksums:
+            if existing_checksums[doc_id] != doc_hash:
+                stale_ids.append(doc_id)
+                processed.append(doc)
+        else:
+            processed.append(doc)
+    
+    return processed, stale_ids
+
+
+async def _parallel_delta_check(
+    documents: List[Dict[str, Any]],
+    existing_checksums: Dict[str, str],
+    delta_check_batch_size: int = 50000,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Perform parallel delta checking to identify new/modified documents.
+    
+    Uses ProcessPoolExecutor for CPU-bound checksum calculation.
+    """
+    if not existing_checksums:
+        # No existing data - add checksums to all docs
+        for doc in documents:
+            content = doc.get("content", "")
+            doc_id = doc.get("id", str(uuid.uuid4()))
+            doc_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+            if "metadata" not in doc:
+                doc["metadata"] = {}
+            doc["metadata"]["checksum"] = doc_hash
+            doc["metadata"]["source_id"] = doc_id
+        return documents, []
+    
+    num_workers = max(1, multiprocessing.cpu_count() // 2)
+    doc_batches = [
+        documents[i:i + delta_check_batch_size] 
+        for i in range(0, len(documents), delta_check_batch_size)
+    ]
+    
+    logger.info(f"Delta check: {len(documents)} docs, {len(doc_batches)} batches, {num_workers} workers")
+    
+    def run_delta_check_sync():
+        local_processed = []
+        local_stale = []
+        
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(_parallel_delta_worker, batch, existing_checksums) 
+                for batch in doc_batches
+            ]
+            
+            for i, future in enumerate(as_completed(futures)):
+                try:
+                    batch_processed, batch_stale = future.result()
+                    local_processed.extend(batch_processed)
+                    local_stale.extend(batch_stale)
+                except Exception as e:
+                    logger.error(f"Delta check batch failed: {e}")
+        
+        return local_processed, local_stale
+    
+    loop = asyncio.get_event_loop()
+    all_processed, all_stale = await loop.run_in_executor(None, run_delta_check_sync)
+    
+    logger.info(f"Delta check complete: {len(all_processed)} to process, {len(all_stale)} stale")
+    return all_processed, all_stale
 
 
 class EmbeddingJobService:
@@ -110,8 +247,20 @@ class EmbeddingJobService:
         
         # Extract batch settings from embedding_config or use defaults
         # Default to 256 for faster processing
-        batch_size = emb_config.get('batch_size', 256)
-        max_concurrent = emb_config.get('max_concurrent', 5)
+        # Use request override first, then chunking_config, then embedding_config
+        batch_size = request.batch_size or chunking_config.get('batch_size') or emb_config.get('batch_size', 256)
+        max_concurrent = request.max_concurrent or chunking_config.get('max_concurrent') or emb_config.get('max_concurrent', 5)
+        
+        # If request has chunking config, merge it
+        if request.chunking:
+            chunking_config = {
+                'parent_chunk_size': request.chunking.parent_chunk_size,
+                'parent_chunk_overlap': request.chunking.parent_chunk_overlap,
+                'child_chunk_size': request.chunking.child_chunk_size,
+                'child_chunk_overlap': request.chunking.child_chunk_overlap,
+                'batch_size': batch_size,  # Include batch_size in chunking_config
+                'max_concurrent': max_concurrent,
+            }
         
         # Generate job ID
         job_id = f"emb-job-{uuid.uuid4().hex[:12]}"
@@ -150,12 +299,15 @@ class EmbeddingJobService:
         job_id: str,
         config_id: int,
         user_id: str,
-        incremental: bool = False
+        incremental: bool = False,
+        batch_size: int = None,
+        max_concurrent: int = None,
+        chunking_override: dict = None
     ) -> None:
         """
         Start embedding job in background thread.
         
-        All settings are read from agent_config table.
+        Settings are read from job record (which includes request overrides) or agent_config table.
         """
         # Get config data needed for embedding
         stmt = select(AgentConfigModel).where(AgentConfigModel.id == config_id)
@@ -208,10 +360,16 @@ class EmbeddingJobService:
         if not model_name:
             model_name = emb_config.get('model', 'huggingface/BAAI/bge-large-en-v1.5')
         
-        # Extract batch settings from embedding_config or use defaults
-        # Default to 256 for faster processing
-        batch_size = emb_config.get('batch_size', 256)
-        max_concurrent = emb_config.get('max_concurrent', 5)
+        # Use passed batch_size first (from create_job), then chunking_config, then embedding_config
+        if batch_size is None:
+            batch_size = chunking_config.get('batch_size') or emb_config.get('batch_size', 256)
+        if max_concurrent is None:
+            max_concurrent = chunking_config.get('max_concurrent') or emb_config.get('max_concurrent', 5)
+        
+        # Apply chunking override from request if provided
+        if chunking_override:
+            chunking_config.update(chunking_override)
+            logger.info(f"Applied chunking override: {chunking_override}")
         
         # Build config dict for background task - all from agent_config
         job_config = {
@@ -852,7 +1010,7 @@ async def _get_embedding_provider(model_name: str, api_key: str = None, api_base
                 texts,
                 normalize_embeddings=True,
                 show_progress_bar=False,
-                batch_size=128,  # Internal batch size for model
+                batch_size=256,  # PERFORMANCE FIX: Large batch for GPU efficiency (was 128)
                 convert_to_numpy=True  # Efficient GPU→CPU transfer
             )
             
@@ -1039,23 +1197,17 @@ async def _extract_documents_from_duckdb(
     duckdb_path: str,
     table_name: str,
     columns: List[str],
-    batch_size: int = 50000,  # PERFORMANCE: Large batches for streaming
+    batch_size: int = 50000,
     job_id: str = None,
 ) -> tuple[int, List[Dict[str, Any]]]:
     """
     Extract documents from DuckDB for embedding.
     
-    Args:
-        duckdb_path: Path to DuckDB file
-        table_name: Table to extract from  
-        columns: Columns to include
-        batch_size: Rows per fetch batch (streaming cursor)
-        job_id: Optional job ID for progress updates to frontend
-    
-    Returns:
-        tuple: (total_count, list of document dicts with 'id', 'content', 'metadata')
+    Handles column name mismatches by normalizing names and mapping to actual table columns.
+    For example, maps "live_improved_yes_no" to "Live Improved (Yes/No)".
     """
     import duckdb
+    import re as regex_module
     
     if not os.path.exists(duckdb_path):
         raise ValueError(f"DuckDB file not found: {duckdb_path}")
@@ -1064,20 +1216,63 @@ async def _extract_documents_from_duckdb(
     
     try:
         # Get total row count
-        count_result = conn.execute(f"SELECT COUNT(*) FROM \"{table_name}\"").fetchone()
+        count_result = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
         total_count = count_result[0] if count_result else 0
         
         logger.info(f"Found {total_count} rows in table {table_name}")
         
-        # Build column list for query - use all text columns
-        safe_columns = [f'"{c}"' for c in columns]
+        # Get actual column names from the table schema
+        table_columns = [col[0] for col in conn.execute(f'DESCRIBE "{table_name}"').fetchall()]
+        logger.info(f"Actual columns ({len(table_columns)}): {table_columns[:10]}...")
+        logger.info(f"Requested columns ({len(columns)}): {columns[:10]}...")
+        
+        # Normalize column names for matching (handles "Live Improved (Yes/No)" vs "live_improved_yes_no")
+        def normalize_col(name: str) -> str:
+            n = name.lower().strip()
+            n = regex_module.sub(r'[^a-z0-9]', '_', n)
+            n = regex_module.sub(r'_+', '_', n).strip('_')
+            return n
+        
+        # Build mapping: normalized -> actual column name
+        col_map = {}
+        for col in table_columns:
+            col_map[normalize_col(col)] = col
+            col_map[col] = col
+            col_map[col.lower()] = col
+        
+        # Map requested columns to actual columns
+        validated_columns = []  # Actual column names for SQL
+        display_columns = []    # Display names for documents
+        missing_columns = []
+        
+        for req in columns:
+            if req in table_columns:
+                validated_columns.append(req)
+                display_columns.append(req)
+            elif req.lower() in col_map:
+                validated_columns.append(col_map[req.lower()])
+                display_columns.append(req)
+            elif normalize_col(req) in col_map:
+                validated_columns.append(col_map[normalize_col(req)])
+                display_columns.append(req)
+            else:
+                missing_columns.append(req)
+        
+        if missing_columns:
+            logger.warning(f"Columns not found (skipped): {missing_columns[:10]}{'...' if len(missing_columns) > 10 else ''}")
+        
+        if not validated_columns:
+            raise ValueError(f"None of the requested columns exist in table '{table_name}'")
+        
+        logger.info(f"Validated {len(validated_columns)}/{len(columns)} columns for extraction")
+        
+        # Build column list for query using VALIDATED column names
+        safe_columns = [f'"{c}"' for c in validated_columns]
         columns_sql = ", ".join(safe_columns)
         
-        # Also get a row identifier if available
-        # Try common ID column names
+        # Find ID column
         id_columns = ['id', 'ID', 'row_id', 'index', 'reviewid', 'record_id', 'patient_id', 'res_id', 'encounter_id']
         id_column = None
-        table_columns = [col[0] for col in conn.execute(f"DESCRIBE \"{table_name}\"").fetchall()]
         for ic in id_columns:
             if ic in table_columns:
                 id_column = ic
@@ -1085,17 +1280,15 @@ async def _extract_documents_from_duckdb(
         
         logger.info(f"Using ID column: {id_column or 'ROW_NUMBER()'}")
         
-        # PERFORMANCE: Use streaming cursor instead of LIMIT/OFFSET
-        # This avoids O(n^2) scanning that happens with OFFSET pagination
+        # Build query
         if id_column:
             query = f'SELECT "{id_column}", {columns_sql} FROM "{table_name}"'
         else:
             query = f'SELECT ROW_NUMBER() OVER () as _row_num, {columns_sql} FROM "{table_name}"'
         
-        logger.info(f"Starting FAST streaming extraction (no OFFSET pagination)")
+        logger.info("Starting FAST streaming extraction (no OFFSET pagination)")
         extraction_start = time.time()
         
-        # Execute query and use streaming fetchmany() - MUCH faster than OFFSET!
         result = conn.execute(query)
         
         documents = []
@@ -1103,7 +1296,6 @@ async def _extract_documents_from_duckdb(
         last_progress_update = 0
         
         while True:
-            # Fetch batch using streaming cursor (no OFFSET scanning!)
             rows = result.fetchmany(batch_size)
             if not rows:
                 break
@@ -1113,7 +1305,7 @@ async def _extract_documents_from_duckdb(
                 text_parts = []
                 metadata = {"table": table_name, "row_id": row_id}
                 
-                for i, col in enumerate(columns):
+                for i, col in enumerate(display_columns):
                     value = row[i + 1]
                     if value is not None:
                         value_str = str(value).strip()
@@ -1131,15 +1323,13 @@ async def _extract_documents_from_duckdb(
             
             rows_processed += len(rows)
             
-            # Log and update progress every 100K rows
             if rows_processed - last_progress_update >= 100000 or rows_processed >= total_count:
                 last_progress_update = rows_processed
                 elapsed = time.time() - extraction_start
                 rate = rows_processed / elapsed if elapsed > 0 else 0
-                progress_pct = rows_processed * 100 / total_count
+                progress_pct = rows_processed * 100 / total_count if total_count > 0 else 0
                 logger.info(f"Extraction progress: {rows_processed}/{total_count} rows ({progress_pct:.1f}%), {len(documents)} docs, {rate:.0f} rows/sec")
                 
-                # Update job progress in database for frontend visibility
                 if job_id:
                     try:
                         await _update_job_status(
@@ -1181,20 +1371,22 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
     chunking_config = job_config.get("chunking_config") or {}
     data_dictionary = job_config.get("data_dictionary") or {}
     selected_columns_raw = job_config.get("selected_columns") or {}
-    # PERFORMANCE: Enforce minimum batch size for GPU efficiency
-    config_batch_size = job_config.get("batch_size") or 500
-    # For HuggingFace local models, small batches (e.g., 100) waste GPU - need 500+ for good throughput
-    MIN_BATCH_SIZE = 500
-    if config_batch_size < MIN_BATCH_SIZE:
-        logger.warning(f"Batch size {config_batch_size} too small for efficient GPU use. Using {MIN_BATCH_SIZE}.")
-        batch_size = MIN_BATCH_SIZE
-    else:
-        batch_size = config_batch_size  # PERFORMANCE: Larger batches for better GPU utilization
+    
+    # Use configured batch size directly (no override)
+    batch_size = job_config.get("batch_size") or 256
     incremental = job_config.get("incremental", False)
     data_source_id = job_config.get("data_source_id")
     
     logger.info(f"Starting embedding job {job_id} for config {config_id}")
+    # Log chunking configuration
+    parent_chunk_size = chunking_config.get('parent_chunk_size') or chunking_config.get('parentChunkSize', 512)
+    parent_chunk_overlap = chunking_config.get('parent_chunk_overlap') or chunking_config.get('parentChunkOverlap', 100)
+    child_chunk_size = chunking_config.get('child_chunk_size') or chunking_config.get('childChunkSize', 128)
+    child_chunk_overlap = chunking_config.get('child_chunk_overlap') or chunking_config.get('childChunkOverlap', 25)
+    
     logger.info(f"Job {job_id} config: model={embedding_model}, batch_size={batch_size}, incremental={incremental}")
+    logger.info(f"Job {job_id} chunking: parent_size={parent_chunk_size}, parent_overlap={parent_chunk_overlap}, child_size={child_chunk_size}, child_overlap={child_chunk_overlap}")
+    logger.info(f"Job {job_id} raw chunking_config: {chunking_config}")
     
     job_start_time = time.time()  # Track total job time
     
