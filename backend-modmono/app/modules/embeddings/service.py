@@ -1173,7 +1173,7 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
     chunking_config = job_config.get("chunking_config") or {}
     data_dictionary = job_config.get("data_dictionary") or {}
     selected_columns_raw = job_config.get("selected_columns") or {}
-    batch_size = job_config.get("batch_size") or 256  # Default to 256 for faster processing
+    batch_size = job_config.get("batch_size") or 500  # PERFORMANCE: Larger batches for better GPU utilization
     incremental = job_config.get("incremental", False)
     data_source_id = job_config.get("data_source_id")
     
@@ -1416,8 +1416,8 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
         start_time = time.time()
         failed_batches = 0
         
-        # Check for cancellation only every N batches to reduce DB overhead
-        CANCEL_CHECK_INTERVAL = 10
+        # PERFORMANCE: Reduce DB overhead - check/update less frequently
+        CANCEL_CHECK_INTERVAL = 20  # Check every 20 batches
         
         logger.info(f"Job {job_id}: Starting main embedding loop with {batch_count} batches, batch_size={batch_size}")
         
@@ -1489,16 +1489,16 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
             processed += len(batch_docs)
             batch_total_time = time.time() - batch_start_time
             
-            # Log detailed timing for first 5 batches and every 10th batch
-            if batch_idx < 5 or batch_idx % 10 == 0:
+            # PERFORMANCE: Log less frequently (first 3 batches and every 25th)
+            if batch_idx < 3 or batch_idx % 25 == 0:
                 logger.info(f"Job {job_id}: Batch {batch_idx + 1} timing: embed={embed_time:.2f}s, store={store_time:.2f}s, total={batch_total_time:.2f}s for {len(batch_docs)} docs ({len(batch_docs)/batch_total_time:.1f} docs/sec). Job elapsed: {time.time() - job_start_time:.1f}s")
             
             # Calculate speed
             elapsed = time.time() - start_time
             docs_per_second = processed / elapsed if elapsed > 0 else 0
             
-            # Update progress only every 5 batches to reduce DB overhead
-            if batch_idx % 5 == 0 or batch_idx == batch_count - 1:
+            # PERFORMANCE: Update progress less frequently (every 10 batches)
+            if batch_idx % 10 == 0 or batch_idx == batch_count - 1:
                 await _update_job_progress(
                     job_id=job_id,
                     processed=processed,
@@ -1508,8 +1508,8 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
                     elapsed_seconds=elapsed
                 )
             
-            if batch_idx % 10 == 0:
-                logger.info(f"Job {job_id}: Batch {batch_idx + 1}/{batch_count} | {processed}/{total_documents} docs | {docs_per_second:.1f} docs/sec")
+            if batch_idx % 25 == 0:
+                logger.info(f"Job {job_id}: Progress: {batch_idx + 1}/{batch_count} batches | {processed}/{total_documents} docs | {docs_per_second:.1f} docs/sec")
         
         # Update status to VALIDATING
         await _update_job_status(job_id, EmbeddingJobStatus.VALIDATING, phase="Validating embeddings...")
