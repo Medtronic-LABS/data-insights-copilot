@@ -313,17 +313,23 @@ from app.modules.agents.routes import router as agents_router
 
 # Data Sources
 from app.modules.data_sources.routes import router as data_sources_router
+from app.modules.data_sources.ingestion_routes import router as ingestion_router
 
 # AI Models Registry
 from app.modules.ai_models.routes import router as ai_registry_router
+from app.modules.ai_models.embedding_settings_routes import router as embedding_settings_router
 
 app.include_router(observability_router, prefix=f"{settings.api_v1_prefix}", tags=["Observability"])
 # Note: agents_router already has /agents, /config prefixes and tags internally
 app.include_router(agents_router, prefix=f"{settings.api_v1_prefix}")
 # Note: data_sources_router already has /data-sources prefix and tags internally
 app.include_router(data_sources_router, prefix=f"{settings.api_v1_prefix}")
+# Ingestion - compatibility layer for frontend (/ingestion/*)
+app.include_router(ingestion_router, prefix=f"{settings.api_v1_prefix}")
 # AI Registry - flexible provider/model management
 app.include_router(ai_registry_router, prefix=f"{settings.api_v1_prefix}")
+# Embedding Settings - compatibility layer for frontend (/settings/embedding)
+app.include_router(embedding_settings_router, prefix=f"{settings.api_v1_prefix}")
 
 # Embeddings - job management and progress tracking
 from app.modules.embeddings.routes import router as embeddings_router
