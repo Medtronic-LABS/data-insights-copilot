@@ -603,7 +603,7 @@ def _get_background_engine():
         from app.core.config import get_settings
         settings = get_settings()
         
-        db_url = f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+        db_url = settings.postgres_async_uri
         
         # Create a thread-local engine 
         engine = create_async_engine(

@@ -4,8 +4,19 @@ FastAPI application entry point.
 This module initializes the FastAPI application with all middleware,
 routers, and lifecycle handlers.
 """
+import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+# Change the path to load a different .env file (e.g., ".env.production", ".env.local")
+_env_file = os.getenv("ENV_FILE", ".env")
+_env_path = Path(__file__).parent.parent / _env_file
+load_dotenv(_env_path, override=True)
+
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
