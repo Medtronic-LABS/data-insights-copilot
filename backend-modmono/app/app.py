@@ -221,14 +221,31 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle request validation errors."""
-    logger.warning("Validation error", errors=exc.errors())
+    # Sanitize errors to ensure they are JSON serializable
+    sanitized_errors = []
+    for error in exc.errors():
+        sanitized_error = {
+            "type": error.get("type"),
+            "loc": error.get("loc"),
+            "msg": error.get("msg"),
+            "input": error.get("input"),
+        }
+        # Convert ctx values to strings if they contain non-serializable objects
+        if "ctx" in error and error["ctx"]:
+            sanitized_error["ctx"] = {
+                k: str(v) if not isinstance(v, (str, int, float, bool, list, dict, type(None))) else v
+                for k, v in error["ctx"].items()
+            }
+        sanitized_errors.append(sanitized_error)
+    
+    logger.warning("Validation error", errors=sanitized_errors)
     
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error_code": "VALIDATION_ERROR",
             "message": "Request validation failed",
-            "details": {"errors": exc.errors()}
+            "details": {"errors": sanitized_errors}
         }
     )
 
