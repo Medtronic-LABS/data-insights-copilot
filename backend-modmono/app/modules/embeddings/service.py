@@ -1039,10 +1039,18 @@ async def _extract_documents_from_duckdb(
     duckdb_path: str,
     table_name: str,
     columns: List[str],
-    batch_size: int = 1000
+    batch_size: int = 1000,
+    job_id: str = None,
 ) -> tuple[int, List[Dict[str, Any]]]:
     """
     Extract documents from DuckDB for embedding.
+    
+    Args:
+        duckdb_path: Path to DuckDB file
+        table_name: Table to extract from  
+        columns: Columns to include
+        batch_size: Rows per batch
+        job_id: Optional job ID for progress updates to frontend
     
     Returns:
         tuple: (total_count, list of document dicts with 'id', 'content', 'metadata')
@@ -1116,11 +1124,23 @@ async def _extract_documents_from_duckdb(
             
             offset += batch_size
             
-            # Log progress every 50K rows
+            # Log and update progress every 50K rows
             if offset % 50000 == 0 or offset >= total_count:
                 elapsed = time.time() - extraction_start
                 rate = offset / elapsed if elapsed > 0 else 0
-                logger.info(f"Extraction progress: {offset}/{total_count} rows ({offset*100/total_count:.1f}%), {len(documents)} docs, {rate:.0f} rows/sec")
+                progress_pct = offset * 100 / total_count
+                logger.info(f"Extraction progress: {offset}/{total_count} rows ({progress_pct:.1f}%), {len(documents)} docs, {rate:.0f} rows/sec")
+                
+                # Update job progress in database for frontend visibility
+                if job_id:
+                    try:
+                        await _update_job_status(
+                            job_id, 
+                            EmbeddingJobStatus.PREPARING, 
+                            phase=f"Extracting data: {offset:,}/{total_count:,} rows ({progress_pct:.1f}%)"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update extraction progress: {e}")
         
         extraction_time = time.time() - extraction_start
         logger.info(f"Extraction complete: {len(documents)} documents from {total_count} rows in {extraction_time:.1f}s")
@@ -1307,7 +1327,8 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
                     duckdb_path=duckdb_path,
                     table_name=duckdb_table_name,
                     columns=columns_to_embed,
-                    batch_size=1000
+                    batch_size=1000,
+                    job_id=job_id,
                 )
         except Exception as e:
             logger.error(f"Failed to extract documents: {e}")
