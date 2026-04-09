@@ -542,5 +542,5 @@ value / NULLIF(divisor, 0)
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0     | 2024 | Initial 22 examples |
+| 1.0     | 2026 | Initial 22 examples |
 
