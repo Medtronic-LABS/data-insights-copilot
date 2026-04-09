@@ -307,6 +307,7 @@ app.include_router(users_router, prefix=f"{settings.api_v1_prefix}/users", tags=
 
 # Observability & Audit
 from app.modules.observability.routes import router as observability_router
+from app.modules.observability.analytics_routes import router as analytics_router
 
 # Agents and Configs
 from app.modules.agents.routes import router as agents_router
@@ -317,12 +318,9 @@ from app.modules.data_sources.ingestion_routes import router as ingestion_router
 
 # AI Models Registry
 from app.modules.ai_models.routes import router as ai_registry_router
-from app.modules.ai_models.embedding_settings_routes import router as embedding_settings_router
-from app.modules.ai_models.rag_settings_routes import router as rag_settings_router
-from app.modules.ai_models.llm_settings_routes import router as llm_settings_router
-from app.modules.ai_models.chunking_settings_routes import router as chunking_settings_router
 
 app.include_router(observability_router, prefix=f"{settings.api_v1_prefix}", tags=["Observability"])
+app.include_router(analytics_router, prefix=f"{settings.api_v1_prefix}", tags=["Analytics"])
 # Note: agents_router already has /agents, /config prefixes and tags internally
 app.include_router(agents_router, prefix=f"{settings.api_v1_prefix}")
 # Note: data_sources_router already has /data-sources prefix and tags internally
@@ -331,14 +329,6 @@ app.include_router(data_sources_router, prefix=f"{settings.api_v1_prefix}")
 app.include_router(ingestion_router, prefix=f"{settings.api_v1_prefix}")
 # AI Registry - flexible provider/model management
 app.include_router(ai_registry_router, prefix=f"{settings.api_v1_prefix}")
-# Embedding Settings - compatibility layer for frontend (/settings/embedding)
-app.include_router(embedding_settings_router, prefix=f"{settings.api_v1_prefix}")
-# RAG Settings - /settings/rag endpoints
-app.include_router(rag_settings_router, prefix=f"{settings.api_v1_prefix}")
-# LLM Settings - /settings/llm endpoints
-app.include_router(llm_settings_router, prefix=f"{settings.api_v1_prefix}")
-# Chunking Settings - /settings/chunking endpoints
-app.include_router(chunking_settings_router, prefix=f"{settings.api_v1_prefix}")
 
 # Embeddings - job management and progress tracking
 from app.modules.embeddings.routes import router as embeddings_router
@@ -348,7 +338,11 @@ app.include_router(embeddings_ws_router, prefix=f"{settings.api_v1_prefix}/ws", 
 
 # Chat - RAG query processing
 from app.modules.chat.routes import router as chat_router
+
+# Training - SQL examples management for few-shot learning
+from app.modules.sql_examples.routes import router as training_router
 app.include_router(chat_router, prefix=f"{settings.api_v1_prefix}", tags=["Chat"])
+app.include_router(training_router, prefix=f"{settings.api_v1_prefix}", tags=["Training"])
 
 
 # ============================================
