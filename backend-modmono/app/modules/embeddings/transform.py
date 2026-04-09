@@ -5,20 +5,20 @@ Provides:
 - Parent-Child (Small-to-Big) chunking strategy
 - TabularDictionarySplitter for structured data (~50x faster than regex)
 - Vectorized document creation with medical context enrichment
-- In-memory docstore (matching old backend's pickle-based approach)
+- In-memory docstore with pickle persistence (matching old backend's approach)
 """
 import pandas as pd
 import hashlib
 import json
-from tqdm import tqdm
+import pickle
 import multiprocessing
 from typing import Dict, List, Any, Tuple, Optional, Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import numpy as np
 from langchain_core.documents import Document
 from langchain_core.stores import BaseStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime
+from pathlib import Path
 
 from app.core.utils.logging import get_logger
 
@@ -76,7 +76,7 @@ def _get_tabular_splitter(keys_per_chunk: int = 10, chunk_overlap_keys: int = 2)
 
 
 class SimpleInMemoryStore(BaseStore[str, Document]):
-    """In-memory document store for parent documents. Fast for datasets that fit in RAM."""
+    """In-memory document store for parent documents with pickle persistence."""
     def __init__(self):
         self._dict: Dict[str, Document] = {}
 
@@ -98,6 +98,24 @@ class SimpleInMemoryStore(BaseStore[str, Document]):
     
     def __len__(self) -> int:
         return len(self._dict)
+    
+    def count(self) -> int:
+        return len(self._dict)
+    
+    def save_to_pickle(self, file_path: str) -> None:
+        """Save docstore to pickle file for persistence (matches old backend)."""
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, 'wb') as f:
+            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+        logger.info(f"Saved docstore to pickle: {file_path} ({len(self._dict)} docs)")
+    
+    @classmethod
+    def load_from_pickle(cls, file_path: str) -> 'SimpleInMemoryStore':
+        """Load docstore from pickle file."""
+        with open(file_path, 'rb') as f:
+            store = pickle.load(f)
+        logger.info(f"Loaded docstore from pickle: {file_path} ({len(store._dict)} docs)")
+        return store
 
 
 class AdvancedDataTransformer:
@@ -139,7 +157,7 @@ class AdvancedDataTransformer:
             if on_progress:
                 on_progress(i, len(table_data), table_name)
             if check_cancellation and check_cancellation():
-                raise Exception(f"Cancellation requested")
+                raise Exception("Cancellation requested")
             if df.empty:
                 continue
             
@@ -216,6 +234,10 @@ class AdvancedDataTransformer:
             parent_data.append((stable_id, doc))
         docstore.mset(parent_data)
         logger.info(f"Indexed {len(parent_data)} parents in memory")
+        
+        # Stage 2.5: Persist docstore to pickle if path provided
+        if self.docstore_path:
+            docstore.save_to_pickle(self.docstore_path)
         
         # Stage 3: Child splitting
         child_tuples = _child_split_worker(parent_data, child_config)
