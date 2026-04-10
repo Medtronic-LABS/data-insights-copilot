@@ -25,6 +25,12 @@ from langchain_openai import ChatOpenAI
 from app.core.settings import get_settings
 from app.core.utils.logging import get_logger
 from app.modules.chat.query.prompt_builder import PromptBuilder
+from app.modules.chat.query.schema_context_service import SchemaContextService, get_schema_context_service
+from app.modules.chat.query.query_validation_layer import (
+    QueryValidationLayer,
+    SQLValidationResult,
+    validate_and_execute_sql,
+)
 from app.modules.sql_examples.store import get_sql_examples_store, SQLExamplesStore
 
 settings = get_settings()
@@ -688,3 +694,143 @@ Response:"""
 def get_file_sql_service(user_id: str, allowed_tables: List[str] = None) -> FileSQLService:
     """Get FileSQLService instance for a user."""
     return FileSQLService(user_id, allowed_tables=allowed_tables)
+
+
+    async def query_with_retry(self, question: str, max_retries: int = 3) -> Dict[str, Any]:
+        """
+        Query with automatic retry using QueryValidationLayer.
+        
+        This method generates SQL and uses the QueryValidationLayer to automatically
+        retry on execution errors, using LLM-based query fixing.
+        
+        Args:
+            question: Natural language question
+            max_retries: Maximum number of retry attempts (default 3)
+            
+        Returns:
+            Dict with keys: answer, sql, columns, rows, execution_time_ms, row_count, retries
+        """
+        import asyncio
+        
+        logger.info(f"FileSQLService query_with_retry: {question[:100]}...")
+        
+        # Check cache
+        cached = _file_query_cache.get(self.user_id, question)
+        if cached:
+            return cached
+        
+        try:
+            # Step 1: Generate SQL from natural language
+            sql = self._generate_sql(question)
+            
+            # Step 2: Validate SQL (basic safety check)
+            if not self._validate_sql(sql):
+                return {
+                    "status": "error",
+                    "error": "Generated SQL failed validation. Please rephrase your question.",
+                    "sql": sql,
+                }
+            
+            # Step 3: Execute with automatic retry using QueryValidationLayer
+            schema_text = self.get_schema_for_prompt()
+            sample_data = self._get_sample_data()
+            
+            # Create executor function for QueryValidationLayer
+            def execute_fn(query: str) -> Tuple[List[Dict], int]:
+                columns, rows, _ = self._execute_sql(query)
+                # Convert to format expected by QueryValidationLayer
+                return rows, len(rows)
+            
+            # Use QueryValidationLayer for automatic retry
+            validation_result = await validate_and_execute_sql(
+                sql=sql,
+                question=question,
+                execute_fn=execute_fn,
+                schema_context=schema_text,
+                dialect="duckdb",
+                max_retries=max_retries,
+                sample_data=sample_data,
+            )
+            
+            if not validation_result.success:
+                return {
+                    "status": "error",
+                    "error": f"SQL execution failed after {validation_result.attempt_number} attempts: {validation_result.error}",
+                    "sql": validation_result.sql,
+                    "error_type": validation_result.error_type.value if validation_result.error_type else "unknown",
+                    "attempts": validation_result.attempt_number,
+                }
+            
+            # Extract results
+            rows = validation_result.result.get("rows", [])
+            count = validation_result.result.get("count", 0)
+            
+            # Get columns from first row
+            columns = list(rows[0].keys()) if rows else []
+            
+            # Step 4: Format response
+            answer = self._format_response(
+                question, 
+                validation_result.sql, 
+                columns, 
+                rows, 
+                validation_result.execution_time_ms
+            )
+            
+            result = {
+                "status": "success",
+                "answer": answer,
+                "sql": validation_result.sql,
+                "columns": columns,
+                "rows": rows[:100],
+                "total_rows": count,
+                "execution_time_ms": round(validation_result.execution_time_ms, 2),
+                "attempts": validation_result.attempt_number,
+                "fix_applied": validation_result.fix_applied,
+            }
+            
+            # Cache result
+            _file_query_cache.set(self.user_id, question, result)
+            
+            logger.info(
+                f"Query completed in {validation_result.execution_time_ms:.2f}ms "
+                f"(attempts: {validation_result.attempt_number})"
+            )
+            return result
+            
+        except Exception as e:
+            logger.error(f"Query with retry failed: {e}")
+            return {
+                "status": "error", 
+                "error": str(e),
+            }
+    
+    def query_with_retry_sync(self, question: str, max_retries: int = 3) -> Dict[str, Any]:
+        """
+        Synchronous wrapper for query_with_retry.
+        
+        Args:
+            question: Natural language question
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Dict with query results
+        """
+        import asyncio
+        
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        self.query_with_retry(question, max_retries)
+                    )
+                    return future.result(timeout=120)
+            else:
+                return loop.run_until_complete(
+                    self.query_with_retry(question, max_retries)
+                )
+        except RuntimeError:
+            return asyncio.run(self.query_with_retry(question, max_retries))
