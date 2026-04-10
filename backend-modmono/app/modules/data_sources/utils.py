@@ -15,6 +15,10 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import duckdb
+import threading
+
+# Global lock for DuckDB write operations to prevent concurrent access issues
+_duckdb_write_lock = threading.Lock()
 
 from app.core.config import get_settings
 
@@ -211,11 +215,17 @@ def register_csv_in_duckdb(
     """
     Register a CSV file in DuckDB as a virtual table.
     DuckDB queries CSV directly from disk without loading into RAM.
+    
+    Uses a lock to prevent concurrent connection conflicts.
     """
     db_path = get_user_duckdb_path(user_id)
-    conn = duckdb.connect(str(db_path))
     
-    try:
+    # Use lock to prevent "different configuration" errors when multiple
+    # connections try to access the same database file
+    with _duckdb_write_lock:
+        conn = duckdb.connect(str(db_path), read_only=False)
+        
+        try:
         # Create metadata table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS _file_metadata (
@@ -467,7 +477,8 @@ def delete_duckdb_table(user_id: str, table_name: str) -> bool:
         return False
     
     try:
-        conn = duckdb.connect(str(db_path))
+        with _duckdb_write_lock:
+            conn = duckdb.connect(str(db_path), read_only=False)
         
         csv_info = conn.execute(
             "SELECT csv_path FROM _file_metadata WHERE table_name = ?",
