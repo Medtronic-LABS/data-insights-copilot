@@ -1536,12 +1536,24 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
                 documents = []
                 
                 if source_type == 'database':
+                    # Detect schema from selected_columns keys (e.g., 'rnacen.table_name')
+                    db_schema = None
+                    if selected_columns:
+                        for table_key in selected_columns.keys():
+                            if "." in table_key:
+                                db_schema = table_key.split(".")[0]
+                                logger.info(f"Job {job_id}: Detected database schema '{db_schema}' from selected_columns")
+                                break
+                    
                     extractor = DDLExtractor(
                         db_url=db_url,
                         data_dictionary=data_dictionary if isinstance(data_dictionary, dict) else {},
+                        schema_name=db_schema,  # Pass the detected schema
                     )
                     try:
-                        documents = extractor.extract_all_tables(include_row_counts=True)
+                        # Pass tables_filter to help with schema detection if schema wasn't detected above
+                        tables_filter = list(selected_columns.keys()) if selected_columns else None
+                        documents = extractor.extract_all_tables(include_row_counts=True, tables_filter=tables_filter)
                         relationships_doc = extractor.extract_relationships_document()
                         documents.append(relationships_doc)
                         logger.info(f"Job {job_id}: Extracted {len(documents)} DDL documents from database")
