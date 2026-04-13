@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { ActiveConfig, AdvancedSettings, ModelInfo } from '../../../contexts/AgentContext';
+import type { ActiveConfig, ModelInfo } from '../../../contexts/AgentContext';
 import type { Agent } from '../../../types/agent';
 import { updateAgent, deleteAgent, handleApiError } from '../../../services/api';
 import { useToast } from '../../Toast';
@@ -11,7 +11,6 @@ import { formatDate } from '../../../utils/datetime';
 interface OverviewTabProps {
     activeConfig: ActiveConfig;
     connectionName: string;
-    advancedSettings: AdvancedSettings;
     agent?: Agent;
     canEdit?: boolean;
     onAgentUpdate?: () => void;
@@ -35,22 +34,21 @@ const ModelDisplay: React.FC<{ label: string; model?: ModelInfo; fallback?: stri
 export const OverviewTab: React.FC<OverviewTabProps> = ({
     activeConfig,
     connectionName,
-    advancedSettings,
     agent,
     canEdit = false,
     onAgentUpdate
 }) => {
     const navigate = useNavigate();
     const { success: showSuccess, error: showError } = useToast();
-    
+
     // Schema is now parsed directly from activeConfig.schema_selection
-    
+
     // Edit state
     const [isEditing, setIsEditing] = useState(false);
     const [editName, setEditName] = useState(agent?.name || '');
     const [editDescription, setEditDescription] = useState(agent?.description || '');
     const [isSaving, setIsSaving] = useState(false);
-    
+
     // Delete state
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
@@ -63,7 +61,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
             return {};
         }
     };
-    
+
     const handleStartEdit = () => {
         setEditName(agent?.name || '');
         setEditDescription(agent?.description || '');
@@ -78,7 +76,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
     const handleSaveEdit = async () => {
         if (!agent || !editName.trim()) return;
-        
+
         setIsSaving(true);
         try {
             await updateAgent(agent.id, {
@@ -97,7 +95,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
     const handleDeleteConfirm = async () => {
         if (!agent) return;
-        
+
         setIsDeleting(true);
         try {
             await deleteAgent(agent.id);
@@ -125,8 +123,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
     let schema: Record<string, string[]> = {};
     if (activeConfig.schema_selection) {
         try {
-            const parsed = typeof activeConfig.schema_selection === 'string' 
-                ? JSON.parse(activeConfig.schema_selection) 
+            const parsed = typeof activeConfig.schema_selection === 'string'
+                ? JSON.parse(activeConfig.schema_selection)
                 : activeConfig.schema_selection;
             if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
                 schema = parsed;
@@ -163,7 +161,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                             </button>
                         )}
                     </div>
-                    
+
                     {isEditing ? (
                         <div className="space-y-4">
                             <div>
@@ -293,19 +291,19 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                         </div>
                     </div>
                     <div className="space-y-1">
-                        <ModelDisplay 
-                            label="LLM" 
-                            model={activeConfig.llm_model} 
+                        <ModelDisplay
+                            label="LLM"
+                            model={activeConfig.llm_model}
                             fallback={llmConf.model}
                         />
-                        <ModelDisplay 
-                            label="Embedding" 
-                            model={activeConfig.embedding_model} 
+                        <ModelDisplay
+                            label="Embedding"
+                            model={activeConfig.embedding_model}
                             fallback={embConf.model}
                         />
-                        <ModelDisplay 
-                            label="Reranker" 
-                            model={activeConfig.reranker_model} 
+                        <ModelDisplay
+                            label="Reranker"
+                            model={activeConfig.reranker_model}
                             fallback={retConf.rerankerModel || retConf.reranker_model}
                         />
                     </div>

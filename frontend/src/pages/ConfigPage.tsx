@@ -55,7 +55,7 @@ const ConfigPage: React.FC = () => {
     const initialStep = searchParams.get('step') ? parseInt(searchParams.get('step')!) : 1;
     const [currentStep, setCurrentStep] = useState(initialStep);
     const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
-    
+
     // Selected data source (replaces connectionId/fileUploadResult)
     const [selectedDataSource, setSelectedDataSource] = useState<DataSource | null>(null);
     const [connectionId, setConnectionId] = useState<number | null>(null); // Keep for SchemaSelector compatibility
@@ -81,14 +81,13 @@ const ConfigPage: React.FC = () => {
 
     // Data source type derived from selected data source
     const dataSourceType = selectedDataSource?.source_type || 'database';
-    const [fileUploadResult, setFileUploadResult] = useState<IngestionResponse | null>(null); // Keep for file column selection
+    const [fileUploadResult, setFileUploadResult] = useState<IngestionResponse | null>({ documents: [] } as any); // Keep for file column selection
     const [selectedFileColumns, setSelectedFileColumns] = useState<string[]>([]);
     const [reasoning, setReasoning] = useState<Record<string, string>>({});
     const [exampleQuestions, setExampleQuestions] = useState<string[]>([]);
     const [draftPrompt, setDraftPrompt] = useState('');
     const [history, setHistory] = useState<any[]>([]);
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const [showHistory, _setShowHistory] = useState(false);
+    const [showHistory] = useState(false);
     const [showClearConfirm, setShowClearConfirm] = useState(false);
     const [replaceConfirm, setReplaceConfirm] = useState<{ show: boolean; version: any | null }>({ show: false, version: null });
 
@@ -435,7 +434,7 @@ const ConfigPage: React.FC = () => {
         setSelectedSchema({});
         setDataDictionary('');
         setDraftPrompt('');
-        setFileUploadResult(null);
+        setFileUploadResult({ documents: [] } as any);
         setSelectedFileColumns([]);
         setCurrentStep(1);
         // System settings will be loaded when user reaches step 4
@@ -603,8 +602,8 @@ const ConfigPage: React.FC = () => {
             parallelization: {
                 num_workers?: number;
                 chunking_batch_size?: number;
-                delta_check_batch_size: number;
-            };
+                delta_check_batch_size?: number;
+            },
             max_consecutive_failures: number;
             retry_attempts: number;
         },
@@ -737,7 +736,7 @@ const ConfigPage: React.FC = () => {
                                                 onClick={handleEditCurrent}
                                                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm transition-all focus:ring-2 focus:ring-blue-200"
                                             >
-                                                {canEdit ? 'Edit Active Config' : 'View Configuration'}
+                                                View Configuration
                                             </button>
                                         </div>
                                     </div>
@@ -784,12 +783,12 @@ const ConfigPage: React.FC = () => {
                                                         totalPromptVersions={history.length}
                                                         lastUpdatedBy={activeConfig.created_by_username}
                                                         settings={{
-                                                        ...advancedSettings,
-                                                        embedding: {
-                                                            ...advancedSettings.embedding,
-                                                            vectorDbType: vectorDbStatus?.vector_db_type || 'qdrant'
-                                                        }
-                                                    }}
+                                                            ...advancedSettings,
+                                                            embedding: {
+                                                                ...advancedSettings.embedding,
+                                                                vectorDbType: vectorDbStatus?.vector_db_type || 'qdrant'
+                                                            }
+                                                        }}
                                                     />
 
                                                     {/* Quick Stats Grid */}
@@ -1348,6 +1347,7 @@ const ConfigPage: React.FC = () => {
                                                             columns: columnNames,
                                                             column_details: columns,
                                                             row_count: ds.row_count,
+                                                            documents: [],
                                                         });
                                                         // Auto-select all columns
                                                         setSelectedFileColumns(columnNames);
@@ -1480,13 +1480,7 @@ const ConfigPage: React.FC = () => {
                                 {currentStep === 4 && (
                                     <div className="h-full flex flex-col">
                                         <AdvancedSettings
-                                            settings={{
-                                            ...advancedSettings,
-                                            embedding: {
-                                                ...advancedSettings.embedding,
-                                                vectorDbType: vectorDbStatus?.vector_db_type || 'qdrant'
-                                            }
-                                        }}
+                                            settings={advancedSettings}
                                             onChange={setAdvancedSettings}
                                             readOnly={!canEdit}
                                             dataSourceName={selectedDataSource?.title || 'default'}
@@ -1841,20 +1835,20 @@ const ConfigPage: React.FC = () => {
                     // CRITICAL: Read directly from activeConfig.chunking_config
                     // The API returns chunking_config as an object with snake_case keys
                     let savedChunking: any = null;
-                    
+
                     if (activeConfig?.chunking_config) {
-                        savedChunking = typeof activeConfig.chunking_config === 'string' 
-                            ? JSON.parse(activeConfig.chunking_config) 
+                        savedChunking = typeof activeConfig.chunking_config === 'string'
+                            ? JSON.parse(activeConfig.chunking_config)
                             : activeConfig.chunking_config;
                         console.log('[ConfigPage] savedChunking from activeConfig:', savedChunking);
                     }
-                    
+
                     const savedEmbedding = activeConfig?.embedding_config
                         ? (typeof activeConfig.embedding_config === 'string'
                             ? JSON.parse(activeConfig.embedding_config)
                             : activeConfig.embedding_config)
                         : null;
-                    
+
                     // Build chunking - use saved values if available, otherwise undefined to let modal use system defaults
                     const chunkingValues = savedChunking ? {
                         parent_chunk_size: savedChunking.parent_chunk_size ?? savedChunking.parentChunkSize,
@@ -1862,9 +1856,9 @@ const ConfigPage: React.FC = () => {
                         child_chunk_size: savedChunking.child_chunk_size ?? savedChunking.childChunkSize,
                         child_chunk_overlap: savedChunking.child_chunk_overlap ?? savedChunking.childChunkOverlap,
                     } : undefined;
-                    
+
                     console.log('[ConfigPage] Final chunking for modal:', chunkingValues);
-                    
+
                     return {
                         batch_size: savedEmbedding?.batch_size || savedEmbedding?.batchSize || 128,
                         max_concurrent: 5,

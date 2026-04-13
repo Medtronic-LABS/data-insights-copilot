@@ -14,10 +14,11 @@ import {
     startEmbeddingJob,
     getDataSource,
     getConfigHistory,
+    getSystemSettings,
     type DataSource
 } from '../services/api';
 import type { IngestionResponse } from '../services/api';
-import { canEditPrompt, canPublishPrompt } from '../utils/permissions';
+import { canPublishPrompt } from '../utils/permissions';
 import type { Agent } from '../types/agent';
 import type { AdvancedSettings } from '../contexts/AgentContext';
 
@@ -64,7 +65,6 @@ const AgentConfigPage: React.FC = () => {
     const [searchParams, setSearchParams] = useSearchParams();
     const { user, isLoading: isAuthLoading } = useAuth();
     const { success: showSuccess, error: showError } = useToast();
-    const canEdit = canEditPrompt(user);
     const canPublish = canPublishPrompt(user);
 
     // Draft config hook
@@ -75,13 +75,10 @@ const AgentConfigPage: React.FC = () => {
         isSaving,
         isPublishing,
         error: draftError,
-        currentStep: draftStep,
         loadDraft,
         loadVersion,
         createNewDraft,
         saveStep,
-        setCurrentStep: setDraftStep,
-        createDraftFromConfig,
         publish,
     } = useConfigDraft();
 
@@ -133,7 +130,16 @@ const AgentConfigPage: React.FC = () => {
             initialLoadDoneRef.current = true;
             setIsLoadingAgent(true);
             try {
-                const foundAgent = await getAgent(id);
+                // Fetch agent and system settings in parallel
+                const [foundAgent] = await Promise.all([
+                    getAgent(id),
+                    Promise.all([
+                        getSystemSettings('embedding').catch(() => null),
+                        getSystemSettings('rag').catch(() => null),
+                        getSystemSettings('llm').catch(() => null),
+                        getSystemSettings('chunking').catch(() => null)
+                    ])
+                ]);
                 setAgent(foundAgent);
 
                 // Check if agent has published configs to lock data source
@@ -196,7 +202,7 @@ const AgentConfigPage: React.FC = () => {
                             setDataSourceType('file');
                         }
                     }
-                    if (config.data_dictionary?.content) setDataDictionary(config.data_dictionary.content);
+                    if (config.data_dictionary?.content) setDataDictionary(config.data_dictionary.content as string);
                     // Pre-fill advanced settings from config (normalize snake_case to camelCase)
                     if (config.llm_config || config.embedding_config || config.chunking_config || config.rag_config ||
                         config.embedding_model_id || config.llm_model_id || config.reranker_model_id) {
@@ -435,7 +441,7 @@ const AgentConfigPage: React.FC = () => {
         }
     };
 
-    if (isAuthLoading || isLoadingAgent) {
+    if (isAuthLoading || isLoadingAgent || isDraftLoading) {
         return (
             <div className="flex flex-col h-screen bg-gray-50">
                 <ChatHeader title={APP_CONFIG.APP_NAME} />
@@ -518,7 +524,7 @@ const AgentConfigPage: React.FC = () => {
                                         className="flex flex-col items-center z-10"
                                     >
                                         <div className={`w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-medium transition-colors duration-200 
-                                            ${currentStep >= step.id ? 'bg-blue-600 text-white' : 'bg-white border-2 border-gray-300 text-gray-400'}`}>
+                                                ${currentStep >= step.id ? 'bg-blue-600 text-white' : 'bg-white border-2 border-gray-300 text-gray-400'}`}>
                                             {step.id}
                                         </div>
                                         <span className={`text-[10px] sm:text-xs mt-1 sm:mt-2 font-medium text-center whitespace-nowrap ${currentStep >= step.id ? 'text-blue-600' : 'text-gray-400'}`}>
@@ -612,7 +618,6 @@ const AgentConfigPage: React.FC = () => {
 
                             {currentStep === 6 && (
                                 <SummaryStep
-                                    agentId={agent.id}
                                     configId={draft?.id}
                                     embeddingJobId={embeddingJobId}
                                     onStartEmbedding={handleStartEmbedding}
@@ -691,7 +696,7 @@ const AgentConfigPage: React.FC = () => {
                                     onClick={handleNext}
                                     disabled={generating || isPublishing || (currentStep === 1 && !selectedDataSource)}
                                     className={`w-full sm:w-auto px-4 sm:px-6 py-2 rounded-md font-medium text-white text-sm sm:text-base transition-colors duration-200 flex items-center justify-center
-                                        ${generating || isPublishing || (currentStep === 1 && !selectedDataSource) ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 shadow-md'}`}
+                                            ${generating || isPublishing || (currentStep === 1 && !selectedDataSource) ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 shadow-md'}`}
                                 >
                                     Next
                                 </button>
