@@ -476,16 +476,29 @@ class AgentConfigRepository:
         return config
     
     async def publish_draft(self, config_id: int) -> Optional[AgentConfigModel]:
-        """Publish a draft config (activates it but keeps status as draft until embedding completes)."""
+        """Publish a draft config. Only activates if it's the first config for this agent."""
         config = await self.get_by_id(config_id)
         if not config or config.status != "draft":
             return None
         
-        # Deactivate other configs
-        await self._deactivate_configs(config.agent_id)
+        # Check if there are any other configs for this agent (excluding this one)
+        count_query = (
+            select(func.count())
+            .select_from(AgentConfigModel)
+            .where(
+                and_(
+                    AgentConfigModel.agent_id == config.agent_id,
+                    AgentConfigModel.id != config_id,
+                )
+            )
+        )
+        result = await self.db.execute(count_query)
+        other_configs_count = result.scalar() or 0
         
-        # Activate but keep status as draft - will be set to published when embedding completes
-        config.is_active = 1
+        # Only auto-activate if this is the first config for the agent
+        if other_configs_count == 0:
+            config.is_active = 1
+        # Otherwise, keep is_active as 0 - user must manually activate via /config/{id}/activate
         
         await self.db.flush()
         await self.db.refresh(config)

@@ -16,12 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database.session import get_db_session as get_db
 from app.core.auth.permissions import (
-    get_current_user, require_editor, require_admin, can_manage_agents
+    get_current_user, require_editor, require_admin, can_manage_agents, can_manage_users
 )
 from app.core.utils.exceptions import AppException
 from app.core.utils.logging import get_logger
+from app.modules.audit.helpers import AuditLogger, get_audit_logger
 from app.core.models.common import BaseResponse
+from app.modules.audit.schemas import AuditAction
 from app.modules.users.schemas import User
+
 from app.modules.agents.service import (
     AgentService, AgentConfigService, UserAgentService
 )
@@ -90,10 +93,25 @@ async def create_agent(
     data: AgentCreate,
     current_user: User = Depends(require_editor),
     service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[AgentResponse]:
     """Create a new agent. Creator gets admin access."""
     try:
         agent = await service.create_agent(data, current_user.id)
+        
+        # Audit log: agent.created
+        await audit.log(
+            action=AuditAction.AGENT_CREATED,
+            actor=current_user,
+            resource_type="agent",
+            resource_id=str(agent.id),
+            resource_name=agent.title,
+            details={
+                "description": agent.description,
+                "created_by": current_user.username
+            },
+        )
+        
         return BaseResponse.ok(data=agent)
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
@@ -190,14 +208,32 @@ async def delete_agent(
     agent_id: UUID,
     current_user: User = Depends(get_current_user),
     service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> None:
     """Delete agent. Requires admin access."""
     if not can_manage_agents(current_user.role):
         await verify_agent_access(agent_id, current_user, service, min_role="admin")
     
+    # Get agent info before deletion for audit log
+    agent = await service.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
     deleted = await service.delete_agent(agent_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Audit log: agent.deleted
+    await audit.log(
+        action=AuditAction.AGENT_DELETED,
+        actor=current_user,
+        resource_type="agent",
+        resource_id=str(agent_id),
+        resource_name=agent.title,
+        details={
+            "deleted_by": current_user.username
+        },
+    )
 
 
 # ==========================================
@@ -211,6 +247,7 @@ async def grant_user_access(
     current_user: User = Depends(get_current_user),
     service: AgentService = Depends(get_agent_service),
     ua_service: UserAgentService = Depends(get_user_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[UserAgentResponse]:
     """Grant user access to agent. Requires admin access."""
     await verify_agent_access(agent_id, current_user, service, min_role="admin")
@@ -222,6 +259,23 @@ async def grant_user_access(
             role=data.role,
             granted_by=current_user.id,
         )
+        
+        # Audit log: Only log if current user is admin/superadmin
+        if can_manage_users(current_user.role):
+            agent = await service.get_agent(agent_id)
+            await audit.log(
+                action=AuditAction.AGENT_ADMIN_ACCESS_GRANTED,
+                actor=current_user,
+                resource_type="agent",
+                resource_id=str(agent_id),
+                resource_name=agent.title if agent else str(agent_id),
+                details={
+                    "user_id": str(data.user_id),
+                    "agent_access_level": data.role,
+                    "granted_by": current_user.username
+                },
+            )
+        
         return BaseResponse.ok(data=result)
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
@@ -234,6 +288,7 @@ async def revoke_user_access(
     current_user: User = Depends(get_current_user),
     service: AgentService = Depends(get_agent_service),
     ua_service: UserAgentService = Depends(get_user_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> None:
     """Revoke user's access to agent. Requires admin access."""
     await verify_agent_access(agent_id, current_user, service, min_role="admin")
@@ -241,6 +296,21 @@ async def revoke_user_access(
     revoked = await ua_service.revoke_access(user_id, agent_id)
     if not revoked:
         raise HTTPException(status_code=404, detail="User access not found")
+    
+    # Audit log: Only log if current user is admin/superadmin
+    if can_manage_users(current_user.role):
+        agent = await service.get_agent(agent_id)
+        await audit.log(
+            action=AuditAction.AGENT_ADMIN_ACCESS_REVOKED,
+            actor=current_user,
+            resource_type="agent",
+            resource_id=str(agent_id),
+            resource_name=agent.title if agent else str(agent_id),
+            details={
+                "user_id": str(user_id),
+                "revoked_by": current_user.username
+            },
+        )
 
 
 @agents_router.get("/{agent_id}/users", response_model=BaseResponse[UserAgentListResponse])
@@ -267,9 +337,10 @@ async def create_agent_config(
     current_user: User = Depends(get_current_user),
     service: AgentConfigService = Depends(get_config_service),
     agent_service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[AgentConfigResponse]:
     """Create a new configuration version for an agent."""
-    await verify_agent_access(agent_id, current_user, agent_service, min_role="editor")
+    await verify_agent_access(agent_id, current_user, agent_service, min_role="admin")
     
     try:
         config = await service.create_config(
@@ -278,6 +349,22 @@ async def create_agent_config(
             config_data=data.model_dump(exclude={"agent_id", "data_source_id", "is_active"}),
             is_active=data.is_active,
         )
+        
+        # Audit log: config.created
+        agent = await agent_service.get_agent(agent_id)
+        await audit.log(
+            action=AuditAction.CONFIG_CREATED,
+            actor=current_user,
+            resource_type="agent_config",
+            resource_id=str(config.id),
+            resource_name=f"{agent.title if agent else 'Agent'} v{config.version}",
+            details={
+                "agent_id": str(agent_id),
+                "config_version": config.version,
+                "created_by": current_user.username
+            },
+        )
+        
         return BaseResponse.ok(data=config)
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
@@ -291,7 +378,7 @@ async def get_active_config(
     agent_service: AgentService = Depends(get_agent_service),
 ) -> BaseResponse[AgentConfigResponse]:
     """Get active configuration for an agent."""
-    await verify_agent_access(agent_id, current_user, agent_service)
+    await verify_agent_access(agent_id, current_user, agent_service, min_role="admin")
     
     config = await service.get_active_config(agent_id)
     if not config:
@@ -354,7 +441,7 @@ async def update_config(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
     
-    await verify_agent_access(config.agent_id, current_user, agent_service, min_role="editor")
+    await verify_agent_access(config.agent_id, current_user, agent_service, min_role="admin")
     
     updated = await service.update_config(config_id, data.model_dump(exclude_unset=True))
     if not updated:
@@ -368,15 +455,36 @@ async def activate_config(
     current_user: User = Depends(get_current_user),
     service: AgentConfigService = Depends(get_config_service),
     agent_service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[dict]:
     """Activate a configuration (deactivates others)."""
     config = await service.get_config(config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
     
-    await verify_agent_access(config.agent_id, current_user, agent_service, min_role="editor")
+    await verify_agent_access(config.agent_id, current_user, agent_service, min_role="admin")
+    
+    # Get previous active config for audit log
+    previous_active = await service.get_active_config(config.agent_id)
     
     await service.activate_config(config_id)
+    
+    # Audit log: config.activated
+    agent = await agent_service.get_agent(config.agent_id)
+    await audit.log(
+        action=AuditAction.CONFIG_ACTIVATED,
+        actor=current_user,
+        resource_type="agent_config",
+        resource_id=str(config_id),
+        resource_name=f"{agent.title if agent else 'Agent'} v{config.version}",
+        details={
+            "agent_id": str(config.agent_id),
+            "config_version": config.version,
+            "previous_active_version": previous_active.version if previous_active and previous_active.id != config_id else None,
+            "activated_by": current_user.username
+        },
+    )
+    
     return BaseResponse.ok(message=f"Configuration {config_id} activated")
 
 
@@ -533,6 +641,7 @@ async def upsert_settings_step(
     current_user: User = Depends(get_current_user),
     service: AgentConfigService = Depends(get_config_service),
     agent_service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[AgentConfigResponse]:
     """
     Step: settings.
@@ -541,6 +650,17 @@ async def upsert_settings_step(
     await verify_agent_access(agent_id, current_user, agent_service, min_role="editor")
     
     try:
+        # Determine which sections are being updated
+        sections_updated = []
+        if data.embedding_config:
+            sections_updated.append("embedding")
+        if data.chunking_config:
+            sections_updated.append("chunking")
+        if data.rag_config:
+            sections_updated.append("rag")
+        if data.llm_config:
+            sections_updated.append("llm")
+        
         config = await service.upsert_settings_step(
             version_id,
             embedding_config=data.embedding_config.model_dump() if data.embedding_config else None,
@@ -551,6 +671,23 @@ async def upsert_settings_step(
             embedding_model_id=data.embedding_model_id,
             reranker_model_id=data.reranker_model_id,
         )
+        
+        # Audit log: config.settings_updated
+        if sections_updated:
+            agent = await agent_service.get_agent(agent_id)
+            await audit.log(
+                action=AuditAction.CONFIG_SETTINGS_UPDATED,
+                actor=current_user,
+                resource_type="agent_config",
+                resource_id=str(version_id),
+                resource_name=f"{agent.title if agent else 'Agent'} v{config.version}",
+                details={
+                    "agent_id": str(agent_id),
+                    "sections": sections_updated,
+                    "updated_by": current_user.username
+                },
+            )
+        
         return BaseResponse.ok(data=config)
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
@@ -612,12 +749,13 @@ async def upsert_publish_step(
     current_user: User = Depends(get_current_user),
     service: AgentConfigService = Depends(get_config_service),
     agent_service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[AgentConfigResponse]:
     """
     Step: publish.
     Save final system prompt and example questions, then publish the configuration.
     """
-    await verify_agent_access(agent_id, current_user, agent_service, min_role="editor")
+    await verify_agent_access(agent_id, current_user, agent_service, min_role="admin")
     
     try:
         published = await service.upsert_publish_step(
@@ -625,6 +763,23 @@ async def upsert_publish_step(
             system_prompt=data.system_prompt,
             example_questions=data.example_questions,
         )
+        
+        # Audit log: config.partially_completed (step 6 - SQL ready, embedding pending)
+        agent = await agent_service.get_agent(agent_id)
+        await audit.log(
+            action=AuditAction.CONFIG_PARTIALLY_COMPLETED,
+            actor=current_user,
+            resource_type="agent_config",
+            resource_id=str(version_id),
+            resource_name=f"{agent.title if agent else 'Agent'} v{published.version}",
+            details={
+                "agent_id": str(agent_id),
+                "config_version": published.version,
+                "completed_by": current_user.username,
+                "status": "sql_ready_embedding_pending"
+            },
+        )
+        
         return BaseResponse.ok(data=published)
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
@@ -639,7 +794,7 @@ async def delete_version(
     agent_service: AgentService = Depends(get_agent_service),
 ) -> None:
     """Delete/discard a version."""
-    await verify_agent_access(agent_id, current_user, agent_service, min_role="editor")
+    await verify_agent_access(agent_id, current_user, agent_service, min_role="admin")
     
     try:
         deleted = await service.delete_draft(version_id)
@@ -658,7 +813,7 @@ async def get_version(
     agent_service: AgentService = Depends(get_agent_service),
 ) -> BaseResponse[AgentConfigResponse]:
     """Get a specific version."""
-    await verify_agent_access(agent_id, current_user, agent_service)
+    await verify_agent_access(agent_id, current_user, agent_service, min_role="admin")
     
     config = await service.get_config(version_id)
     if not config:
@@ -679,7 +834,7 @@ async def clone_config_as_draft(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
     
-    await verify_agent_access(config.agent_id, current_user, agent_service, min_role="editor")
+    await verify_agent_access(config.agent_id, current_user, agent_service, min_role="admin")
     
     try:
         draft = await service.create_draft_from_config(config_id)
