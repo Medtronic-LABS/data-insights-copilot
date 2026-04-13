@@ -226,42 +226,42 @@ def register_csv_in_duckdb(
         conn = duckdb.connect(str(db_path), read_only=False)
         
         try:
-        # Create metadata table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS _file_metadata (
-                table_name VARCHAR PRIMARY KEY,
-                original_filename VARCHAR,
-                file_type VARCHAR,
-                csv_path VARCHAR,
-                row_count BIGINT,
-                columns JSON,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            # Create metadata table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS _file_metadata (
+                    table_name VARCHAR PRIMARY KEY,
+                    original_filename VARCHAR,
+                    file_type VARCHAR,
+                    csv_path VARCHAR,
+                    row_count BIGINT,
+                    columns JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Remove old entry
+            conn.execute("DELETE FROM _file_metadata WHERE table_name = ?", [table_name])
+            
+            # Drop old view
+            conn.execute(f"DROP VIEW IF EXISTS {table_name}")
+            
+            # Create VIEW that reads directly from CSV (virtualized)
+            csv_path_escaped = str(csv_path).replace("'", "''")
+            conn.execute(f"""
+                CREATE VIEW {table_name} AS 
+                SELECT * FROM read_csv_auto('{csv_path_escaped}', header=true)
+            """)
+            
+            # Store metadata
+            conn.execute("""
+                INSERT INTO _file_metadata (table_name, original_filename, file_type, csv_path, row_count, columns)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, [table_name, original_filename, 'csv', str(csv_path), row_count, json.dumps(columns)])
+            
+            logger.info(f"Registered CSV as DuckDB view: {table_name} ({row_count:,} rows)")
         
-        # Remove old entry
-        conn.execute("DELETE FROM _file_metadata WHERE table_name = ?", [table_name])
-        
-        # Drop old view
-        conn.execute(f"DROP VIEW IF EXISTS {table_name}")
-        
-        # Create VIEW that reads directly from CSV (virtualized)
-        csv_path_escaped = str(csv_path).replace("'", "''")
-        conn.execute(f"""
-            CREATE VIEW {table_name} AS 
-            SELECT * FROM read_csv_auto('{csv_path_escaped}', header=true)
-        """)
-        
-        # Store metadata
-        conn.execute("""
-            INSERT INTO _file_metadata (table_name, original_filename, file_type, csv_path, row_count, columns)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, [table_name, original_filename, 'csv', str(csv_path), row_count, json.dumps(columns)])
-        
-        logger.info(f"Registered CSV as DuckDB view: {table_name} ({row_count:,} rows)")
-        
-    finally:
-        conn.close()
+        finally:
+            conn.close()
 
 
 def process_file_for_duckdb(
