@@ -20,11 +20,12 @@ class AuditAction(str, Enum):
     ADMIN_DEACTIVATED = "admin.deactivated"  # Admin/Superadmin disabled
     ADMIN_ACTIVATED = "admin.activated"  # Admin/Superadmin re-enabled
     
-    # Agent Management (4 actions)
+    # Agent Management (5 actions)
     AGENT_CREATED = "agent.created"
     AGENT_DELETED = "agent.deleted"
     AGENT_ADMIN_ACCESS_GRANTED = "agent.admin_access_granted"  # Admin/Superadmin assigned
     AGENT_ADMIN_ACCESS_REVOKED = "agent.admin_access_revoked"  # Admin/Superadmin removed
+    AGENT_BULK_ASSIGN = "agent.bulk_assign"  # Bulk assign agents to user
     
     # Agent Config (4 actions)
     CONFIG_CREATED = "config.created"

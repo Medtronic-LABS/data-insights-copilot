@@ -328,6 +328,29 @@ class UserAgentGrantRequest(BaseModel):
         return v
 
 
+class BulkAssignAgentsRequest(BaseModel):
+    """Request to bulk assign agents to a user."""
+    user_id: UUID
+    agent_ids: List[UUID]
+    role: str = Field(default="user", description="Role: user, editor, or admin")
+    
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        allowed = {"user", "editor", "admin"}
+        if v not in allowed:
+            raise ValueError(f"Role must be one of: {', '.join(allowed)}")
+        return v
+
+
+class BulkAssignAgentsResponse(BaseModel):
+    """Response for bulk agent assignment."""
+    status: str = "success"
+    assigned: List[str] = Field(default_factory=list, description="Successfully assigned agent IDs")
+    failed: List[str] = Field(default_factory=list, description="Failed agent IDs")
+    message: str = ""
+
+
 class UserAgentResponse(BaseModel):
     """User-agent relationship response with user details."""
     # User identification

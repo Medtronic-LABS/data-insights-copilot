@@ -40,6 +40,7 @@ from app.modules.agents.schemas import (
     SettingsStepRequest, PromptStepRequest, PublishStepRequest, GeneratePromptResponse,
     # User access schemas
     UserAgentGrantRequest, UserAgentResponse, UserAgentListResponse,
+    BulkAssignAgentsRequest, BulkAssignAgentsResponse,
 )
 
 logger = get_logger(__name__)
@@ -240,6 +241,60 @@ async def delete_agent(
 # User Access Endpoints
 # ==========================================
 
+@agents_router.post("/bulk-assign", response_model=BaseResponse[BulkAssignAgentsResponse])
+async def bulk_assign_agents(
+    data: BulkAssignAgentsRequest,
+    current_user: User = Depends(require_admin),
+    ua_service: UserAgentService = Depends(get_user_agent_service),
+    service: AgentService = Depends(get_agent_service),
+    audit: AuditLogger = Depends(get_audit_logger),
+    db: AsyncSession = Depends(get_db),
+) -> BaseResponse[BulkAssignAgentsResponse]:
+    """Bulk assign multiple agents to a user. Admin only."""
+    from app.modules.users.service import UserService
+    
+    result = await ua_service.bulk_assign_agents(
+        user_id=data.user_id,
+        agent_ids=data.agent_ids,
+        role=data.role,
+        granted_by=current_user.id,
+    )
+    
+    # Audit log
+    if result.assigned:
+        # Fetch target user info for audit log
+        user_service = UserService(db)
+        target_user = await user_service.get_user(str(data.user_id))
+        
+        # Fetch agent details for assigned agents
+        assigned_agent_details = []
+        for agent_id_str in result.assigned:
+            agent = await service.get_agent(UUID(agent_id_str))
+            if agent:
+                assigned_agent_details.append({
+                    "agent_id": agent_id_str,
+                    "agent_name": agent.title,
+                    "role": data.role
+                })
+        
+        await audit.log(
+            action=AuditAction.AGENT_BULK_ASSIGN,
+            actor=current_user,
+            resource_type="user",
+            resource_id=str(data.user_id),
+            resource_name=target_user.username if target_user else str(data.user_id),
+            details={
+                "total_assigned": len(result.assigned),
+                "total_failed": len(result.failed),
+                "assigned_agents": assigned_agent_details,
+                "failed_agent_ids": result.failed,
+                "assigned_by": current_user.username
+            },
+        )
+    
+    return BaseResponse.ok(data=result)
+
+
 @agents_router.post("/{agent_id}/users", response_model=BaseResponse[UserAgentResponse])
 async def grant_user_access(
     agent_id: UUID,
@@ -308,6 +363,7 @@ async def revoke_user_access(
             resource_name=agent.title if agent else str(agent_id),
             details={
                 "user_id": str(user_id),
+                "user_name":current_user.username,
                 "revoked_by": current_user.username
             },
         )

@@ -25,6 +25,7 @@ from app.modules.agents.schemas import (
     AgentConfigResponse, AgentConfigListResponse,
     AgentConfigSummary, AgentConfigHistoryResponse,
     UserAgentResponse, UserAgentListResponse, AgentsForUserListResponse,
+    BulkAssignAgentsResponse,
 )
 # Import data source repository for config validation
 from app.modules.data_sources.repository import DataSourceRepository
@@ -235,6 +236,50 @@ class UserAgentService:
             agents=agents,
             total=len(agents),
             user_id=user_id,
+        )
+    
+    async def bulk_assign_agents(
+        self,
+        user_id: UUID,
+        agent_ids: List[UUID],
+        role: str = "user",
+        granted_by: Optional[UUID] = None,
+    ) -> BulkAssignAgentsResponse:
+        """
+        Bulk assign multiple agents to a user.
+        
+        Returns a response with lists of successfully assigned and failed agent IDs.
+        """
+        assigned: List[str] = []
+        failed: List[str] = []
+        
+        for agent_id in agent_ids:
+            try:
+                # Verify agent exists
+                agent = await self.agents.get_by_id(agent_id)
+                if not agent:
+                    failed.append(str(agent_id))
+                    continue
+                
+                await self.user_agents.grant_access(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    role=role,
+                    granted_by=granted_by,
+                )
+                assigned.append(str(agent_id))
+            except Exception:
+                failed.append(str(agent_id))
+        
+        message = f"Assigned {len(assigned)} agent(s)"
+        if failed:
+            message += f", {len(failed)} failed"
+        
+        return BulkAssignAgentsResponse(
+            status="success" if not failed else "partial",
+            assigned=assigned,
+            failed=failed,
+            message=message,
         )
 
 
