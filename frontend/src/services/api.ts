@@ -388,12 +388,11 @@ export const assignUserToAgent = async (agentId: string, userId: string, role: s
 
 export const bulkAssignAgents = async (userId: string, agentIds: string[], role: string = 'user'): Promise<{ status: string; assigned: string[]; failed: string[]; message: string }> => {
   const response = await apiClient.post('/api/v1/agents/bulk-assign', { user_id: userId, agent_ids: agentIds, role });
-  return response.data;
+  return response.data?.data || response.data;
 };
 
-export const revokeUserAccess = async (agentId: string, userId: string): Promise<{ status: string }> => {
-  const response = await apiClient.delete(`/api/v1/agents/${agentId}/users/${userId}`);
-  return response.data;
+export const revokeUserAccess = async (agentId: string, userId: string): Promise<void> => {
+  await apiClient.delete(`/api/v1/agents/${agentId}/users/${userId}`);
 };
 
 export interface AgentUser {

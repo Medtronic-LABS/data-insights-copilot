@@ -24,6 +24,7 @@ from app.modules.audit.helpers import AuditLogger, get_audit_logger
 from app.core.models.common import BaseResponse
 from app.modules.audit.schemas import AuditAction
 from app.modules.users.schemas import User
+from app.modules.users.service import UserService
 
 from app.modules.agents.service import (
     AgentService, AgentConfigService, UserAgentService
@@ -64,6 +65,9 @@ def get_config_service(db: AsyncSession = Depends(get_db)) -> AgentConfigService
 
 def get_user_agent_service(db: AsyncSession = Depends(get_db)) -> UserAgentService:
     return UserAgentService(db)
+
+def get_user_service(db: AsyncSession = Depends(get_db)) -> UserService:
+    return UserService(db)
 
 
 async def verify_agent_access(
@@ -302,6 +306,7 @@ async def grant_user_access(
     current_user: User = Depends(get_current_user),
     service: AgentService = Depends(get_agent_service),
     ua_service: UserAgentService = Depends(get_user_agent_service),
+    user_service: UserService = Depends(get_user_service),
     audit: AuditLogger = Depends(get_audit_logger),
 ) -> BaseResponse[UserAgentResponse]:
     """Grant user access to agent. Requires admin access."""
@@ -318,6 +323,7 @@ async def grant_user_access(
         # Audit log: Only log if current user is admin/superadmin
         if can_manage_users(current_user.role):
             agent = await service.get_agent(agent_id)
+            user= await user_service.get_user(str(data.user_id))
             await audit.log(
                 action=AuditAction.AGENT_ADMIN_ACCESS_GRANTED,
                 actor=current_user,
@@ -325,7 +331,8 @@ async def grant_user_access(
                 resource_id=str(agent_id),
                 resource_name=agent.title if agent else str(agent_id),
                 details={
-                    "user_id": str(data.user_id),
+                    "user_id": user.id if user else str(data.user_id),
+                    "user_name": user.username if user else str(data.user_id),
                     "agent_access_level": data.role,
                     "granted_by": current_user.username
                 },
@@ -343,6 +350,7 @@ async def revoke_user_access(
     current_user: User = Depends(get_current_user),
     service: AgentService = Depends(get_agent_service),
     ua_service: UserAgentService = Depends(get_user_agent_service),
+    user_service: UserService = Depends(get_user_service),
     audit: AuditLogger = Depends(get_audit_logger),
 ) -> None:
     """Revoke user's access to agent. Requires admin access."""
@@ -355,6 +363,7 @@ async def revoke_user_access(
     # Audit log: Only log if current user is admin/superadmin
     if can_manage_users(current_user.role):
         agent = await service.get_agent(agent_id)
+        user = await user_service.get_user(str(user_id))
         await audit.log(
             action=AuditAction.AGENT_ADMIN_ACCESS_REVOKED,
             actor=current_user,
@@ -362,8 +371,8 @@ async def revoke_user_access(
             resource_id=str(agent_id),
             resource_name=agent.title if agent else str(agent_id),
             details={
-                "user_id": str(user_id),
-                "user_name":current_user.username,
+                "user_id": user.id if user else str(user_id),
+                "user_name": user.username if user else str(user_id),
                 "revoked_by": current_user.username
             },
         )

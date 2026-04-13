@@ -19,6 +19,7 @@ from app.modules.agents.repository import (
     AgentRepository, AgentConfigRepository, UserAgentRepository,
     _config_to_dict
 )
+from app.modules.users.repository import UserRepository   
 from app.modules.agents.schemas import (
     AgentCreate, AgentUpdate, AgentResponse, AgentWithRole,
     AgentDetailResponse, AgentListResponse,
@@ -51,6 +52,7 @@ class AgentService:
         self.agents = AgentRepository(db)
         self.user_agents = UserAgentRepository(db)
         self.configs = AgentConfigRepository(db)
+        self.user= UserRepository(db)
     
     async def create_agent(
         self,
@@ -181,6 +183,7 @@ class UserAgentService:
         self.db = db
         self.user_agents = UserAgentRepository(db)
         self.agents = AgentRepository(db)
+        self.user= UserRepository(db)
     
     async def grant_access(
         self,
@@ -189,8 +192,7 @@ class UserAgentService:
         role: str = "user",
         granted_by: Optional[UUID] = None,
     ) -> UserAgentResponse:
-        """Grant user access to an agent."""
-        # Verify agent exists
+        """Grant user access to an agent.""" # Verify agent exists
         agent = await self.agents.get_by_id(agent_id)
         if not agent:
             raise AppException(
@@ -205,7 +207,22 @@ class UserAgentService:
             role=role,
             granted_by=granted_by,
         )
-        return UserAgentResponse.model_validate(ua)
+        
+        # Fetch user details to build full response
+        user = await self.user.get_by_id(user_id)
+        
+        return UserAgentResponse(
+            id=ua.user_id,
+            user_id=ua.user_id,
+            agent_id=ua.agent_id,
+            username=user.username if user else str(user_id),
+            email=user.email if user else None,
+            full_name=user.full_name if user else None,
+            is_active=user.is_active if user else True,
+            role=ua.role,
+            granted_at=ua.granted_at,
+            granted_by=ua.granted_by,
+        )
     
     async def revoke_access(self, user_id: UUID, agent_id: UUID) -> bool:
         """Revoke user's access to an agent."""
