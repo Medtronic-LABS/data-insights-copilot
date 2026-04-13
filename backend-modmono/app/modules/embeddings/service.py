@@ -1598,7 +1598,7 @@ async def _run_embedding_job(job_config: Dict[str, Any]):
                 
                 loop = asyncio.get_event_loop()
                 def run_chunking():
-                    return transformer.perform_parent_child_chunking(documents=lc_documents)
+                    return transformer.store_documents(documents=lc_documents)
                 
                 chunking_start = time.time()
                 child_documents, parent_docstore = await loop.run_in_executor(None, run_chunking)

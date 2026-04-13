@@ -1,20 +1,16 @@
 """
 Dynamic Context Orchestrator for SQL Generation.
 
-Phase 3: Dynamic Context Orchestration
-======================================
-Prevents context window overflow and hallucination by injecting only the
-necessary schemas and examples for a given user query.
+Phase 4: Retrieval Chain Update
+===============================
+Fetches top K relevant tables based on semantic intent, then forcefully
+retrieves linked schemas via foreign key dependencies.
 
 Multi-Step Retrieval:
 1. Semantic Router: Query vector store for top K relevant tables
 2. Dependency Resolution: Fetch related tables via foreign key relationships
 3. Few-Shot Retrieval: Get similar SQL examples from golden queries
-4. Prompt Assembly: Construct prompt in strict order:
-   - System Instructions
-   - Retrieved DDLs
-   - Golden Few-Shot Examples
-   - User Question
+4. Prompt Assembly: Format context as raw CREATE TABLE blocks
 
 Usage:
     from app.modules.chat.context_orchestrator import ContextOrchestrator
@@ -37,10 +33,13 @@ from typing import Dict, List, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
-
 from app.core.utils.logging import get_logger
 from app.core.settings import get_settings
-from app.core.prompts import get_sql_generator_prompt
+from app.core.prompt_templates import (
+    build_sql_generation_prompt,
+    format_raw_ddl_context,
+    get_dialect_rules,
+)
 
 logger = get_logger(__name__)
 
@@ -55,17 +54,42 @@ class TableContext:
     """Context for a single table including DDL and metadata."""
     table_name: str
     ddl: str
-    column_count: int
+    foreign_keys: List[str] = field(default_factory=list)  # Phase 4: strict metadata
+    column_count: int = 0
     row_count: Optional[int] = None
     is_primary: bool = False  # Retrieved directly from semantic search
     is_dependency: bool = False  # Retrieved via FK relationship
     relevance_score: float = 0.0
-    foreign_key_to: List[str] = field(default_factory=list)
-    foreign_key_from: List[str] = field(default_factory=list)
     
     def token_estimate(self) -> int:
         """Estimate token count for this table's DDL."""
         return int(len(self.ddl) * TOKENS_PER_CHAR)
+    
+    def get_raw_ddl(self) -> str:
+        """Extract raw CREATE TABLE statement from enriched DDL."""
+        lines = self.ddl.split('\n')
+        ddl_lines = []
+        in_ddl = False
+        
+        for line in lines:
+            if line.strip().startswith('CREATE TABLE'):
+                in_ddl = True
+            
+            if in_ddl:
+                ddl_lines.append(line)
+            
+            if in_ddl and line.strip().endswith(';'):
+                break
+        
+        return '\n'.join(ddl_lines) if ddl_lines else self.ddl
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for prompt formatting."""
+        return {
+            "table_name": self.table_name,
+            "ddl": self.ddl,
+            "foreign_keys": self.foreign_keys,
+        }
 
 
 @dataclass
@@ -90,8 +114,8 @@ class AssembledContext:
     """
     Fully assembled context ready for prompt injection.
     
-    Contains all retrieved tables, examples, and metadata organized
-    in the correct order for optimal SQL generation.
+    Contains all retrieved tables (primary + dependencies) and examples
+    organized for optimal SQL generation with raw CREATE TABLE blocks.
     """
     # Core content
     system_instructions: str
@@ -113,70 +137,47 @@ class AssembledContext:
     
     def to_prompt(self) -> str:
         """
-        Assemble the final prompt in strict order:
-        1. System Instructions
-        2. Retrieved DDLs
-        3. Golden Few-Shot Examples
-        4. User Question
+        Assemble the final prompt with raw CREATE TABLE blocks.
+        
+        Phase 4 format:
+        1. System Instructions with dialect rules
+        2. Raw CREATE TABLE blocks (primary tables first)
+        3. FK relationship summary
+        4. Golden Few-Shot Examples
         """
-        sections = []
+        # Separate primary and dependency tables
+        primary_tables = [t.to_dict() for t in self.table_contexts if t.is_primary]
+        dependency_tables = [t.to_dict() for t in self.table_contexts if t.is_dependency]
         
-        # 1. System Instructions
-        sections.append(self.system_instructions)
+        # Format DDL context as raw CREATE TABLE blocks
+        ddl_context = format_raw_ddl_context(
+            primary_tables=primary_tables,
+            dependency_tables=dependency_tables,
+            query_summary=self.user_query[:50] if self.user_query else "query",
+        )
         
-        # 2. Retrieved DDLs (Schema Context)
-        if self.table_contexts:
-            sections.append("\n## Database Schema\n")
-            sections.append("The following tables are relevant to your query:\n")
-            
-            # Sort: primary tables first, then dependencies
-            sorted_tables = sorted(
-                self.table_contexts,
-                key=lambda t: (not t.is_primary, -t.relevance_score)
-            )
-            
-            for table_ctx in sorted_tables:
-                sections.append(table_ctx.ddl)
-                sections.append("")  # Empty line between tables
-            
-            # Add relationships overview if available
-            if self.relationships_overview:
-                sections.append("\n### Table Relationships")
-                sections.append(self.relationships_overview)
+        # Format few-shot examples
+        few_shot_list = [
+            {
+                "question": ex.question,
+                "sql": ex.sql,
+                "category": ex.category,
+                "score": ex.relevance_score,
+            }
+            for ex in self.few_shot_examples
+        ]
         
-        # 3. Golden Few-Shot Examples
-        if self.few_shot_examples:
-            sections.append("\n## Similar SQL Examples (Few-Shot Learning)\n")
-            sections.append("Use these verified examples as reference for SQL patterns:\n")
-            
-            for i, ex in enumerate(self.few_shot_examples, 1):
-                sections.append(f"### Example {i}")
-                sections.append(f"**Question:** {ex.question}")
-                if ex.description:
-                    sections.append(f"**Pattern:** {ex.description}")
-                sections.append("**SQL:**")
-                sections.append("```sql")
-                sections.append(ex.sql)
-                sections.append("```")
-                
-                if ex.dialect_hints:
-                    sections.append(f"**{self.dialect.upper()} Notes:**")
-                    for hint in ex.dialect_hints:
-                        sections.append(f"- {hint}")
-                
-                sections.append("")
+        # Build complete prompt using Phase 4 template
+        prompt = build_sql_generation_prompt(
+            schema_context=ddl_context,
+            dialect=self.dialect,
+            few_shot_examples=few_shot_list if few_shot_list else None,
+        )
         
-        # 4. User Question (added by the calling code, not here)
-        # The user question is typically added in the message, not system prompt
-        
-        return "\n".join(sections)
+        return prompt
     
     def to_messages(self) -> List[Dict[str, str]]:
-        """
-        Convert to chat messages format.
-        
-        Returns list of message dicts ready for LLM API.
-        """
+        """Convert to chat messages format."""
         system_prompt = self.to_prompt()
         
         return [
@@ -195,6 +196,7 @@ class AssembledContext:
             "token_estimate": self.token_estimate,
             "assembly_time_ms": self.assembly_time_ms,
             "dialect": self.dialect,
+            "fk_relationships": sum(len(t.foreign_keys) for t in self.table_contexts),
         }
 
 
@@ -202,8 +204,10 @@ class ContextOrchestrator:
     """
     Orchestrates dynamic context assembly for SQL generation.
     
-    Implements multi-step retrieval to gather only the necessary
-    context for a given query, preventing context overflow.
+    Phase 4 Implementation:
+    - Uses SchemaRetriever for semantic table search
+    - Automatic FK dependency resolution
+    - Raw CREATE TABLE block formatting
     """
     
     def __init__(
@@ -235,180 +239,94 @@ class ContextOrchestrator:
         self._settings = get_settings()
         
         # Lazy-loaded components
-        self._schema_vectorizer = None
+        self._schema_retriever = None
         self._few_shot_engine = None
         self._embed_fn = None
-        
-        # Cache for FK relationships (table_name -> list of related tables)
-        self._fk_cache: Dict[str, List[str]] = {}
-        self._reverse_fk_cache: Dict[str, List[str]] = {}
     
-    async def _get_schema_vectorizer(self):
-        """Get or create schema vectorizer."""
-        if self._schema_vectorizer is None:
-            from app.modules.embeddings.schema_vectorizer import SchemaVectorizer
+    async def _get_schema_retriever(self):
+        """Get or create Phase 4 schema retriever."""
+        if self._schema_retriever is None:
+            from app.modules.embeddings.schema_retriever import SchemaRetriever
             
-            self._schema_vectorizer = SchemaVectorizer(
+            self._schema_retriever = SchemaRetriever(
                 config_id=self.config_id,
-                db_url=self.db_url,
                 embedding_model=self.embedding_model,
                 api_key=self.api_key,
             )
-        return self._schema_vectorizer
+        return self._schema_retriever
     
     async def _get_few_shot_engine(self):
         """Get or create few-shot engine."""
         if self._few_shot_engine is None:
-            from app.modules.sql_examples.few_shot_engine import FewShotEngine
-            
-            self._few_shot_engine = FewShotEngine(
-                dialect=self.dialect,
-                embedding_model=self.embedding_model,
-                api_key=self.api_key,
-            )
+            try:
+                from app.modules.sql_examples.few_shot_engine import FewShotEngine
+                
+                self._few_shot_engine = FewShotEngine(
+                    dialect=self.dialect,
+                    embedding_model=self.embedding_model,
+                    api_key=self.api_key,
+                )
+            except ImportError:
+                logger.warning("FewShotEngine not available")
+                self._few_shot_engine = None
         return self._few_shot_engine
-    
-    async def _get_embed_fn(self):
-        """Get embedding function."""
-        if self._embed_fn is None:
-            from app.modules.embeddings.service import _get_embedding_provider
-            self._embed_fn = await _get_embedding_provider(
-                self.embedding_model,
-                self.api_key,
-            )
-        return self._embed_fn
     
     async def _retrieve_relevant_tables(
         self,
         query: str,
         top_k: int = 5,
-    ) -> Tuple[List[TableContext], Optional[str]]:
+        max_dependencies: int = 3,
+    ) -> Tuple[List[TableContext], List[TableContext]]:
         """
-        Step 1: Semantic Router - Retrieve relevant tables.
+        Phase 4: Retrieve relevant tables with FK dependency resolution.
         
-        Uses vector similarity to find tables most relevant to the query.
+        Steps:
+        1. Semantic search for top K relevant tables
+        2. Parse foreign_keys from strict metadata
+        3. Forcefully retrieve linked schemas
         
         Returns:
-            Tuple of (list of TableContext, relationships overview string)
+            Tuple of (primary_tables, dependency_tables)
         """
-        vectorizer = await self._get_schema_vectorizer()
+        retriever = await self._get_schema_retriever()
         
         try:
-            results = await vectorizer.search_tables(
+            # Use Phase 4 schema retriever with FK resolution
+            schema_context = await retriever.retrieve_with_dependencies(
                 query=query,
-                top_k=top_k + 1,  # +1 for relationships doc
-                include_relationships=True,
+                top_k=top_k,
+                max_dependencies=max_dependencies,
             )
+            
+            # Convert to TableContext objects
+            primary_tables = []
+            dependency_tables = []
+            
+            for table in schema_context.tables:
+                ctx = TableContext(
+                    table_name=table.table_name,
+                    ddl=table.ddl,
+                    foreign_keys=table.foreign_keys,
+                    is_primary=table.is_primary,
+                    is_dependency=table.is_dependency,
+                    relevance_score=table.score,
+                )
+                
+                if table.is_primary:
+                    primary_tables.append(ctx)
+                else:
+                    dependency_tables.append(ctx)
+            
+            logger.info(
+                f"Retrieved {len(primary_tables)} primary + "
+                f"{len(dependency_tables)} dependency tables"
+            )
+            
+            return primary_tables, dependency_tables
+            
         except Exception as e:
-            logger.warning(f"Schema vector search failed: {e}")
-            return [], None
-        
-        table_contexts = []
-        relationships_overview = None
-        
-        for result in results:
-            table_name = result.get("table_name", "")
-            
-            # Handle relationships overview document
-            if table_name == "_relationships":
-                relationships_overview = result.get("ddl", "")
-                continue
-            
-            ddl = result.get("ddl", "")
-            metadata = result.get("metadata", {})
-            score = result.get("score", 0.0)
-            
-            # Parse FK dependencies from metadata
-            fk_deps = metadata.get("foreign_key_dependencies", [])
-            if isinstance(fk_deps, str):
-                try:
-                    fk_deps = json.loads(fk_deps)
-                except (json.JSONDecodeError, ValueError):
-                    fk_deps = []
-            
-            table_ctx = TableContext(
-                table_name=table_name,
-                ddl=ddl,
-                column_count=metadata.get("column_count", 0),
-                row_count=metadata.get("row_count"),
-                is_primary=True,
-                relevance_score=score,
-                foreign_key_to=fk_deps,
-            )
-            
-            # Cache FK relationships
-            self._fk_cache[table_name] = fk_deps
-            for dep in fk_deps:
-                if dep not in self._reverse_fk_cache:
-                    self._reverse_fk_cache[dep] = []
-                if table_name not in self._reverse_fk_cache[dep]:
-                    self._reverse_fk_cache[dep].append(table_name)
-            
-            table_contexts.append(table_ctx)
-        
-        logger.info(f"Retrieved {len(table_contexts)} relevant tables for query")
-        return table_contexts, relationships_overview
-    
-    async def _resolve_dependencies(
-        self,
-        primary_tables: List[TableContext],
-        max_dependencies: int = 3,
-    ) -> List[TableContext]:
-        """
-        Step 2: Dependency Resolution - Fetch related tables via FK.
-        
-        If Table A is retrieved, programmatically fetch Table B if a
-        foreign key relationship exists, ensuring join paths are intact.
-        """
-        if not primary_tables:
-            return []
-        
-        # Collect all FK dependencies
-        needed_tables: Set[str] = set()
-        primary_names = {t.table_name for t in primary_tables}
-        
-        for table_ctx in primary_tables:
-            # Tables this one points to
-            for dep in table_ctx.foreign_key_to:
-                if dep not in primary_names:
-                    needed_tables.add(dep)
-            
-            # Tables pointing to this one (reverse FKs)
-            for ref in self._reverse_fk_cache.get(table_ctx.table_name, []):
-                if ref not in primary_names:
-                    needed_tables.add(ref)
-        
-        if not needed_tables:
-            return []
-        
-        # Limit dependencies to avoid context overflow
-        needed_tables = set(list(needed_tables)[:max_dependencies])
-        
-        logger.info(f"Resolving {len(needed_tables)} FK dependencies: {needed_tables}")
-        
-        # Fetch dependency DDLs
-        dependency_contexts = []
-        vectorizer = await self._get_schema_vectorizer()
-        
-        for table_name in needed_tables:
-            try:
-                ddl = await vectorizer.get_table_ddl(table_name)
-                if ddl:
-                    dep_ctx = TableContext(
-                        table_name=table_name,
-                        ddl=ddl,
-                        column_count=0,  # Unknown for dependencies
-                        is_primary=False,
-                        is_dependency=True,
-                        relevance_score=0.5,  # Lower than primary tables
-                        foreign_key_to=self._fk_cache.get(table_name, []),
-                        foreign_key_from=self._reverse_fk_cache.get(table_name, []),
-                    )
-                    dependency_contexts.append(dep_ctx)
-            except Exception as e:
-                logger.warning(f"Failed to fetch dependency {table_name}: {e}")
-        
-        return dependency_contexts
+            logger.warning(f"Schema retrieval failed: {e}")
+            return [], []
     
     async def _retrieve_few_shot_examples(
         self,
@@ -417,16 +335,14 @@ class ContextOrchestrator:
         category_hint: Optional[str] = None,
     ) -> List[FewShotContext]:
         """
-        Step 3: Few-Shot Retrieval - Get similar SQL examples.
-        
-        Queries the golden queries namespace for the top K similar
-        historical questions and their corresponding SQL.
+        Retrieve similar SQL examples for few-shot prompting.
         """
         engine = await self._get_few_shot_engine()
         
+        if engine is None:
+            return []
+        
         try:
-            from app.modules.sql_examples.few_shot_engine import DialectTranslator, SQLDialect
-            
             examples = await engine.get_few_shot_examples(
                 query=query,
                 top_k=top_k,
@@ -435,24 +351,14 @@ class ContextOrchestrator:
             )
             
             few_shot_contexts = []
-            target_dialect = SQLDialect(self.dialect.lower())
-            
             for ex in examples:
-                # Get dialect hints if not PostgreSQL
-                dialect_hints = []
-                if target_dialect != SQLDialect.POSTGRESQL:
-                    dialect_hints = DialectTranslator.get_dialect_hints(
-                        ex.sql, target_dialect
-                    )
-                
                 ctx = FewShotContext(
                     question=ex.question,
                     sql=ex.sql,
                     category=ex.category,
-                    description=ex.description,
-                    complexity=ex.complexity,
+                    description=getattr(ex, 'description', ''),
+                    complexity=getattr(ex, 'complexity', 'medium'),
                     relevance_score=ex.score,
-                    dialect_hints=dialect_hints,
                 )
                 few_shot_contexts.append(ctx)
             
@@ -463,120 +369,64 @@ class ContextOrchestrator:
             logger.warning(f"Few-shot retrieval failed: {e}")
             return []
     
-    def _get_system_instructions(self, db_type: str = "database") -> str:
-        """
-        Get base system instructions for SQL generation.
-        
-        Includes dialect-specific rules and safety guidelines.
-        """
-        base_prompt = get_sql_generator_prompt()
-        
-        # Add dialect-specific instructions
-        dialect_instructions = self._get_dialect_instructions()
-        
-        # Combine
-        if dialect_instructions:
-            return f"{base_prompt}\n\n{dialect_instructions}"
-        
-        return base_prompt
-    
-    def _get_dialect_instructions(self) -> str:
-        """Get dialect-specific SQL instructions."""
-        dialect_lower = self.dialect.lower()
-        
-        if dialect_lower in ("duckdb", "postgresql"):
-            return """CRITICAL SQL RULES:
-1. Window functions (LAG, LEAD, ROW_NUMBER) CANNOT be used in WHERE - use CTE pattern
-2. Use DATE_TRUNC('month', date_col) for date truncation
-3. Use INTERVAL '90 days' syntax for date arithmetic
-4. For consecutive streak detection, use ROW_NUMBER difference technique in CTEs
-5. GREATEST()/LEAST() for row-wise min/max across columns (NOT aggregate min/max)
-6. Check VARCHAR date columns and CAST to TIMESTAMP before date operations"""
-        
-        elif dialect_lower == "mysql":
-            return """CRITICAL MYSQL SQL RULES:
-1. Use DATE_FORMAT() instead of DATE_TRUNC()
-2. Use INTERVAL 30 DAY syntax (no quotes around number)
-3. Use CURDATE() instead of CURRENT_DATE
-4. For window functions, use MySQL 8.0+ syntax
-5. String concatenation uses CONCAT() function
-6. Use IFNULL() or COALESCE() for null handling"""
-        
-        elif dialect_lower == "sqlserver":
-            return """CRITICAL SQL SERVER RULES:
-1. Use TOP N instead of LIMIT N
-2. Use DATETRUNC() (SQL Server 2022+) or DATEPART/DATEFROMPARTS
-3. Use DATEADD(day, N, date) instead of INTERVAL
-4. Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
-5. Use STDEV() instead of STDDEV()
-6. String concatenation uses + operator or CONCAT()"""
-        
-        return ""
+    def _get_system_instructions(self) -> str:
+        """Get base system instructions (dialect rules handled by template)."""
+        return get_dialect_rules(self.dialect)
     
     def _estimate_tokens(
         self,
-        system_instructions: str,
         table_contexts: List[TableContext],
         few_shot_examples: List[FewShotContext],
         query: str,
     ) -> int:
         """Estimate total token count for the context."""
-        total = len(system_instructions) * TOKENS_PER_CHAR
+        total = 1000  # Base system instructions
         total += sum(t.token_estimate() for t in table_contexts)
         total += sum(e.token_estimate() for e in few_shot_examples)
-        total += len(query) * TOKENS_PER_CHAR
+        total += int(len(query) * TOKENS_PER_CHAR)
         total += 500  # Buffer for formatting
         return int(total)
     
     def _trim_to_budget(
         self,
-        table_contexts: List[TableContext],
+        primary_tables: List[TableContext],
+        dependency_tables: List[TableContext],
         few_shot_examples: List[FewShotContext],
-        system_instructions: str,
         query: str,
     ) -> Tuple[List[TableContext], List[FewShotContext]]:
         """
         Trim context to fit within token budget.
         
-        Priority order (highest to lowest):
-        1. System instructions (required)
-        2. Primary tables (by relevance score)
-        3. Few-shot examples (by relevance score)
-        4. Dependency tables (by relevance score)
+        Priority (highest to lowest):
+        1. Primary tables (by relevance score)
+        2. Few-shot examples (by relevance score)
+        3. Dependency tables (for JOIN paths)
         """
         budget = self.max_context_tokens
-        
-        # Fixed costs
-        used = len(system_instructions) * TOKENS_PER_CHAR
-        used += len(query) * TOKENS_PER_CHAR
-        used += 500  # Buffer
+        used = 1500  # Base instructions + buffer
+        used += int(len(query) * TOKENS_PER_CHAR)
         
         remaining = budget - used
         
-        # Separate primary and dependency tables
-        primary = [t for t in table_contexts if t.is_primary]
-        dependencies = [t for t in table_contexts if t.is_dependency]
-        
         # Sort by relevance
-        primary.sort(key=lambda t: -t.relevance_score)
-        dependencies.sort(key=lambda t: -t.relevance_score)
-        few_shot_examples.sort(key=lambda e: -e.relevance_score)
+        primary_tables = sorted(primary_tables, key=lambda t: -t.relevance_score)
+        dependency_tables = sorted(dependency_tables, key=lambda t: -t.relevance_score)
+        few_shot_examples = sorted(few_shot_examples, key=lambda e: -e.relevance_score)
         
-        # Allocate budget
         final_tables = []
         final_examples = []
         
-        # 1. Add primary tables (60% of remaining budget)
-        primary_budget = remaining * 0.6
-        for table in primary:
+        # 1. Add primary tables (50% of budget)
+        primary_budget = remaining * 0.5
+        for table in primary_tables:
             tokens = table.token_estimate()
             if primary_budget >= tokens:
                 final_tables.append(table)
                 primary_budget -= tokens
                 remaining -= tokens
         
-        # 2. Add few-shot examples (25% of original remaining)
-        example_budget = (budget - used - 500) * 0.25
+        # 2. Add few-shot examples (25% of budget)
+        example_budget = (budget - used) * 0.25
         for example in few_shot_examples:
             tokens = example.token_estimate()
             if example_budget >= tokens:
@@ -585,7 +435,7 @@ class ContextOrchestrator:
                 remaining -= tokens
         
         # 3. Add dependency tables (remaining budget)
-        for table in dependencies:
+        for table in dependency_tables:
             tokens = table.token_estimate()
             if remaining >= tokens:
                 final_tables.append(table)
@@ -604,79 +454,70 @@ class ContextOrchestrator:
         """
         Assemble complete context for SQL generation.
         
-        Implements the full multi-step retrieval pipeline:
-        1. Semantic Router: Retrieve relevant tables
-        2. Dependency Resolution: Fetch FK-related tables
-        3. Few-Shot Retrieval: Get similar examples
-        4. Prompt Assembly: Organize in correct order
+        Phase 4 Pipeline:
+        1. Semantic search for relevant tables
+        2. FK dependency resolution (forcefully retrieve linked schemas)
+        3. Few-shot example retrieval
+        4. Format as raw CREATE TABLE blocks
         
         Args:
             query: User's natural language question
             max_tables: Maximum primary tables to retrieve
             max_dependencies: Maximum FK dependencies to add
-            max_examples: Maximum few-shot examples to retrieve
+            max_examples: Maximum few-shot examples
             category_hint: Optional category for few-shot filtering
         
         Returns:
-            AssembledContext ready for prompt generation
+            AssembledContext with raw DDL blocks ready for LLM
         """
         start_time = datetime.now()
         
-        # Run retrieval steps in parallel where possible
+        # Run retrieval steps in parallel
         table_task = asyncio.create_task(
-            self._retrieve_relevant_tables(query, top_k=max_tables)
+            self._retrieve_relevant_tables(query, top_k=max_tables, max_dependencies=max_dependencies)
         )
         example_task = asyncio.create_task(
             self._retrieve_few_shot_examples(query, top_k=max_examples, category_hint=category_hint)
         )
         
-        # Wait for primary retrievals
-        (primary_tables, relationships_overview), few_shot_examples = await asyncio.gather(
+        # Wait for retrievals
+        (primary_tables, dependency_tables), few_shot_examples = await asyncio.gather(
             table_task, example_task
         )
         
-        # Resolve dependencies (sequential, needs primary tables first)
-        dependency_tables = await self._resolve_dependencies(
-            primary_tables, max_dependencies=max_dependencies
+        # Trim to budget
+        all_tables, final_examples = self._trim_to_budget(
+            primary_tables, dependency_tables, few_shot_examples, query
         )
-        
-        # Combine all tables
-        all_tables = primary_tables + dependency_tables
         
         # Get system instructions
         system_instructions = self._get_system_instructions()
         
-        # Trim to budget if needed
-        final_tables, final_examples = self._trim_to_budget(
-            all_tables, few_shot_examples, system_instructions, query
-        )
-        
         # Calculate token estimate
-        token_estimate = self._estimate_tokens(
-            system_instructions, final_tables, final_examples, query
-        )
+        token_estimate = self._estimate_tokens(all_tables, final_examples, query)
         
         # Calculate assembly time
         assembly_time = (datetime.now() - start_time).total_seconds() * 1000
         
         context = AssembledContext(
             system_instructions=system_instructions,
-            table_contexts=final_tables,
+            table_contexts=all_tables,
             few_shot_examples=final_examples,
             user_query=query,
             config_id=self.config_id,
             dialect=self.dialect,
-            total_tables_available=len(all_tables),
-            tables_retrieved=len(final_tables),
+            total_tables_available=len(primary_tables) + len(dependency_tables),
+            tables_retrieved=len(all_tables),
             examples_retrieved=len(final_examples),
             token_estimate=token_estimate,
             assembly_time_ms=assembly_time,
-            relationships_overview=relationships_overview,
         )
         
         logger.info(
-            f"Context assembled: {len(final_tables)} tables, {len(final_examples)} examples, "
-            f"~{token_estimate} tokens, {assembly_time:.1f}ms"
+            f"Context assembled: {len(all_tables)} tables "
+            f"({sum(1 for t in all_tables if t.is_primary)} primary, "
+            f"{sum(1 for t in all_tables if t.is_dependency)} deps), "
+            f"{len(final_examples)} examples, ~{token_estimate} tokens, {assembly_time:.1f}ms"
         )
         
         return context

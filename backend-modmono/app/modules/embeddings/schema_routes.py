@@ -1,15 +1,17 @@
 """
 API routes for schema vectorization (DDL-based structural indexing).
 
-Phase 1: Ingestion & Knowledge Base Redesign
-============================================
+Phase 1-3: Ingestion & Knowledge Base Redesign
+==============================================
 Replaces naive token chunking with table-level structural indexing.
 Each table's enriched DDL is embedded as a single document.
 
 Endpoints:
 - POST /schema/vectorize - Vectorize schema for an agent config
+- POST /schema/migrate - Phase 3: Migrate from chunks to DDL vectors
 - POST /schema/search - Search for relevant tables by query
 - GET /schema/context/{config_id} - Get DDL context for SQL generation
+- GET /schema/context-window/{config_id} - Check context window compatibility
 - DELETE /schema/{config_id} - Delete schema vectors
 """
 import os
@@ -28,6 +30,12 @@ from app.modules.embeddings.schema_vectorizer import (
     vectorize_schema_for_config,
     get_schema_context_for_query,
     SCHEMA_COLLECTION_PREFIX,
+)
+from app.modules.embeddings.schema_migration import (
+    SchemaMigrator,
+    migrate_schema_from_agent_config,
+    MigrationResult,
+    get_embedding_context_window,
 )
 
 logger = get_logger(__name__)
@@ -54,6 +62,37 @@ class SchemaVectorizeResponse(BaseModel):
     collection_name: str = ""
     duration_seconds: float = 0.0
     error: Optional[str] = None
+
+
+class SchemaMigrationRequest(BaseModel):
+    """Request to migrate schema vectors (Phase 3)."""
+    config_id: int
+    purge_existing: bool = True
+
+
+class SchemaMigrationResponse(BaseModel):
+    """Response from schema migration."""
+    success: bool
+    tables_migrated: int = 0
+    vectors_created: int = 0
+    longest_ddl_chars: int = 0
+    longest_ddl_tokens: int = 0
+    model_context_window: int = 0
+    context_window_sufficient: bool = True
+    purged_old_vectors: int = 0
+    duration_seconds: float = 0.0
+    errors: List[str] = []
+
+
+class ContextWindowCheckResponse(BaseModel):
+    """Response from context window check."""
+    config_id: int
+    embedding_model: str
+    model_context_window: int
+    longest_ddl_tokens: int
+    longest_ddl_chars: int
+    is_sufficient: bool
+    tables_checked: int
 
 
 class SchemaSearchRequest(BaseModel):
@@ -87,6 +126,157 @@ class SchemaContextResponse(BaseModel):
 
 
 # ============================================
+# Phase 3: Schema Migration Endpoints
+# ============================================
+
+@router.post("/migrate", response_model=SchemaMigrationResponse)
+async def migrate_schema(
+    request: SchemaMigrationRequest,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Phase 3: Migrate from fragmented token chunks to table-level DDL vectors.
+    
+    This endpoint performs a full migration:
+    1. Purges existing vector index containing fragmented token chunks
+    2. Validates embedding model context window against longest DDL
+    3. Extracts full DDL statements from information_schema
+    4. Embeds each DDL as a single vector
+    5. Upserts with strict metadata: {"table_name": str, "foreign_keys": list[str]}
+    
+    Requires Admin role.
+    """
+    try:
+        logger.info(f"Starting Phase 3 schema migration for config {request.config_id}")
+        
+        result = await migrate_schema_from_agent_config(
+            db=db,
+            config_id=request.config_id,
+        )
+        
+        return SchemaMigrationResponse(
+            success=result.success,
+            tables_migrated=result.tables_migrated,
+            vectors_created=result.vectors_created,
+            longest_ddl_chars=result.longest_ddl_chars,
+            longest_ddl_tokens=result.longest_ddl_tokens,
+            model_context_window=result.model_context_window,
+            context_window_sufficient=result.context_window_sufficient,
+            purged_old_vectors=result.purged_old_vectors,
+            duration_seconds=result.duration_seconds,
+            errors=result.errors,
+        )
+        
+    except ValueError as e:
+        logger.error(f"Schema migration failed: {e}")
+        return SchemaMigrationResponse(
+            success=False,
+            errors=[str(e)],
+        )
+    except Exception as e:
+        logger.error(f"Schema migration error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Schema migration failed: {str(e)}"
+        )
+
+
+@router.get("/context-window/{config_id}", response_model=ContextWindowCheckResponse)
+async def check_context_window(
+    config_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Check if the embedding model's context window can handle all DDLs.
+    
+    This is a pre-flight check before running migration to ensure
+    no DDL will be truncated due to context window limitations.
+    
+    Returns the longest DDL size (in tokens and chars) compared to
+    the model's context window.
+    """
+    try:
+        from app.modules.agents.models import AgentConfigModel
+        from app.modules.data_sources.models import DataSourceModel
+        from app.modules.ai_models.models import AIModel
+        
+        # Get agent config
+        stmt = select(AgentConfigModel).where(AgentConfigModel.id == config_id)
+        result = await db.execute(stmt)
+        config = result.scalar_one_or_none()
+        
+        if not config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Configuration {config_id} not found"
+            )
+        
+        # Get embedding model
+        embedding_model = "huggingface/BAAI/bge-large-en-v1.5"
+        
+        if config.embedding_model_id:
+            model_stmt = select(AIModel).where(AIModel.id == config.embedding_model_id)
+            model_result = await db.execute(model_stmt)
+            ai_model = model_result.scalar_one_or_none()
+            if ai_model:
+                embedding_model = ai_model.model_id
+        
+        # Get data source
+        ds_stmt = select(DataSourceModel).where(DataSourceModel.id == config.data_source_id)
+        ds_result = await db.execute(ds_stmt)
+        data_source = ds_result.scalar_one_or_none()
+        
+        if not data_source:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Data source not found for config {config_id}"
+            )
+        
+        # Create migrator to check context window
+        if data_source.source_type == "database":
+            migrator = SchemaMigrator(
+                config_id=config_id,
+                db_url=data_source.db_url,
+                embedding_model=embedding_model,
+            )
+        else:
+            migrator = SchemaMigrator(
+                config_id=config_id,
+                duckdb_path=data_source.duckdb_file_path,
+                duckdb_table_name=data_source.duckdb_table_name,
+                embedding_model=embedding_model,
+            )
+        
+        # Extract documents and validate
+        documents = migrator._extract_ddl_documents()
+        is_sufficient, longest_tokens, model_context = migrator.validate_context_window(documents)
+        
+        longest_chars = max(len(doc["content"]) for doc in documents) if documents else 0
+        tables_checked = len([d for d in documents if d["metadata"]["table_name"] != "_relationships"])
+        
+        return ContextWindowCheckResponse(
+            config_id=config_id,
+            embedding_model=embedding_model,
+            model_context_window=model_context,
+            longest_ddl_tokens=longest_tokens,
+            longest_ddl_chars=longest_chars,
+            is_sufficient=is_sufficient,
+            tables_checked=tables_checked,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Context window check failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Context window check failed: {str(e)}"
+        )
+
+
+# ============================================
 # Schema Vectorization Endpoints
 # ============================================
 
@@ -108,6 +298,9 @@ async def vectorize_schema(
     preserving table boundaries that naive token chunking destroys.
     
     Requires Admin role.
+    
+    Note: Consider using POST /schema/migrate for the full Phase 3 migration
+    which includes purging old fragmented chunks.
     """
     try:
         logger.info(f"Starting schema vectorization for config {request.config_id}")
@@ -155,7 +348,7 @@ async def search_schema(
     - Table name
     - Enriched DDL with semantic annotations
     - Relevance score
-    - Metadata (column count, FK dependencies, etc.)
+    - Metadata (foreign_keys list per Phase 3 strict format)
     """
     try:
         from app.modules.agents.models import AgentConfigModel

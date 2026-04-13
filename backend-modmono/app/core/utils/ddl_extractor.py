@@ -1,31 +1,32 @@
 """
 DDL Extraction Utility for Structural Schema Indexing.
 
-Phase 1: Ingestion & Knowledge Base Redesign
+Phase 2: DDL Extraction Logic
 ============================================
-Replaces naive token chunking with table-level structural indexing.
-Token chunks destroy relational boundaries; the LLM needs complete DDL statements.
+Implements functions querying information_schema to extract full CREATE TABLE statements.
+Injects primary keys, foreign keys, and column data types into the DDL string.
+Outputs exactly one contiguous DDL string per database table.
 
 Features:
-- Extract exact CREATE TABLE statements including PKs, FKs, and column data types
-- Enrich schemas semantically with natural language descriptions
-- Prepare enriched DDL for table-level vectorization
+- Direct information_schema queries for precise DDL extraction
+- Complete CREATE TABLE statements including PKs, FKs, and column data types
+- Semantic enrichment with natural language descriptions
+- Table-level vectorization-ready documents
 
 Usage:
-    from app.core.utils.ddl_extractor import DDLExtractor
+    from app.core.utils.ddl_extractor import DDLExtractor, extract_ddl_from_information_schema
     
+    # Direct information_schema extraction
+    ddl_string = extract_ddl_from_information_schema(db_url, "orders")
+    
+    # Full extractor with enrichment
     extractor = DDLExtractor(db_url="postgresql://user:pass@host:5432/db")
     ddl_documents = extractor.extract_all_tables()
-    
-    # Each document contains:
-    # - Complete DDL statement
-    # - Semantic metadata (table name, FK dependencies, column descriptions)
-    # - Business logic annotations from data dictionary
 """
 import re
 import json
 import hashlib
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -56,8 +57,8 @@ class ColumnInfo:
     foreign_key_table: Optional[str] = None
     foreign_key_column: Optional[str] = None
     default_value: Optional[str] = None
-    description: Optional[str] = None  # Natural language description
-    business_logic: Optional[str] = None  # e.g., "status_code = 4 means Completed"
+    description: Optional[str] = None
+    business_logic: Optional[str] = None
     
     def to_ddl_line(self, dialect: DatabaseDialect = DatabaseDialect.POSTGRESQL) -> str:
         """Generate DDL line for this column."""
@@ -98,7 +99,7 @@ class TableSchema:
     primary_key_columns: List[str] = field(default_factory=list)
     foreign_keys: List[Dict[str, Any]] = field(default_factory=list)
     indexes: List[Dict[str, Any]] = field(default_factory=list)
-    description: Optional[str] = None  # Table-level description
+    description: Optional[str] = None
     row_count: Optional[int] = None
     
     def get_foreign_key_dependencies(self) -> List[str]:
@@ -109,17 +110,14 @@ class TableSchema:
         """Generate CREATE TABLE statement."""
         lines = [f'CREATE TABLE "{self.table_name}" (']
         
-        # Column definitions
         col_lines = []
         for col in self.columns:
             col_lines.append(f"    {col.to_ddl_line(dialect)}")
         
-        # Primary key constraint
         if self.primary_key_columns:
             pk_cols = ", ".join(f'"{c}"' for c in self.primary_key_columns)
             col_lines.append(f"    PRIMARY KEY ({pk_cols})")
         
-        # Foreign key constraints
         for fk in self.foreign_keys:
             from_cols = ", ".join(f'"{c}"' for c in fk.get("constrained_columns", []))
             to_table = fk.get("referred_table", "")
@@ -133,15 +131,9 @@ class TableSchema:
         return "\n".join(lines)
     
     def generate_enriched_ddl(self, dialect: DatabaseDialect = DatabaseDialect.POSTGRESQL) -> str:
-        """
-        Generate enriched DDL with semantic annotations as comments.
-        
-        This format preserves the exact DDL structure while adding
-        natural language context that helps the LLM understand the schema.
-        """
+        """Generate enriched DDL with semantic annotations as comments."""
         lines = []
         
-        # Table header comment with description
         lines.append(f"-- ============================================")
         lines.append(f"-- Table: {self.table_name}")
         if self.description:
@@ -149,23 +141,18 @@ class TableSchema:
         if self.row_count is not None:
             lines.append(f"-- Row Count: {self.row_count:,}")
         
-        # Foreign key dependencies
         deps = self.get_foreign_key_dependencies()
         if deps:
             lines.append(f"-- Dependencies: {', '.join(deps)}")
         
         lines.append(f"-- ============================================")
         lines.append("")
-        
-        # DDL statement
         lines.append(f'CREATE TABLE "{self.table_name}" (')
         
-        # Column definitions with inline comments
         col_lines = []
         for col in self.columns:
             col_ddl = f"    {col.to_ddl_line(dialect)}"
             
-            # Add semantic comment
             comments = []
             if col.is_primary_key:
                 comments.append("PK")
@@ -181,12 +168,10 @@ class TableSchema:
             
             col_lines.append(col_ddl)
         
-        # Primary key constraint
         if self.primary_key_columns:
             pk_cols = ", ".join(f'"{c}"' for c in self.primary_key_columns)
             col_lines.append(f"    PRIMARY KEY ({pk_cols})")
         
-        # Foreign key constraints with descriptive comments
         for fk in self.foreign_keys:
             from_cols = ", ".join(f'"{c}"' for c in fk.get("constrained_columns", []))
             to_table = fk.get("referred_table", "")
@@ -201,20 +186,11 @@ class TableSchema:
         return "\n".join(lines)
     
     def to_vector_document(self, dialect: DatabaseDialect = DatabaseDialect.POSTGRESQL) -> Dict[str, Any]:
-        """
-        Convert table schema to a vector store document.
-        
-        Returns a document dict with:
-        - id: Unique identifier for the table
-        - content: Enriched DDL statement
-        - metadata: Structured metadata for filtering and retrieval
-        """
+        """Convert table schema to a vector store document."""
         enriched_ddl = self.generate_enriched_ddl(dialect)
         
-        # Generate stable document ID
         doc_id = hashlib.sha256(f"ddl_{self.table_name}".encode()).hexdigest()[:16]
         
-        # Build column summaries for metadata
         column_summaries = []
         for col in self.columns:
             summary = {
@@ -234,7 +210,7 @@ class TableSchema:
             "primary_keys": self.primary_key_columns,
             "foreign_key_dependencies": self.get_foreign_key_dependencies(),
             "has_foreign_keys": len(self.foreign_keys) > 0,
-            "columns": json.dumps(column_summaries),  # JSON string for vector store compatibility
+            "columns": json.dumps(column_summaries),
         }
         
         if self.description:
@@ -248,6 +224,728 @@ class TableSchema:
             "content": enriched_ddl,
             "metadata": metadata,
         }
+
+
+# =============================================================================
+# Phase 2: Direct information_schema DDL Extraction Functions
+# =============================================================================
+
+def extract_ddl_from_information_schema(
+    db_url: str,
+    table_name: str,
+    schema_name: str = "public",
+) -> str:
+    """
+    Extract a complete CREATE TABLE DDL statement by querying information_schema directly.
+    
+    This function queries the database's information_schema to build a precise DDL
+    statement including all columns, data types, primary keys, and foreign keys.
+    
+    Args:
+        db_url: Database connection URL
+        table_name: Name of the table to extract
+        schema_name: Schema name (default: "public" for PostgreSQL)
+    
+    Returns:
+        A single contiguous DDL string for the table
+    
+    Example:
+        >>> ddl = extract_ddl_from_information_schema(
+        ...     "postgresql://user:pass@localhost:5432/mydb",
+        ...     "orders"
+        ... )
+        >>> print(ddl)
+        CREATE TABLE "orders" (
+            "id" INTEGER NOT NULL,
+            "customer_id" INTEGER,
+            "order_date" TIMESTAMP,
+            "total_amount" NUMERIC(10,2),
+            PRIMARY KEY ("id"),
+            FOREIGN KEY ("customer_id") REFERENCES "customers" ("id")
+        );
+    """
+    db_url = _normalize_db_url(db_url)
+    engine = create_engine(db_url, pool_pre_ping=True, pool_size=1)
+    
+    try:
+        dialect = _detect_dialect_from_url(db_url)
+        
+        with engine.connect() as conn:
+            columns = _query_columns_from_information_schema(conn, table_name, schema_name, dialect)
+            pk_columns = _query_primary_keys_from_information_schema(conn, table_name, schema_name, dialect)
+            foreign_keys = _query_foreign_keys_from_information_schema(conn, table_name, schema_name, dialect)
+            
+            ddl = _build_ddl_string(table_name, columns, pk_columns, foreign_keys)
+            
+            return ddl
+    finally:
+        engine.dispose()
+
+
+def extract_all_ddls_from_information_schema(
+    db_url: str,
+    schema_name: str = "public",
+    include_tables: Optional[List[str]] = None,
+    exclude_tables: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """
+    Extract DDL statements for all tables in a database schema.
+    
+    Args:
+        db_url: Database connection URL
+        schema_name: Schema name (default: "public")
+        include_tables: Optional list of tables to include (None = all)
+        exclude_tables: Optional list of tables to exclude
+    
+    Returns:
+        Dict mapping table names to their DDL strings
+    """
+    db_url = _normalize_db_url(db_url)
+    engine = create_engine(db_url, pool_pre_ping=True, pool_size=1)
+    
+    try:
+        dialect = _detect_dialect_from_url(db_url)
+        
+        with engine.connect() as conn:
+            table_names = _query_table_names(conn, schema_name, dialect)
+            
+            if include_tables:
+                table_names = [t for t in table_names if t in include_tables]
+            if exclude_tables:
+                table_names = [t for t in table_names if t not in exclude_tables]
+            
+            ddls = {}
+            for table_name in table_names:
+                try:
+                    columns = _query_columns_from_information_schema(conn, table_name, schema_name, dialect)
+                    pk_columns = _query_primary_keys_from_information_schema(conn, table_name, schema_name, dialect)
+                    foreign_keys = _query_foreign_keys_from_information_schema(conn, table_name, schema_name, dialect)
+                    
+                    ddl = _build_ddl_string(table_name, columns, pk_columns, foreign_keys)
+                    ddls[table_name] = ddl
+                    
+                    logger.info(f"Extracted DDL for table: {table_name}")
+                except Exception as e:
+                    logger.error(f"Failed to extract DDL for {table_name}: {e}")
+            
+            return ddls
+    finally:
+        engine.dispose()
+
+
+def _normalize_db_url(url: str) -> str:
+    """Normalize common typos in database URLs."""
+    url = url.replace("postgressql://", "postgresql://")
+    url = url.replace("postgress://", "postgresql://")
+    url = url.replace("postgres://", "postgresql://")
+    return url
+
+
+def _detect_dialect_from_url(url: str) -> DatabaseDialect:
+    """Detect database dialect from connection URL."""
+    url_lower = url.lower()
+    if "postgresql" in url_lower or "postgres" in url_lower:
+        return DatabaseDialect.POSTGRESQL
+    elif "mysql" in url_lower:
+        return DatabaseDialect.MYSQL
+    elif "sqlite" in url_lower:
+        return DatabaseDialect.SQLITE
+    elif "duckdb" in url_lower:
+        return DatabaseDialect.DUCKDB
+    else:
+        return DatabaseDialect.POSTGRESQL
+
+
+def _query_table_names(
+    conn,
+    schema_name: str,
+    dialect: DatabaseDialect,
+) -> List[str]:
+    """Query all table names from information_schema."""
+    if dialect == DatabaseDialect.POSTGRESQL:
+        result = conn.execute(text("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = :schema_name 
+              AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+        """), {"schema_name": schema_name})
+    elif dialect == DatabaseDialect.MYSQL:
+        result = conn.execute(text("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = DATABASE()
+              AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+        """))
+    elif dialect == DatabaseDialect.SQLITE:
+        result = conn.execute(text("""
+            SELECT name FROM sqlite_master 
+            WHERE type = 'table' 
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """))
+    else:
+        result = conn.execute(text("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = :schema_name
+            ORDER BY table_name
+        """), {"schema_name": schema_name})
+    
+    return [row[0] for row in result.fetchall()]
+
+
+def _query_columns_from_information_schema(
+    conn,
+    table_name: str,
+    schema_name: str,
+    dialect: DatabaseDialect,
+) -> List[Dict[str, Any]]:
+    """
+    Query column information from information_schema.columns.
+    
+    Returns list of column dicts with: name, data_type, is_nullable, column_default, ordinal_position
+    """
+    if dialect == DatabaseDialect.POSTGRESQL:
+        result = conn.execute(text("""
+            SELECT 
+                column_name,
+                data_type,
+                udt_name,
+                character_maximum_length,
+                numeric_precision,
+                numeric_scale,
+                is_nullable,
+                column_default,
+                ordinal_position
+            FROM information_schema.columns
+            WHERE table_schema = :schema_name
+              AND table_name = :table_name
+            ORDER BY ordinal_position
+        """), {"schema_name": schema_name, "table_name": table_name})
+        
+        columns = []
+        for row in result.fetchall():
+            data_type = _build_postgresql_type_string(
+                row[1], row[2], row[3], row[4], row[5],
+            )
+            
+            columns.append({
+                "name": row[0],
+                "data_type": data_type,
+                "is_nullable": row[6] == "YES",
+                "column_default": row[7],
+                "ordinal_position": row[8],
+            })
+        return columns
+    
+    elif dialect == DatabaseDialect.MYSQL:
+        result = conn.execute(text("""
+            SELECT 
+                column_name,
+                column_type,
+                is_nullable,
+                column_default,
+                ordinal_position
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+            ORDER BY ordinal_position
+        """), {"table_name": table_name})
+        
+        columns = []
+        for row in result.fetchall():
+            columns.append({
+                "name": row[0],
+                "data_type": row[1].upper(),
+                "is_nullable": row[2] == "YES",
+                "column_default": row[3],
+                "ordinal_position": row[4],
+            })
+        return columns
+    
+    elif dialect == DatabaseDialect.SQLITE:
+        result = conn.execute(text(f'PRAGMA table_info("{table_name}")'))
+        
+        columns = []
+        for row in result.fetchall():
+            columns.append({
+                "name": row[1],
+                "data_type": row[2] or "TEXT",
+                "is_nullable": row[3] == 0,
+                "column_default": row[4],
+                "ordinal_position": row[0],
+            })
+        return columns
+    
+    else:
+        result = conn.execute(text("""
+            SELECT 
+                column_name,
+                data_type,
+                is_nullable,
+                column_default,
+                ordinal_position
+            FROM information_schema.columns
+            WHERE table_name = :table_name
+            ORDER BY ordinal_position
+        """), {"table_name": table_name})
+        
+        columns = []
+        for row in result.fetchall():
+            columns.append({
+                "name": row[0],
+                "data_type": row[1].upper() if row[1] else "TEXT",
+                "is_nullable": row[2] == "YES" if row[2] else True,
+                "column_default": row[3],
+                "ordinal_position": row[4],
+            })
+        return columns
+
+
+def _build_postgresql_type_string(
+    data_type: str,
+    udt_name: str,
+    char_max_length: Optional[int],
+    numeric_precision: Optional[int],
+    numeric_scale: Optional[int],
+) -> str:
+    """Build precise PostgreSQL data type string with length/precision."""
+    data_type_upper = data_type.upper() if data_type else "TEXT"
+    
+    if data_type_upper == "ARRAY":
+        return f"{udt_name.upper()}[]" if udt_name else "TEXT[]"
+    
+    if data_type_upper == "USER-DEFINED":
+        return udt_name.upper() if udt_name else "TEXT"
+    
+    if data_type_upper in ("CHARACTER VARYING", "VARCHAR"):
+        if char_max_length:
+            return f"VARCHAR({char_max_length})"
+        return "VARCHAR"
+    
+    if data_type_upper in ("CHARACTER", "CHAR"):
+        if char_max_length:
+            return f"CHAR({char_max_length})"
+        return "CHAR"
+    
+    if data_type_upper in ("NUMERIC", "DECIMAL"):
+        if numeric_precision is not None:
+            if numeric_scale is not None and numeric_scale > 0:
+                return f"NUMERIC({numeric_precision},{numeric_scale})"
+            return f"NUMERIC({numeric_precision})"
+        return "NUMERIC"
+    
+    if "TIMESTAMP" in data_type_upper:
+        if "WITH TIME ZONE" in data_type_upper:
+            return "TIMESTAMPTZ"
+        return "TIMESTAMP"
+    
+    type_mappings = {
+        "INTEGER": "INTEGER",
+        "BIGINT": "BIGINT",
+        "SMALLINT": "SMALLINT",
+        "REAL": "REAL",
+        "DOUBLE PRECISION": "DOUBLE PRECISION",
+        "BOOLEAN": "BOOLEAN",
+        "TEXT": "TEXT",
+        "DATE": "DATE",
+        "TIME": "TIME",
+        "UUID": "UUID",
+        "JSON": "JSON",
+        "JSONB": "JSONB",
+        "BYTEA": "BYTEA",
+    }
+    
+    return type_mappings.get(data_type_upper, data_type_upper)
+
+
+def _query_primary_keys_from_information_schema(
+    conn,
+    table_name: str,
+    schema_name: str,
+    dialect: DatabaseDialect,
+) -> List[str]:
+    """
+    Query primary key columns from information_schema.
+    
+    Returns list of column names that form the primary key.
+    """
+    if dialect == DatabaseDialect.POSTGRESQL:
+        result = conn.execute(text("""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu 
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'PRIMARY KEY'
+              AND tc.table_schema = :schema_name
+              AND tc.table_name = :table_name
+            ORDER BY kcu.ordinal_position
+        """), {"schema_name": schema_name, "table_name": table_name})
+        
+        return [row[0] for row in result.fetchall()]
+    
+    elif dialect == DatabaseDialect.MYSQL:
+        result = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.key_column_usage
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+              AND constraint_name = 'PRIMARY'
+            ORDER BY ordinal_position
+        """), {"table_name": table_name})
+        
+        return [row[0] for row in result.fetchall()]
+    
+    elif dialect == DatabaseDialect.SQLITE:
+        result = conn.execute(text(f'PRAGMA table_info("{table_name}")'))
+        
+        pk_columns = []
+        for row in result.fetchall():
+            if row[5] > 0:
+                pk_columns.append((row[5], row[1]))
+        
+        pk_columns.sort(key=lambda x: x[0])
+        return [col[1] for col in pk_columns]
+    
+    else:
+        try:
+            inspector = inspect(conn.engine)
+            pk_constraint = inspector.get_pk_constraint(table_name)
+            return pk_constraint.get("constrained_columns", []) if pk_constraint else []
+        except Exception:
+            return []
+
+
+def _query_foreign_keys_from_information_schema(
+    conn,
+    table_name: str,
+    schema_name: str,
+    dialect: DatabaseDialect,
+) -> List[Dict[str, Any]]:
+    """
+    Query foreign key constraints from information_schema.
+    
+    Returns list of FK dicts with: constraint_name, columns, ref_table, ref_columns
+    """
+    if dialect == DatabaseDialect.POSTGRESQL:
+        result = conn.execute(text("""
+            SELECT
+                tc.constraint_name,
+                kcu.column_name,
+                ccu.table_name AS foreign_table_name,
+                ccu.column_name AS foreign_column_name,
+                kcu.ordinal_position
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.key_column_usage AS kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage AS ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND tc.table_schema = :schema_name
+              AND tc.table_name = :table_name
+            ORDER BY tc.constraint_name, kcu.ordinal_position
+        """), {"schema_name": schema_name, "table_name": table_name})
+        
+        fk_dict: Dict[str, Dict[str, Any]] = {}
+        for row in result.fetchall():
+            constraint_name = row[0]
+            if constraint_name not in fk_dict:
+                fk_dict[constraint_name] = {
+                    "constraint_name": constraint_name,
+                    "columns": [],
+                    "ref_table": row[2],
+                    "ref_columns": [],
+                }
+            fk_dict[constraint_name]["columns"].append(row[1])
+            fk_dict[constraint_name]["ref_columns"].append(row[3])
+        
+        return list(fk_dict.values())
+    
+    elif dialect == DatabaseDialect.MYSQL:
+        result = conn.execute(text("""
+            SELECT
+                constraint_name,
+                column_name,
+                referenced_table_name,
+                referenced_column_name,
+                ordinal_position
+            FROM information_schema.key_column_usage
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+              AND referenced_table_name IS NOT NULL
+            ORDER BY constraint_name, ordinal_position
+        """), {"table_name": table_name})
+        
+        fk_dict: Dict[str, Dict[str, Any]] = {}
+        for row in result.fetchall():
+            constraint_name = row[0]
+            if constraint_name not in fk_dict:
+                fk_dict[constraint_name] = {
+                    "constraint_name": constraint_name,
+                    "columns": [],
+                    "ref_table": row[2],
+                    "ref_columns": [],
+                }
+            fk_dict[constraint_name]["columns"].append(row[1])
+            fk_dict[constraint_name]["ref_columns"].append(row[3])
+        
+        return list(fk_dict.values())
+    
+    elif dialect == DatabaseDialect.SQLITE:
+        result = conn.execute(text(f'PRAGMA foreign_key_list("{table_name}")'))
+        
+        fk_dict: Dict[int, Dict[str, Any]] = {}
+        for row in result.fetchall():
+            fk_id = row[0]
+            if fk_id not in fk_dict:
+                fk_dict[fk_id] = {
+                    "constraint_name": f"fk_{table_name}_{fk_id}",
+                    "columns": [],
+                    "ref_table": row[2],
+                    "ref_columns": [],
+                }
+            fk_dict[fk_id]["columns"].append(row[3])
+            fk_dict[fk_id]["ref_columns"].append(row[4])
+        
+        return list(fk_dict.values())
+    
+    else:
+        try:
+            inspector = inspect(conn.engine)
+            fks = inspector.get_foreign_keys(table_name)
+            return [
+                {
+                    "constraint_name": fk.get("name", f"fk_{i}"),
+                    "columns": fk.get("constrained_columns", []),
+                    "ref_table": fk.get("referred_table"),
+                    "ref_columns": fk.get("referred_columns", []),
+                }
+                for i, fk in enumerate(fks)
+            ]
+        except Exception:
+            return []
+
+
+def _build_ddl_string(
+    table_name: str,
+    columns: List[Dict[str, Any]],
+    pk_columns: List[str],
+    foreign_keys: List[Dict[str, Any]],
+) -> str:
+    """
+    Build a complete, contiguous CREATE TABLE DDL string.
+    
+    This produces exactly one DDL string per table, including:
+    - All column definitions with data types
+    - NOT NULL constraints
+    - DEFAULT values
+    - PRIMARY KEY constraint
+    - FOREIGN KEY constraints
+    
+    Args:
+        table_name: Name of the table
+        columns: List of column info dicts
+        pk_columns: List of primary key column names
+        foreign_keys: List of foreign key constraint dicts
+    
+    Returns:
+        A single contiguous DDL string
+    """
+    lines = [f'CREATE TABLE "{table_name}" (']
+    
+    col_definitions = []
+    for col in columns:
+        col_def = f'    "{col["name"]}" {col["data_type"]}'
+        
+        if not col.get("is_nullable", True):
+            col_def += " NOT NULL"
+        
+        if col.get("column_default") is not None:
+            default_val = col["column_default"]
+            if isinstance(default_val, str):
+                default_val = re.sub(r'::[a-zA-Z\s]+(\[\])?', '', default_val)
+            col_def += f" DEFAULT {default_val}"
+        
+        col_definitions.append(col_def)
+    
+    if pk_columns:
+        pk_cols_str = ", ".join(f'"{col}"' for col in pk_columns)
+        col_definitions.append(f"    PRIMARY KEY ({pk_cols_str})")
+    
+    for fk in foreign_keys:
+        fk_cols = ", ".join(f'"{col}"' for col in fk.get("columns", []))
+        ref_table = fk.get("ref_table", "")
+        ref_cols = ", ".join(f'"{col}"' for col in fk.get("ref_columns", []))
+        
+        if fk_cols and ref_table and ref_cols:
+            col_definitions.append(f'    FOREIGN KEY ({fk_cols}) REFERENCES "{ref_table}" ({ref_cols})')
+    
+    lines.append(",\n".join(col_definitions))
+    lines.append(");")
+    
+    return "\n".join(lines)
+
+
+def get_table_ddl_with_metadata(
+    db_url: str,
+    table_name: str,
+    schema_name: str = "public",
+    data_dictionary: Optional[Dict[str, str]] = None,
+    include_row_count: bool = True,
+) -> Dict[str, Any]:
+    """
+    Extract DDL with additional metadata for embedding.
+    
+    This is a convenience function that combines DDL extraction with
+    metadata collection, suitable for vectorization.
+    
+    Args:
+        db_url: Database connection URL
+        table_name: Name of the table
+        schema_name: Schema name
+        data_dictionary: Optional column descriptions
+        include_row_count: Whether to query row count
+    
+    Returns:
+        Dict with 'ddl', 'metadata', and 'enriched_ddl' keys
+    """
+    db_url = _normalize_db_url(db_url)
+    engine = create_engine(db_url, pool_pre_ping=True, pool_size=1)
+    
+    try:
+        dialect = _detect_dialect_from_url(db_url)
+        
+        with engine.connect() as conn:
+            columns = _query_columns_from_information_schema(conn, table_name, schema_name, dialect)
+            pk_columns = _query_primary_keys_from_information_schema(conn, table_name, schema_name, dialect)
+            foreign_keys = _query_foreign_keys_from_information_schema(conn, table_name, schema_name, dialect)
+            
+            ddl = _build_ddl_string(table_name, columns, pk_columns, foreign_keys)
+            
+            row_count = None
+            if include_row_count:
+                try:
+                    result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+                    row = result.fetchone()
+                    row_count = int(row[0]) if row else None
+                except Exception as e:
+                    logger.warning(f"Failed to get row count for {table_name}: {e}")
+            
+            enriched_ddl = _build_enriched_ddl_string(
+                table_name, columns, pk_columns, foreign_keys,
+                data_dictionary or {}, row_count
+            )
+            
+            fk_dependencies = list(set(fk.get("ref_table", "") for fk in foreign_keys if fk.get("ref_table")))
+            
+            metadata = {
+                "table_name": table_name,
+                "schema_name": schema_name,
+                "column_count": len(columns),
+                "primary_key_columns": pk_columns,
+                "foreign_key_count": len(foreign_keys),
+                "foreign_key_dependencies": fk_dependencies,
+                "row_count": row_count,
+            }
+            
+            return {
+                "ddl": ddl,
+                "enriched_ddl": enriched_ddl,
+                "metadata": metadata,
+            }
+    finally:
+        engine.dispose()
+
+
+def _build_enriched_ddl_string(
+    table_name: str,
+    columns: List[Dict[str, Any]],
+    pk_columns: List[str],
+    foreign_keys: List[Dict[str, Any]],
+    data_dictionary: Dict[str, str],
+    row_count: Optional[int] = None,
+) -> str:
+    """
+    Build enriched DDL with semantic comments for better LLM understanding.
+    
+    Returns a contiguous DDL string with inline comments.
+    """
+    fk_lookup = {}
+    for fk in foreign_keys:
+        ref_table = fk.get("ref_table", "")
+        for i, col in enumerate(fk.get("columns", [])):
+            ref_cols = fk.get("ref_columns", [])
+            fk_lookup[col] = {
+                "table": ref_table,
+                "column": ref_cols[i] if i < len(ref_cols) else None,
+            }
+    
+    lines = []
+    
+    lines.append("-- ============================================")
+    lines.append(f"-- Table: {table_name}")
+    if row_count is not None:
+        lines.append(f"-- Row Count: {row_count:,}")
+    
+    fk_deps = list(set(fk.get("ref_table", "") for fk in foreign_keys if fk.get("ref_table")))
+    if fk_deps:
+        lines.append(f"-- Dependencies: {', '.join(fk_deps)}")
+    
+    lines.append("-- ============================================")
+    lines.append("")
+    lines.append(f'CREATE TABLE "{table_name}" (')
+    
+    col_definitions = []
+    for col in columns:
+        col_name = col["name"]
+        col_def = f'    "{col_name}" {col["data_type"]}'
+        
+        if not col.get("is_nullable", True):
+            col_def += " NOT NULL"
+        
+        if col.get("column_default") is not None:
+            default_val = col["column_default"]
+            if isinstance(default_val, str):
+                default_val = re.sub(r'::[a-zA-Z\s]+(\[\])?', '', default_val)
+            col_def += f" DEFAULT {default_val}"
+        
+        comments = []
+        if col_name in pk_columns:
+            comments.append("PK")
+        if col_name in fk_lookup:
+            fk_info = fk_lookup[col_name]
+            comments.append(f"FK -> {fk_info['table']}")
+        
+        desc = data_dictionary.get(f"{table_name}.{col_name}") or data_dictionary.get(col_name)
+        if desc:
+            comments.append(desc)
+        
+        if comments:
+            col_def += f"  -- {'; '.join(comments)}"
+        
+        col_definitions.append(col_def)
+    
+    if pk_columns:
+        pk_cols_str = ", ".join(f'"{col}"' for col in pk_columns)
+        col_definitions.append(f"    PRIMARY KEY ({pk_cols_str})")
+    
+    for fk in foreign_keys:
+        fk_cols = ", ".join(f'"{col}"' for col in fk.get("columns", []))
+        ref_table = fk.get("ref_table", "")
+        ref_cols = ", ".join(f'"{col}"' for col in fk.get("ref_columns", []))
+        
+        if fk_cols and ref_table and ref_cols:
+            col_definitions.append(f'    FOREIGN KEY ({fk_cols}) REFERENCES "{ref_table}" ({ref_cols})')
+    
+    lines.append(",\n".join(col_definitions))
+    lines.append(");")
+    
+    return "\n".join(lines)
 
 
 class DDLExtractor:
@@ -271,15 +969,12 @@ class DDLExtractor:
             db_url: Database connection URL (postgresql://user:pass@host:5432/db)
             engine: Existing SQLAlchemy engine (alternative to db_url)
             data_dictionary: Dict mapping column names to descriptions
-                             e.g., {"patient_id": "Unique patient identifier"}
             business_rules: Dict mapping table.column to business logic descriptions
-                            e.g., {"orders.status_code": "4 = Completed, 3 = Shipped"}
         """
         if engine:
             self.engine = engine
         elif db_url:
-            # Normalize common URL typos
-            db_url = self._normalize_db_url(db_url)
+            db_url = _normalize_db_url(db_url)
             self.engine = create_engine(db_url, pool_pre_ping=True, pool_size=1)
         else:
             raise ValueError("Either db_url or engine must be provided")
@@ -288,13 +983,6 @@ class DDLExtractor:
         self.business_rules = business_rules or {}
         self.dialect = self._detect_dialect()
         self.inspector = inspect(self.engine)
-    
-    def _normalize_db_url(self, url: str) -> str:
-        """Normalize common typos in database URLs."""
-        url = url.replace("postgressql://", "postgresql://")
-        url = url.replace("postgress://", "postgresql://")
-        url = url.replace("postgres://", "postgresql://")
-        return url
     
     def _detect_dialect(self) -> DatabaseDialect:
         """Detect database dialect from engine."""
@@ -314,23 +1002,19 @@ class DDLExtractor:
     
     def _get_column_description(self, table_name: str, column_name: str) -> Optional[str]:
         """Get description for a column from data dictionary."""
-        # Try table.column first
         full_key = f"{table_name}.{column_name}"
         if full_key in self.data_dictionary:
             return self.data_dictionary[full_key]
         
-        # Try just column name
         if column_name in self.data_dictionary:
             return self.data_dictionary[column_name]
         
-        # Try to infer from column name patterns
         return self._infer_column_description(column_name)
     
     def _infer_column_description(self, column_name: str) -> Optional[str]:
         """Infer description from common column naming patterns."""
         name_lower = column_name.lower()
         
-        # Common patterns
         patterns = {
             r"^id$": "Primary identifier",
             r"_id$": "Foreign key reference",
@@ -367,8 +1051,7 @@ class DDLExtractor:
         try:
             with self.engine.connect() as conn:
                 if self.dialect == DatabaseDialect.POSTGRESQL:
-                    # Use pg_class for fast approximate count
-                    result = conn.execute(text(f"""
+                    result = conn.execute(text("""
                         SELECT reltuples::bigint AS estimate
                         FROM pg_class
                         WHERE relname = :table_name
@@ -377,7 +1060,6 @@ class DDLExtractor:
                     if row and row[0] > 0:
                         return int(row[0])
                 
-                # Fallback to exact count (slower for large tables)
                 result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
                 row = result.fetchone()
                 return int(row[0]) if row else None
@@ -398,14 +1080,11 @@ class DDLExtractor:
         """
         logger.info(f"Extracting schema for table: {table_name}")
         
-        # Get primary key columns
         pk_constraint = self.inspector.get_pk_constraint(table_name)
         pk_columns = set(pk_constraint.get("constrained_columns", []) if pk_constraint else [])
         
-        # Get foreign keys
         foreign_keys = self.inspector.get_foreign_keys(table_name)
         
-        # Build FK column lookup
         fk_column_info = {}
         for fk in foreign_keys:
             ref_table = fk.get("referred_table")
@@ -418,12 +1097,10 @@ class DDLExtractor:
                     "column": ref_columns[i] if i < len(ref_columns) else None,
                 }
         
-        # Get columns
         columns = []
         for col in self.inspector.get_columns(table_name):
             col_name = col["name"]
             
-            # Check if this is a FK column
             fk_info = fk_column_info.get(col_name, {})
             
             column_info = ColumnInfo(
@@ -440,7 +1117,6 @@ class DDLExtractor:
             )
             columns.append(column_info)
         
-        # Get indexes
         indexes = []
         try:
             for idx in self.inspector.get_indexes(table_name):
@@ -452,12 +1128,10 @@ class DDLExtractor:
         except Exception as e:
             logger.warning(f"Failed to get indexes for {table_name}: {e}")
         
-        # Get row count
         row_count = None
         if include_row_count:
             row_count = self._get_row_count(table_name)
         
-        # Get table description from data dictionary
         table_description = self.data_dictionary.get(f"_table_{table_name}")
         
         return TableSchema(
@@ -529,7 +1203,6 @@ class DDLExtractor:
             except Exception as e:
                 logger.warning(f"Failed to get FKs for {table_name}: {e}")
         
-        # Generate human-readable relationship descriptions
         rel_descriptions = []
         for rel in relationships:
             from_cols = ", ".join(rel["from_columns"])
@@ -613,7 +1286,6 @@ class DuckDBDDLExtractor:
         """Extract schema from DuckDB table."""
         logger.info(f"Extracting DuckDB schema for table: {self.table_name}")
         
-        # Get column info
         result = self.conn.execute(f'DESCRIBE "{self.table_name}"').fetchall()
         
         columns = []
@@ -626,17 +1298,15 @@ class DuckDBDDLExtractor:
                 name=col_name,
                 data_type=col_type,
                 is_nullable=is_nullable,
-                is_primary_key=False,  # DuckDB tables from files typically don't have PKs
+                is_primary_key=False,
                 is_foreign_key=False,
                 description=self._get_column_description(col_name),
             )
             columns.append(column_info)
         
-        # Get row count
         count_result = self.conn.execute(f'SELECT COUNT(*) FROM "{self.table_name}"').fetchone()
         row_count = count_result[0] if count_result else None
         
-        # Get table description
         table_description = self.data_dictionary.get(f"_table_{self.table_name}")
         
         return TableSchema(
@@ -670,12 +1340,10 @@ def enrich_data_dictionary(
     Args:
         raw_dictionary: Original data dictionary from user input
         common_abbreviations: Common abbreviation mappings
-                              e.g., {"qty": "quantity", "amt": "amount"}
     
     Returns:
         Enriched data dictionary with expanded descriptions
     """
-    # Default common abbreviations in technical/business contexts
     default_abbreviations = {
         "id": "identifier",
         "qty": "quantity",
@@ -713,10 +1381,8 @@ def enrich_data_dictionary(
     abbreviations = {**default_abbreviations, **(common_abbreviations or {})}
     enriched = dict(raw_dictionary)
     
-    # Expand abbreviations in column names that don't have descriptions
     for key, value in list(enriched.items()):
         if value is None or value == "":
-            # Try to infer description from column name
             name_parts = re.split(r'[_\s]', key.lower())
             expanded_parts = [abbreviations.get(part, part) for part in name_parts]
             inferred_desc = " ".join(expanded_parts).title()
@@ -733,7 +1399,6 @@ def create_business_rules_from_status_codes(
     
     Args:
         status_mappings: Dict mapping table.column to {code: description}
-                         e.g., {"orders.status": {1: "Pending", 2: "Processing", 4: "Completed"}}
     
     Returns:
         Business rules dict for DDLExtractor
