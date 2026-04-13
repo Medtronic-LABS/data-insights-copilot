@@ -15,7 +15,8 @@ import {
     getDataSource,
     getConfigHistory,
     getSystemSettings,
-    type DataSource
+    type DataSource,
+    type DataSourceSchemaResponse
 } from '../services/api';
 import type { IngestionResponse } from '../services/api';
 import { canPublishPrompt } from '../utils/permissions';
@@ -101,6 +102,7 @@ const AgentConfigPage: React.FC = () => {
     const [dataSourceType, setDataSourceType] = useState<'database' | 'file'>('database');
     const [fileUploadResult, setFileUploadResult] = useState<IngestionResponse | null>(null);
     const [selectedFileColumns, setSelectedFileColumns] = useState<string[]>([]);
+    const [fullSchema, setFullSchema] = useState<DataSourceSchemaResponse | null>(null);
     const [reasoning, setReasoning] = useState<Record<string, string>>({});
     const [exampleQuestions, setExampleQuestions] = useState<string[]>([]);
     const [draftPrompt, setDraftPrompt] = useState('');
@@ -234,6 +236,22 @@ const AgentConfigPage: React.FC = () => {
         loadAgentAndConfig();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id]);
+
+    // Fetch schema if it's missing but we have a data source (e.g. on reload)
+    useEffect(() => {
+        if (selectedDataSource?.id && !fullSchema && dataSourceType === 'database') {
+            const fetchSchema = async () => {
+                try {
+                    const { getDataSourceSchema } = await import('../services/api');
+                    const schema = await getDataSourceSchema(selectedDataSource.id);
+                    setFullSchema(schema);
+                } catch (err) {
+                    console.error('Failed to auto-fetch schema:', err);
+                }
+            };
+            fetchSchema();
+        }
+    }, [selectedDataSource, fullSchema, dataSourceType]);
 
     // Sync state to window for API use (temporary solution)
     useEffect(() => {
@@ -583,6 +601,7 @@ const AgentConfigPage: React.FC = () => {
                                     onFileColumnsChange={setSelectedFileColumns}
                                     selectedFileColumns={selectedFileColumns}
                                     selectedDataSource={selectedDataSource}
+                                    onSchemaFetch={setFullSchema}
                                 />
                             )}
 
@@ -592,6 +611,8 @@ const AgentConfigPage: React.FC = () => {
                                     dataDictionary={dataDictionary}
                                     setDataDictionary={setDataDictionary}
                                     fileUploadResult={fileUploadResult}
+                                    schema={fullSchema}
+                                    selectedSchema={selectedSchema}
                                 />
                             )}
 
@@ -613,6 +634,12 @@ const AgentConfigPage: React.FC = () => {
                                     exampleQuestions={exampleQuestions}
                                     onGeneratePrompt={handleGenerate}
                                     isGenerating={generating}
+                                    agent={agent}
+                                    dataDictionary={dataDictionary}
+                                    schema={fullSchema}
+                                    selectedSchema={selectedSchema}
+                                    advancedSettings={advancedSettings}
+                                    dataSourceType={dataSourceType}
                                 />
                             )}
 
@@ -680,7 +707,7 @@ const AgentConfigPage: React.FC = () => {
                                     )
                                 ) : (
                                     // No prompt yet - show disabled placeholder (actual button is in the step component)
-                                    <div className="text-gray-400 text-sm">
+                                    <div className="text-black-400">
                                         Generate a prompt to continue
                                     </div>
                                 )

@@ -16,6 +16,7 @@ interface SchemaSelectionStepProps {
     onFileColumnsChange?: (columns: string[]) => void;
     selectedFileColumns?: string[];
     selectedDataSource?: DataSource | null;
+    onSchemaFetch?: (schema: DataSourceSchemaResponse) => void;
 }
 
 export const SchemaSelectionStep: React.FC<SchemaSelectionStepProps> = ({
@@ -26,7 +27,8 @@ export const SchemaSelectionStep: React.FC<SchemaSelectionStepProps> = ({
     reasoning = {},
     onFileColumnsChange,
     selectedFileColumns = [],
-    selectedDataSource
+    selectedDataSource,
+    onSchemaFetch
 }) => {
     const { user } = useAuth();
     const canEdit = canEditPrompt(user);
@@ -133,6 +135,7 @@ export const SchemaSelectionStep: React.FC<SchemaSelectionStepProps> = ({
         try {
             const result = await getDataSourceSchema(selectedDataSource.id);
             setSchema(result);
+            if (onSchemaFetch) onSchemaFetch(result);
 
             // For file sources, also fetch preview data
             if (result.source_type === 'file') {
@@ -351,7 +354,7 @@ export const SchemaSelectionStep: React.FC<SchemaSelectionStepProps> = ({
                             <div>
                                 <p className="text-yellow-800 font-medium">No tables found</p>
                                 <p className="text-yellow-700 text-sm mt-1">
-                                    Connected successfully, but no accessible tables were found. 
+                                    Connected successfully, but no accessible tables were found.
                                     The database may be empty or the user may not have permission to view tables.
                                 </p>
                             </div>
