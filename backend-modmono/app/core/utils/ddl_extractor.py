@@ -966,6 +966,7 @@ class DDLExtractor:
         engine: Optional[Engine] = None,
         data_dictionary: Optional[Dict[str, Any]] = None,
         business_rules: Optional[Dict[str, Dict[str, str]]] = None,
+        schema_name: Optional[str] = None,
     ):
         """
         Initialize DDL extractor.
@@ -975,6 +976,7 @@ class DDLExtractor:
             engine: Existing SQLAlchemy engine (alternative to db_url)
             data_dictionary: Dict mapping column names to descriptions
             business_rules: Dict mapping table.column to business logic descriptions
+            schema_name: Database schema name (default: auto-detect or 'public')
         """
         if engine:
             self.engine = engine
@@ -988,6 +990,7 @@ class DDLExtractor:
         self.business_rules = business_rules or {}
         self.dialect = self._detect_dialect()
         self.inspector = inspect(self.engine)
+        self.schema_name = schema_name  # Will be auto-detected if None
     
     def _detect_dialect(self) -> DatabaseDialect:
         """Detect database dialect from engine."""
@@ -1053,19 +1056,34 @@ class DDLExtractor:
     
     def _get_row_count(self, table_name: str) -> Optional[int]:
         """Get approximate row count for a table."""
+        # Handle schema-qualified table names (e.g., "rnacen.auth_permission")
+        if "." in table_name:
+            schema_name, actual_table = table_name.split(".", 1)
+            # PostgreSQL requires separate quoting: "schema"."table"
+            qualified_name = f'"{schema_name}"."{actual_table}"'
+            simple_name = actual_table
+        else:
+            schema_name = "public"
+            qualified_name = f'"{table_name}"'
+            simple_name = table_name
+        
         try:
             with self.engine.connect() as conn:
                 if self.dialect == DatabaseDialect.POSTGRESQL:
+                    # Try pg_class estimate first (fast, no table scan)
                     result = conn.execute(text("""
                         SELECT reltuples::bigint AS estimate
-                        FROM pg_class
-                        WHERE relname = :table_name
-                    """), {"table_name": table_name})
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE c.relname = :table_name
+                          AND n.nspname = :schema_name
+                    """), {"table_name": simple_name, "schema_name": schema_name})
                     row = result.fetchone()
                     if row and row[0] > 0:
                         return int(row[0])
                 
-                result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+                # Fall back to COUNT(*) with properly quoted table name
+                result = conn.execute(text(f'SELECT COUNT(*) FROM {qualified_name}'))
                 row = result.fetchone()
                 return int(row[0]) if row else None
         except Exception as e:
@@ -1076,6 +1094,9 @@ class DDLExtractor:
         """
         Extract complete schema for a single table.
         
+        Uses information_schema queries which work with limited DB permissions.
+        Falls back to inspector only if information_schema fails.
+        
         Args:
             table_name: Name of the table to extract
             include_row_count: Whether to query row count (can be slow for large tables)
@@ -1085,101 +1106,181 @@ class DDLExtractor:
         """
         logger.info(f"Extracting schema for table: {table_name}")
         
-        pk_constraint = self.inspector.get_pk_constraint(table_name)
-        pk_columns = set(pk_constraint.get("constrained_columns", []) if pk_constraint else [])
+        # Determine schema name: from table_name if qualified, else use instance schema_name, else 'public'
+        if "." in table_name:
+            schema_name, actual_table_name = table_name.split(".", 1)
+        else:
+            schema_name = self.schema_name or "public"
+            actual_table_name = table_name
         
-        foreign_keys = self.inspector.get_foreign_keys(table_name)
+        # Build the full qualified name for the TableSchema
+        full_table_name = f"{schema_name}.{actual_table_name}" if schema_name != "public" else actual_table_name
         
-        fk_column_info = {}
-        for fk in foreign_keys:
-            ref_table = fk.get("referred_table")
-            ref_columns = fk.get("referred_columns", [])
-            constrained_columns = fk.get("constrained_columns", [])
-            
-            for i, col in enumerate(constrained_columns):
-                fk_column_info[col] = {
-                    "table": ref_table,
-                    "column": ref_columns[i] if i < len(ref_columns) else None,
-                }
-        
-        columns = []
-        for col in self.inspector.get_columns(table_name):
-            col_name = col["name"]
-            
-            fk_info = fk_column_info.get(col_name, {})
-            
-            column_info = ColumnInfo(
-                name=col_name,
-                data_type=str(col["type"]),
-                is_nullable=col.get("nullable", True),
-                is_primary_key=col_name in pk_columns,
-                is_foreign_key=col_name in fk_column_info,
-                foreign_key_table=fk_info.get("table"),
-                foreign_key_column=fk_info.get("column"),
-                default_value=str(col.get("default")) if col.get("default") else None,
-                description=self._get_column_description(table_name, col_name),
-                business_logic=self._get_business_logic(table_name, col_name),
-            )
-            columns.append(column_info)
-        
-        indexes = []
         try:
-            for idx in self.inspector.get_indexes(table_name):
-                indexes.append({
-                    "name": idx.get("name"),
-                    "columns": idx.get("column_names", []),
-                    "unique": idx.get("unique", False),
-                })
+            # Use information_schema queries (works with limited permissions)
+            with self.engine.connect() as conn:
+                columns_data = _query_columns_from_information_schema(conn, actual_table_name, schema_name, self.dialect)
+                pk_columns = _query_primary_keys_from_information_schema(conn, actual_table_name, schema_name, self.dialect)
+                foreign_keys_data = _query_foreign_keys_from_information_schema(conn, actual_table_name, schema_name, self.dialect)
+                
+                # Build FK lookup
+                fk_column_info = {}
+                foreign_keys = []
+                for fk in foreign_keys_data:
+                    ref_table = fk.get("ref_table")
+                    ref_columns = fk.get("ref_columns", [])
+                    constrained_columns = fk.get("columns", [])
+                    
+                    foreign_keys.append({
+                        "name": fk.get("constraint_name"),
+                        "constrained_columns": constrained_columns,
+                        "referred_table": ref_table,
+                        "referred_columns": ref_columns,
+                    })
+                    
+                    for i, col in enumerate(constrained_columns):
+                        fk_column_info[col] = {
+                            "table": ref_table,
+                            "column": ref_columns[i] if i < len(ref_columns) else None,
+                        }
+                
+                pk_columns_set = set(pk_columns)
+                
+                columns = []
+                for col_data in columns_data:
+                    col_name = col_data["name"]
+                    fk_info = fk_column_info.get(col_name, {})
+                    
+                    column_info = ColumnInfo(
+                        name=col_name,
+                        data_type=col_data["data_type"],
+                        is_nullable=col_data.get("is_nullable", True),
+                        is_primary_key=col_name in pk_columns_set,
+                        is_foreign_key=col_name in fk_column_info,
+                        foreign_key_table=fk_info.get("table"),
+                        foreign_key_column=fk_info.get("column"),
+                        default_value=str(col_data.get("column_default")) if col_data.get("column_default") else None,
+                        description=self._get_column_description(table_name, col_name),
+                        business_logic=self._get_business_logic(table_name, col_name),
+                    )
+                    columns.append(column_info)
+                
+                row_count = None
+                if include_row_count:
+                    row_count = self._get_row_count(table_name)
+                
+                table_description = self.data_dictionary.get(f"_table_{table_name}")
+                
+                return TableSchema(
+                    table_name=full_table_name,
+                    columns=columns,
+                    primary_key_columns=pk_columns,
+                    foreign_keys=foreign_keys,
+                    indexes=[],
+                    description=table_description,
+                    row_count=row_count,
+                )
         except Exception as e:
-            logger.warning(f"Failed to get indexes for {table_name}: {e}")
-        
-        row_count = None
-        if include_row_count:
-            row_count = self._get_row_count(table_name)
-        
-        table_description = self.data_dictionary.get(f"_table_{table_name}")
-        
-        return TableSchema(
-            table_name=table_name,
-            columns=columns,
-            primary_key_columns=list(pk_columns),
-            foreign_keys=foreign_keys,
-            indexes=indexes,
-            description=table_description,
-            row_count=row_count,
-        )
+            logger.warning(f"information_schema extraction failed for {table_name}: {e}")
+            raise
     
     def extract_all_tables(
         self,
         include_row_counts: bool = True,
         tables_filter: Optional[List[str]] = None,
+        max_workers: int = 10,
     ) -> List[Dict[str, Any]]:
         """
-        Extract DDL documents for all tables in the database.
+        Extract DDL documents for all tables in the database using concurrent extraction.
         
         Args:
             include_row_counts: Whether to include row counts in metadata
-            tables_filter: Optional list of table names to include (None = all tables)
+            tables_filter: Optional list of table names to include (None = all tables).
+                          Can be schema-qualified (e.g., 'rnacen.table_name').
+            max_workers: Maximum number of concurrent extraction threads (default: 10)
         
         Returns:
             List of vector documents ready for embedding
         """
-        table_names = self.inspector.get_table_names()
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
         
+        # Auto-detect schema from tables_filter if provided and schema_name not set
+        if tables_filter and not self.schema_name:
+            for t in tables_filter:
+                if "." in t:
+                    detected_schema = t.split(".")[0]
+                    self.schema_name = detected_schema
+                    logger.info(f"Auto-detected database schema: {detected_schema}")
+                    break
+        
+        # Get table names from the correct schema
+        if self.schema_name and self.dialect == DatabaseDialect.POSTGRESQL:
+            with self.engine.connect() as conn:
+                table_names = _query_table_names(conn, self.schema_name, self.dialect)
+            logger.info(f"Found {len(table_names)} tables in schema '{self.schema_name}'")
+        else:
+            table_names = self.inspector.get_table_names()
+        
+        # Apply filter - handle both qualified and unqualified names
         if tables_filter:
-            table_names = [t for t in table_names if t in tables_filter]
+            filter_table_names = set()
+            for t in tables_filter:
+                if "." in t:
+                    filter_table_names.add(t.split(".", 1)[1])
+                else:
+                    filter_table_names.add(t)
+            table_names = [t for t in table_names if t in filter_table_names]
         
-        logger.info(f"Extracting DDL for {len(table_names)} tables")
+        total_tables = len(table_names)
+        logger.info(f"Extracting DDL for {total_tables} tables using {max_workers} concurrent workers")
         
+        start_time = time.time()
         documents = []
-        for table_name in table_names:
+        failed_count = 0
+        
+        def extract_single_table(table_name: str) -> Optional[Dict[str, Any]]:
+            """Worker function to extract a single table's DDL."""
             try:
-                schema = self.extract_table_schema(table_name, include_row_count=include_row_counts)
+                qualified_name = f"{self.schema_name}.{table_name}" if self.schema_name else table_name
+                schema = self.extract_table_schema(qualified_name, include_row_count=include_row_counts)
                 doc = schema.to_vector_document(self.dialect)
-                documents.append(doc)
-                logger.info(f"Extracted DDL for {table_name}: {len(schema.columns)} columns")
+                return {"doc": doc, "table": qualified_name, "columns": len(schema.columns)}
             except Exception as e:
                 logger.error(f"Failed to extract DDL for {table_name}: {e}")
+                return None
+        
+        # Use ThreadPoolExecutor for concurrent extraction
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_table = {
+                executor.submit(extract_single_table, table_name): table_name 
+                for table_name in table_names
+            }
+            
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_table):
+                table_name = future_to_table[future]
+                completed += 1
+                
+                try:
+                    result = future.result()
+                    if result:
+                        documents.append(result["doc"])
+                        # Log progress every 20 tables or at the end
+                        if completed % 20 == 0 or completed == total_tables:
+                            elapsed = time.time() - start_time
+                            rate = completed / elapsed if elapsed > 0 else 0
+                            logger.info(f"DDL extraction progress: {completed}/{total_tables} tables ({rate:.1f} tables/sec)")
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    logger.error(f"Future failed for {table_name}: {e}")
+                    failed_count += 1
+        
+        elapsed = time.time() - start_time
+        logger.info(f"DDL extraction complete: {len(documents)} tables in {elapsed:.1f}s ({len(documents)/elapsed:.1f} tables/sec), {failed_count} failed")
         
         return documents
     
@@ -1189,24 +1290,61 @@ class DDLExtractor:
         
         This provides the LLM with a high-level view of how tables connect,
         which is crucial for generating correct JOINs.
-        """
-        table_names = self.inspector.get_table_names()
         
+        Uses information_schema queries for better performance and compatibility
+        with limited database permissions.
+        """
+        import time
+        start_time = time.time()
+        
+        # Get table names using schema-aware query
+        schema_name = self.schema_name or "public"
+        with self.engine.connect() as conn:
+            table_names = _query_table_names(conn, schema_name, self.dialect)
+        
+        logger.info(f"Extracting relationships for {len(table_names)} tables in schema '{schema_name}'")
+        
+        # Query ALL foreign keys in one batch query (much faster than per-table)
         relationships = []
-        for table_name in table_names:
+        if self.dialect == DatabaseDialect.POSTGRESQL:
             try:
-                foreign_keys = self.inspector.get_foreign_keys(table_name)
-                for fk in foreign_keys:
-                    ref_table = fk.get("referred_table")
-                    if ref_table:
-                        relationships.append({
-                            "from_table": table_name,
-                            "from_columns": fk.get("constrained_columns", []),
-                            "to_table": ref_table,
-                            "to_columns": fk.get("referred_columns", []),
-                        })
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT
+                            tc.table_name AS from_table,
+                            kcu.column_name AS from_column,
+                            ccu.table_name AS to_table,
+                            ccu.column_name AS to_column
+                        FROM information_schema.table_constraints AS tc
+                        JOIN information_schema.key_column_usage AS kcu
+                            ON tc.constraint_name = kcu.constraint_name
+                            AND tc.table_schema = kcu.table_schema
+                        JOIN information_schema.constraint_column_usage AS ccu
+                            ON ccu.constraint_name = tc.constraint_name
+                            AND ccu.table_schema = tc.table_schema
+                        WHERE tc.constraint_type = 'FOREIGN KEY'
+                          AND tc.table_schema = :schema_name
+                        ORDER BY tc.table_name, kcu.ordinal_position
+                    """), {"schema_name": schema_name})
+                    
+                    # Group by relationship
+                    fk_map = {}
+                    for row in result.fetchall():
+                        key = f"{row[0]}->{row[2]}"
+                        if key not in fk_map:
+                            fk_map[key] = {
+                                "from_table": row[0],
+                                "from_columns": [],
+                                "to_table": row[2],
+                                "to_columns": [],
+                            }
+                        fk_map[key]["from_columns"].append(row[1])
+                        fk_map[key]["to_columns"].append(row[3])
+                    
+                    relationships = list(fk_map.values())
+                    
             except Exception as e:
-                logger.warning(f"Failed to get FKs for {table_name}: {e}")
+                logger.warning(f"Failed to query foreign keys: {e}")
         
         rel_descriptions = []
         for rel in relationships:
@@ -1231,6 +1369,9 @@ Tables:
 """
         
         doc_id = hashlib.sha256("ddl_relationships_overview".encode()).hexdigest()[:16]
+        
+        elapsed = time.time() - start_time
+        logger.info(f"Relationships extraction complete: {len(relationships)} FKs in {elapsed:.1f}s")
         
         return {
             "id": doc_id,

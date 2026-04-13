@@ -407,24 +407,88 @@ class DataSourceService:
                                 "data_type": row[3],
                                 "is_nullable": row[4] == 'YES',
                             })
+
+                        # Batch fetch PRIMARY KEYS
+                        pk_result = conn.execute(text("""
+                            SELECT kcu.table_schema, kcu.table_name, kcu.column_name
+                            FROM information_schema.table_constraints AS tc
+                            JOIN information_schema.key_column_usage AS kcu
+                              ON tc.constraint_name = kcu.constraint_name
+                              AND tc.table_schema = kcu.table_schema
+                            WHERE tc.constraint_type = 'PRIMARY KEY'
+                            AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+                            AND tc.table_schema NOT LIKE 'pg_temp%'
+                        """))
+                        
+                        pk_map = {}
+                        for row in pk_result:
+                            key = (row[0], row[1])
+                            if key not in pk_map:
+                                pk_map[key] = set()
+                            pk_map[key].add(row[2])
+
+                        # Batch fetch FOREIGN KEYS
+                        fk_result = conn.execute(text("""
+                            SELECT
+                                tc.table_schema, 
+                                tc.table_name, 
+                                kcu.column_name, 
+                                ccu.table_schema AS foreign_table_schema,
+                                ccu.table_name AS foreign_table_name,
+                                ccu.column_name AS foreign_column_name
+                            FROM 
+                                information_schema.table_constraints AS tc 
+                                JOIN information_schema.key_column_usage AS kcu
+                                  ON tc.constraint_name = kcu.constraint_name
+                                  AND tc.table_schema = kcu.table_schema
+                                JOIN information_schema.constraint_column_usage AS ccu
+                                  ON ccu.constraint_name = tc.constraint_name
+                                  AND ccu.table_schema = tc.table_schema
+                            WHERE tc.constraint_type = 'FOREIGN KEY'
+                            AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+                            AND tc.table_schema NOT LIKE 'pg_temp%'
+                        """))
+                        
+                        fk_map = {}
+                        for row in fk_result:
+                            key = (row[0], row[1], row[2]) # (schema, table, col)
+                            fk_map[key] = {
+                                "referenced_table": f"{row[3]}.{row[4]}" if row[3] != 'public' else row[4],
+                                "referenced_column": row[5]
+                            }
+                            
+                            # Add to relationships list
+                            relationships.append({
+                                "from_table": f"{row[0]}.{row[1]}" if row[0] != 'public' else row[1],
+                                "from_columns": [row[2]],
+                                "to_table": f"{row[3]}.{row[4]}" if row[3] != 'public' else row[4],
+                                "to_columns": [row[5]]
+                            })
                         
                         # Build tables_info
                         for schema, table_name in discovered_tables:
                             key = (schema, table_name)
                             full_name = f"{schema}.{table_name}" if schema != 'public' else table_name
                             columns = []
+                            table_pks = pk_map.get(key, set())
+                            
                             for col in all_columns.get(key, []):
+                                col_name = col["column_name"]
+                                is_pk = col_name in table_pks
+                                fk_info = fk_map.get((schema, table_name, col_name))
+                                
                                 columns.append({
-                                    "column_name": col["column_name"],
+                                    "column_name": col_name,
                                     "data_type": col["data_type"],
                                     "is_nullable": col["is_nullable"],
-                                    "is_primary_key": False,
-                                    "foreign_key": None,
+                                    "is_primary_key": is_pk,
+                                    "foreign_key": fk_info,
                                 })
+                            
                             tables_info.append({
                                 "table_name": full_name,
                                 "columns": columns,
-                                "primary_key_columns": [],
+                                "primary_key_columns": list(table_pks),
                             })
                 else:
                     inspector = inspect(engine)
