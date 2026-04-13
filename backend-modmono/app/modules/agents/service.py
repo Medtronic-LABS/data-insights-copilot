@@ -581,6 +581,21 @@ class AgentConfigService:
                 status_code=404,
             )
         
+        # Data source lockdown: If agent has any published configs, data source cannot be changed
+        history = await self.configs.get_config_history(agent_id)
+        published_configs = [c for c in history if c.status != 'draft']
+        
+        if published_configs:
+            # Latest published config (history is ordered by version DESC)
+            latest_published = published_configs[0]
+            if str(latest_published.data_source_id) != str(data_source_id):
+                raise AppException(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message="Data source cannot be changed for an agent with existing published configurations. Please create a new agent if you need to use a different data source.",
+                    status_code=400,
+                )
+
+        
         if version_id:
             # Update existing version
             config = await self.configs.get_by_id(version_id)
