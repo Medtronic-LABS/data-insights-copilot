@@ -214,7 +214,7 @@ async def check_context_window(
             )
         
         # Get embedding model
-        embedding_model = "huggingface/BAAI/bge-large-en-v1.5"
+        embedding_model = "huggingface/BAAI/bge-base-en-v1.5"
         
         if config.embedding_model_id:
             model_stmt = select(AIModel).where(AIModel.id == config.embedding_model_id)
@@ -367,7 +367,7 @@ async def search_schema(
             )
         
         # Get embedding model
-        embedding_model = "huggingface/BAAI/bge-large-en-v1.5"
+        embedding_model = "huggingface/BAAI/bge-base-en-v1.5"
         api_key = None
         
         if config.embedding_model_id:
@@ -470,7 +470,7 @@ async def get_schema_context(
         result = await db.execute(stmt)
         config = result.scalar_one_or_none()
         
-        embedding_model = "huggingface/BAAI/bge-large-en-v1.5"
+        embedding_model = "huggingface/BAAI/bge-base-en-v1.5"
         api_key = None
         
         if config and config.embedding_model_id:

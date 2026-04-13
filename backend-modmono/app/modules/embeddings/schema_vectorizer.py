@@ -70,7 +70,7 @@ class SchemaVectorizer:
         duckdb_table_name: Optional[str] = None,
         data_dictionary: Optional[Dict[str, Any]] = None,
         business_rules: Optional[Dict[str, str]] = None,
-        embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+        embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
         api_key: Optional[str] = None,
         api_base_url: Optional[str] = None,
     ):
@@ -410,7 +410,7 @@ async def vectorize_schema_for_config(
         raise ValueError(f"Data source not found for config {config_id}")
     
     # Get embedding model info
-    embedding_model = "huggingface/BAAI/bge-large-en-v1.5"
+    embedding_model = "huggingface/BAAI/bge-base-en-v1.5"
     api_key = None
     api_base_url = None
     
@@ -474,7 +474,7 @@ async def get_schema_context_for_query(
     config_id: int,
     query: str,
     top_k: int = 5,
-    embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+    embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
     api_key: Optional[str] = None,
 ) -> str:
     """

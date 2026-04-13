@@ -60,7 +60,7 @@ EMBEDDING_MODEL_CONTEXT_WINDOWS = {
     "text-embedding-ada-002": 8191,
     
     # BGE Models (HuggingFace)
-    "bge-large-en-v1.5": 512,
+    "bge-base-en-v1.5": 512,
     "bge-base-en-v1.5": 512,
     "bge-small-en-v1.5": 512,
     "bge-m3": 8192,
@@ -131,7 +131,7 @@ class SchemaMigrator:
         duckdb_path: Optional[str] = None,
         duckdb_table_name: Optional[str] = None,
         data_dictionary: Optional[Dict[str, Any]] = None,
-        embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+        embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
         api_key: Optional[str] = None,
         api_base_url: Optional[str] = None,
         schema_name: str = "public",
@@ -595,7 +595,7 @@ async def migrate_schema_for_config(
     duckdb_path: Optional[str] = None,
     duckdb_table_name: Optional[str] = None,
     data_dictionary: Optional[Dict[str, Any]] = None,
-    embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+    embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
     on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> MigrationResult:
     """
@@ -664,7 +664,7 @@ async def migrate_schema_from_agent_config(
         raise ValueError(f"Data source not found for config {config_id}")
     
     # Get embedding model
-    embedding_model = "huggingface/BAAI/bge-large-en-v1.5"
+    embedding_model = "huggingface/BAAI/bge-base-en-v1.5"
     api_key = None
     api_base_url = None
     

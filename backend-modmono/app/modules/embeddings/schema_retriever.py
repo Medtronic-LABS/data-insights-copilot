@@ -175,7 +175,7 @@ class SchemaContext:
                     for fk in table.foreign_keys:
                         sections.append(f"-- {table.table_name} -> {fk}")
             
-            sections.append("")
+            sections.append("") 
         
         return "\n".join(sections)
     
@@ -233,7 +233,8 @@ class SchemaRetriever:
     def __init__(
         self,
         config_id: int,
-        embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+        agent_id: Optional[str] = None,
+        embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
         api_key: Optional[str] = None,
         api_base_url: Optional[str] = None,
     ):
@@ -242,21 +243,27 @@ class SchemaRetriever:
         
         Args:
             config_id: Agent configuration ID
+            agent_id: Agent UUID (for fallback collection lookup)
             embedding_model: Embedding model for semantic search
             api_key: API key for embedding model
             api_base_url: API base URL for embedding model
         """
         self.config_id = config_id
+        self.agent_id = agent_id
         self.embedding_model = embedding_model
         self.api_key = api_key
         self.api_base_url = api_base_url
         
-        # Collection name (matches Phase 3 migration)
+        # Primary collection name (schema-specific)
         self.collection_name = f"{SCHEMA_COLLECTION_PREFIX}{config_id}"
+        
+        # Fallback collection name (main agent collection from embedding job)
+        self._fallback_collection_name = f"agent_{agent_id}_config_{config_id}" if agent_id else None
         
         # Lazy-loaded components
         self._vector_store = None
         self._embed_fn = None
+        self._initialized_store = False
         
         # Cache for retrieved DDLs (table_name -> ddl)
         self._ddl_cache: Dict[str, str] = {}
@@ -291,6 +298,67 @@ class SchemaRetriever:
         
         return embeddings[0]
     
+    async def _ensure_vector_store(self):
+        """Ensure we have a valid vector store, checking fallback if needed."""
+        if self._initialized_store:
+            return
+        
+        # Check primary collection first
+        if await self.vector_store.collection_exists():
+            count = await self.vector_store.get_collection_count()
+            if count > 0:
+                logger.info(f"Using primary schema collection: {self.collection_name} ({count} vectors)")
+                self._initialized_store = True
+                return
+        
+        # Try fallback collection (main agent collection from embedding job)
+        if self._fallback_collection_name:
+            fallback_store = get_vector_store(self._fallback_collection_name)
+            if await fallback_store.collection_exists():
+                count = await fallback_store.get_collection_count()
+                if count > 0:
+                    logger.info(f"Using fallback agent collection: {self._fallback_collection_name} ({count} vectors)")
+                    self._vector_store = fallback_store
+                    self.collection_name = self._fallback_collection_name
+                    self._initialized_store = True
+                    return
+        
+        # Try to find collection from agent_config.vector_collection_name
+        try:
+            from app.modules.agents.models import AgentConfigModel
+            from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+            from sqlalchemy import select
+            from app.core.config import get_settings
+            
+            settings = get_settings()
+            db_url = f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+            
+            engine = create_async_engine(db_url, echo=False)
+            async with AsyncSession(engine) as session:
+                stmt = select(AgentConfigModel).where(AgentConfigModel.id == self.config_id)
+                result = await session.execute(stmt)
+                config = result.scalar_one_or_none()
+                
+                if config and config.vector_collection_name:
+                    collection_name = config.vector_collection_name
+                    db_store = get_vector_store(collection_name)
+                    if await db_store.collection_exists():
+                        count = await db_store.get_collection_count()
+                        if count > 0:
+                            logger.info(f"Using configured collection from DB: {collection_name} ({count} vectors)")
+                            self._vector_store = db_store
+                            self.collection_name = collection_name
+                            self._initialized_store = True
+                            await engine.dispose()
+                            return
+            
+            await engine.dispose()
+        except Exception as e:
+            logger.debug(f"Could not lookup collection from DB: {e}")
+        
+        self._initialized_store = True  # Mark as initialized even if empty
+        logger.warning(f"No schema collection found for config {self.config_id}")
+    
     async def retrieve_tables(
         self,
         query: str,
@@ -309,6 +377,9 @@ class SchemaRetriever:
         Returns:
             List of RetrievedTable with DDL and FK metadata
         """
+        # Ensure we have a valid vector store (with fallback logic)
+        await self._ensure_vector_store()
+        
         # Check if collection exists
         if not await self.vector_store.collection_exists():
             logger.warning(f"Schema collection not found: {self.collection_name}")
@@ -629,9 +700,10 @@ class SchemaRetriever:
 async def retrieve_schema_context(
     query: str,
     config_id: int,
+    agent_id: Optional[str] = None,
     top_k: int = DEFAULT_TOP_K_TABLES,
     max_dependencies: int = DEFAULT_MAX_DEPENDENCIES,
-    embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+    embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
     api_key: Optional[str] = None,
 ) -> SchemaContext:
     """
@@ -640,6 +712,7 @@ async def retrieve_schema_context(
     Args:
         query: User's natural language query
         config_id: Agent configuration ID
+        agent_id: Agent UUID for fallback collection lookup
         top_k: Number of primary tables
         max_dependencies: Maximum FK dependencies
         embedding_model: Embedding model name
@@ -650,6 +723,7 @@ async def retrieve_schema_context(
     """
     retriever = SchemaRetriever(
         config_id=config_id,
+        agent_id=agent_id,
         embedding_model=embedding_model,
         api_key=api_key,
     )
@@ -664,6 +738,7 @@ async def retrieve_schema_context(
 async def get_ddl_context_for_sql(
     query: str,
     config_id: int,
+    agent_id: Optional[str] = None,
     top_k: int = DEFAULT_TOP_K_TABLES,
     compact: bool = False,
 ) -> str:
@@ -676,6 +751,7 @@ async def get_ddl_context_for_sql(
     Args:
         query: User's natural language query
         config_id: Agent configuration ID
+        agent_id: Agent UUID for fallback collection lookup
         top_k: Number of tables to retrieve
         compact: Use compact format for smaller context windows
     
@@ -685,6 +761,7 @@ async def get_ddl_context_for_sql(
     context = await retrieve_schema_context(
         query=query,
         config_id=config_id,
+        agent_id=agent_id,
         top_k=top_k,
     )
     
