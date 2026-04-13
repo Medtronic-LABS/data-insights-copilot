@@ -651,6 +651,7 @@ class ChatService:
         
         return {
             "agent_id": str(config.agent_id),
+            "config_id": config.id,  # Add config ID for vector collection name
             "data_source_id": config.data_source_id,
             "embedding_config": config.embedding_config or {},
             "rag_config": config.rag_config or {},
@@ -659,6 +660,7 @@ class ChatService:
             "system_prompt": config.system_prompt,
             "llm_model_id": config.llm_model_id,
             "embedding_model_id": config.embedding_model_id,
+            "vector_collection_name": config.vector_collection_name,  # Add vector collection name
         }
     
     async def _get_embedding_model(
@@ -705,12 +707,28 @@ class ChatService:
         return await loop.run_in_executor(None, embedding_model.embed_query, query)
     
     def _get_vector_db_name(self, agent_config: Optional[Dict[str, Any]]) -> str:
-        """Get the vector database name for the agent."""
+        """Get the vector database collection name for the agent."""
         if agent_config:
+            # First, check for explicitly set vector_collection_name (set by embedding job)
+            vector_collection = agent_config.get("vector_collection_name")
+            if vector_collection:
+                return vector_collection
+            
+            # Fallback: construct from agent_id and config_id (matches embedding service pattern)
+            agent_id = agent_config.get("agent_id")
+            config_id = agent_config.get("config_id")
+            if agent_id and config_id:
+                return f"agent_{agent_id}_config_{config_id}"
+            
+            # Legacy fallback: check embedding_config
             embedding_config = agent_config.get("embedding_config", {})
             if isinstance(embedding_config, str):
                 embedding_config = json.loads(embedding_config)
-            return embedding_config.get("vector_db_name", "default_collection")
+            legacy_name = embedding_config.get("vector_db_name")
+            # Ignore malformed names that look like file paths
+            if legacy_name and not legacy_name.startswith("var_") and "/" not in legacy_name:
+                return legacy_name
+        
         return "default_collection"
     
     async def _search_vectors(

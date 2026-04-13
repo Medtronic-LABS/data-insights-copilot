@@ -349,15 +349,21 @@ class SQLService:
         if self._engine is not None:
             return self._engine
         
+        # Normalize the database URL (handle postgres:// -> postgresql://)
+        db_url = self._db_url
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+            logger.debug(f"Normalized database URL from postgres:// to postgresql://")
+        
         # Check cache
-        if self._db_url in _ENGINE_CACHE:
-            self._engine = _ENGINE_CACHE[self._db_url]
+        if db_url in _ENGINE_CACHE:
+            self._engine = _ENGINE_CACHE[db_url]
             return self._engine
         
         # Create new engine
         try:
             # Handle DuckDB specially
-            if self._db_url.startswith("duckdb://"):
+            if db_url.startswith("duckdb://"):
                 # DuckDB uses different connection parameters
                 file_path = self._db_url.replace("duckdb://", "")
                 self._engine = create_engine(
@@ -367,15 +373,15 @@ class SQLService:
             else:
                 # PostgreSQL, MySQL, etc.
                 self._engine = create_engine(
-                    self._db_url,
+                    db_url,
                     pool_size=5,
                     max_overflow=10,
                     pool_timeout=30,
                     pool_recycle=3600,
                 )
             
-            _ENGINE_CACHE[self._db_url] = self._engine
-            logger.info("Database engine created", db_url=self._db_url[:50] + "...")
+            _ENGINE_CACHE[db_url] = self._engine
+            logger.info("Database engine created", db_url=db_url[:50] + "...")
             return self._engine
             
         except Exception as e:
@@ -572,12 +578,13 @@ class SQLService:
         """Get cached schema or generate it."""
         return self.get_schema_context()
     
-    def execute_query(self, sql: str) -> Tuple[List[Dict[str, Any]], int]:
+    def execute_query(self, sql: str, timeout_seconds: int = 30) -> Tuple[List[Dict[str, Any]], int]:
         """
         Execute a SQL query and return results.
         
         Args:
             sql: SQL query to execute
+            timeout_seconds: Query timeout in seconds (default 30s)
             
         Returns:
             Tuple of (results as list of dicts, total row count)
@@ -589,6 +596,13 @@ class SQLService:
         
         try:
             with engine.connect() as conn:
+                # Set statement timeout for PostgreSQL to prevent long-running queries
+                if not self._is_duckdb():
+                    try:
+                        conn.execute(text(f"SET statement_timeout = '{timeout_seconds}s'"))
+                    except Exception as e:
+                        logger.debug(f"Could not set statement_timeout: {e}")
+                
                 result = conn.execute(text(sql))
                 rows = result.fetchall()
                 columns = result.keys()
@@ -600,6 +614,15 @@ class SQLService:
                 return results, len(results)
                 
         except Exception as e:
+            error_str = str(e)
+            # Provide helpful message for timeout errors
+            if "canceling statement due to statement timeout" in error_str.lower() or "timeout" in error_str.lower():
+                logger.warning(f"Query timed out after {timeout_seconds}s", sql=sql[:200])
+                raise TimeoutError(
+                    f"Query timed out after {timeout_seconds} seconds. "
+                    f"The query may be too complex or the table too large. "
+                    f"Try adding filters (WHERE clause) or limiting results (LIMIT)."
+                )
             logger.error(f"Query execution failed: {e}", sql=sql[:200])
             raise
     
