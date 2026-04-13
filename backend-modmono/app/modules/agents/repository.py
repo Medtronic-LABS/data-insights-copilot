@@ -23,7 +23,7 @@ from app.modules.users.models import UserModel
 from app.modules.data_sources.models import DataSourceModel
 from app.modules.agents.schemas import (
     AgentCreate, AgentUpdate, AgentResponse,
-    DataSourceResponse, AgentConfigResponse, UserAgentResponse
+    UserAgentResponse, AgentForUserResponse,
 )
 
 logger = get_logger(__name__)
@@ -640,6 +640,31 @@ class UserAgentRepository:
         query = select(UserAgentModel).where(UserAgentModel.user_id == user_id)
         result = await self.db.execute(query)
         return list(result.scalars().all())
+    
+    async def get_user_agents_with_details(self, user_id: UUID) -> List[AgentForUserResponse]:
+        """Get all agents a user has access to with full agent details."""
+        query = (
+            select(
+                # Agent columns
+                AgentModel.id,
+                AgentModel.title,
+                AgentModel.description,
+                AgentModel.created_by,
+                AgentModel.created_at,
+                AgentModel.updated_at,
+                # User access columns
+                UserAgentModel.role,
+                UserAgentModel.granted_at,
+                UserAgentModel.granted_by,
+            )
+            .join(AgentModel, UserAgentModel.agent_id == AgentModel.id)
+            .where(UserAgentModel.user_id == user_id)
+            .order_by(AgentModel.title)
+        )
+        result = await self.db.execute(query)
+        rows = result.all()
+        
+        return [AgentForUserResponse(**row._asdict()) for row in rows]
 
 
 # ==========================================

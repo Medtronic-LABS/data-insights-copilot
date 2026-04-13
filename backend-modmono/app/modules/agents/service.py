@@ -24,7 +24,7 @@ from app.modules.agents.schemas import (
     AgentDetailResponse, AgentListResponse,
     AgentConfigResponse, AgentConfigListResponse,
     AgentConfigSummary, AgentConfigHistoryResponse,
-    UserAgentResponse, UserAgentListResponse,
+    UserAgentResponse, UserAgentListResponse, AgentsForUserListResponse,
 )
 # Import data source repository for config validation
 from app.modules.data_sources.repository import DataSourceRepository
@@ -226,6 +226,15 @@ class UserAgentService:
             users=users,
             total=len(users),
             agent_id=agent_id,
+        )
+    
+    async def get_user_agents(self, user_id: UUID) -> AgentsForUserListResponse:
+        """Get all agents a user has access to."""
+        agents = await self.user_agents.get_user_agents_with_details(user_id)
+        return AgentsForUserListResponse(
+            agents=agents,
+            total=len(agents),
+            user_id=user_id,
         )
 
 

@@ -17,6 +17,8 @@ from app.modules.users.service import UserService
 from app.modules.users.schemas import (
     User, UserCreate, UserUpdate
 )
+from app.modules.agents.service import UserAgentService
+from app.modules.agents.schemas import AgentsForUserListResponse
 
 router = APIRouter()
 
@@ -275,3 +277,28 @@ async def activate_user(
         )
     
     return BaseResponse.ok(message="User activated successfully")
+
+
+# ============================================
+# User Agents
+# ============================================
+
+@router.get("/{user_id}/agents", response_model=BaseResponse[AgentsForUserListResponse])
+async def get_user_agents(
+    user_id: str,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Get all agents a user has access to.
+    
+    **Required Permission:** ADMIN
+    
+    Returns a list of agents with the user's role for each agent.
+    """
+    from uuid import UUID
+    
+    ua_service = UserAgentService(session)
+    result = await ua_service.get_user_agents(UUID(user_id))
+    
+    return BaseResponse.ok(data=result)

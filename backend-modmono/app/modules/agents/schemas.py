@@ -356,6 +356,31 @@ class UserAgentListResponse(BaseModel):
     agent_id: Optional[UUID] = None
 
 
+class AgentForUserResponse(BaseModel):
+    """Agent info with user's access role - used when listing agents for a user."""
+    # Agent details
+    id: UUID
+    title: str
+    description: Optional[str] = None
+    created_by: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    # User's access to this agent
+    role: str = Field(description="User's role on this agent (user, editor, admin)")
+    granted_at: datetime
+    granted_by: Optional[UUID] = None
+    
+    model_config = {"from_attributes": True}
+
+
+class AgentsForUserListResponse(BaseModel):
+    """List of agents a user has access to."""
+    agents: List[AgentForUserResponse]
+    total: int
+    user_id: UUID
+
+
 # ==========================================
 # Search Schema
 # ==========================================
