@@ -29,7 +29,7 @@ Usage:
 import asyncio
 import json
 from typing import Dict, List, Any, Optional, Set, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 from app.core.utils.logging import get_logger
@@ -39,8 +39,14 @@ from app.modules.embeddings.service import _get_embedding_provider
 logger = get_logger(__name__)
 
 
-# Collection prefix for schema vectors (matches Phase 3)
 SCHEMA_COLLECTION_PREFIX = "schema_config_"
+
+# =============================================================================
+# Default Retrieval Settings
+# =============================================================================
+# Adjust these constants to control how many tables are retrieved for context
+DEFAULT_TOP_K_TABLES = 5  # Number of most relevant tables to retrieve (recommended: 3-5)
+DEFAULT_MAX_DEPENDENCIES = 3  # Maximum FK dependency tables to add
 
 
 @dataclass
@@ -288,7 +294,7 @@ class SchemaRetriever:
     async def retrieve_tables(
         self,
         query: str,
-        top_k: int = 5,
+        top_k: int = DEFAULT_TOP_K_TABLES,
     ) -> List[RetrievedTable]:
         """
         Retrieve top K relevant tables via semantic search.
@@ -359,18 +365,24 @@ class SchemaRetriever:
         self,
         primary_tables: List[RetrievedTable],
         max_depth: int = 1,
-        max_dependencies: int = 5,
+        max_dependencies: int = DEFAULT_MAX_DEPENDENCIES,
+        include_reverse_fks: bool = True,
     ) -> List[RetrievedTable]:
         """
-        Resolve FK dependencies for retrieved tables.
+        Resolve FK dependencies for retrieved tables (both directions).
         
-        If a retrieved table's metadata contains foreign_keys,
-        forcefully retrieve those linked schemas.
+        This method handles TWO types of FK relationships:
+        1. Outgoing FKs: Tables that primary tables reference (e.g., orders -> customers)
+        2. Incoming FKs: Tables that reference primary tables (e.g., encounters -> patients)
+        
+        This ensures that if "patients" is retrieved, "encounters" (which has FK to patients)
+        is also fetched to enable proper JOIN paths.
         
         Args:
             primary_tables: Tables from semantic search
             max_depth: How many levels of FK to follow (1 = direct only)
             max_dependencies: Maximum dependency tables to add
+            include_reverse_fks: Also fetch tables that reference the primary tables
         
         Returns:
             List of dependency tables (not including primary)
@@ -378,14 +390,23 @@ class SchemaRetriever:
         if not primary_tables:
             return []
         
-        # Collect all FK references
+        # Collect all FK references (outgoing)
         primary_names = {t.table_name for t in primary_tables}
         needed_tables: Set[str] = set()
         
+        # 1. Outgoing FKs: Tables that primary tables reference
         for table in primary_tables:
             for fk_table in table.foreign_keys:
                 if fk_table and fk_table not in primary_names:
                     needed_tables.add(fk_table)
+        
+        # 2. Incoming FKs: Tables that reference primary tables (reverse lookup)
+        # This ensures we get tables like "encounters" when "patients" is retrieved
+        if include_reverse_fks:
+            reverse_fk_tables = await self._find_tables_referencing(primary_names)
+            for table_name in reverse_fk_tables:
+                if table_name not in primary_names:
+                    needed_tables.add(table_name)
         
         if not needed_tables:
             logger.debug("No FK dependencies to resolve")
@@ -423,16 +444,75 @@ class SchemaRetriever:
                 self._ddl_cache[table_name] = ddl
                 self._fk_cache[table_name] = foreign_keys
         
-        # Optionally resolve second-level dependencies
+        # Optionally resolve second-level dependencies (only outgoing, no reverse)
         if max_depth > 1 and dependencies:
             second_level = await self.resolve_fk_dependencies(
                 dependencies,
                 max_depth=max_depth - 1,
                 max_dependencies=max_dependencies - len(dependencies),
+                include_reverse_fks=False,  # Don't recurse reverse FKs to avoid explosion
             )
             dependencies.extend(second_level)
         
         return dependencies
+    
+    async def _find_tables_referencing(self, target_tables: Set[str]) -> List[str]:
+        """
+        Find tables that have foreign keys pointing TO the target tables.
+        
+        This is a reverse FK lookup - if we have "patients", find tables
+        like "encounters" that have FK references to "patients".
+        
+        Args:
+            target_tables: Set of table names to find references to
+        
+        Returns:
+            List of table names that reference any of the target tables
+        """
+        referencing_tables = []
+        
+        try:
+            # Search for all schema documents and check their FK metadata
+            # Use a generic query to get candidate tables
+            query_embedding = await self._embed_query("table schema foreign key references")
+            
+            results = await self.vector_store.search(
+                query_embedding=query_embedding,
+                top_k=20,  # Get more results to scan for reverse FKs
+            )
+            
+            for result in results:
+                metadata = result.get("metadata", {})
+                table_name = metadata.get("table_name", "")
+                
+                # Skip if already in targets or is the relationships doc
+                if table_name in target_tables or table_name == "_relationships":
+                    continue
+                
+                # Check if this table's foreign_keys include any of our target tables
+                foreign_keys = metadata.get("foreign_keys", [])
+                if isinstance(foreign_keys, str):
+                    try:
+                        foreign_keys = json.loads(foreign_keys)
+                    except (json.JSONDecodeError, ValueError):
+                        foreign_keys = []
+                
+                # If this table references any of our target tables, include it
+                for fk_target in foreign_keys:
+                    if fk_target in target_tables:
+                        referencing_tables.append(table_name)
+                        # Cache for later use
+                        self._ddl_cache[table_name] = result.get("document", "")
+                        self._fk_cache[table_name] = foreign_keys
+                        break  # Only add once
+            
+            if referencing_tables:
+                logger.info(f"Found {len(referencing_tables)} tables referencing {target_tables}: {referencing_tables}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to find reverse FK references: {e}")
+        
+        return referencing_tables
     
     async def _fetch_table_by_name(self, table_name: str) -> Tuple[str, List[str]]:
         """
@@ -476,8 +556,8 @@ class SchemaRetriever:
     async def retrieve_with_dependencies(
         self,
         query: str,
-        top_k: int = 5,
-        max_dependencies: int = 5,
+        top_k: int = DEFAULT_TOP_K_TABLES,
+        max_dependencies: int = DEFAULT_MAX_DEPENDENCIES,
         resolve_depth: int = 1,
     ) -> SchemaContext:
         """
@@ -549,8 +629,8 @@ class SchemaRetriever:
 async def retrieve_schema_context(
     query: str,
     config_id: int,
-    top_k: int = 5,
-    max_dependencies: int = 5,
+    top_k: int = DEFAULT_TOP_K_TABLES,
+    max_dependencies: int = DEFAULT_MAX_DEPENDENCIES,
     embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
     api_key: Optional[str] = None,
 ) -> SchemaContext:
@@ -584,7 +664,7 @@ async def retrieve_schema_context(
 async def get_ddl_context_for_sql(
     query: str,
     config_id: int,
-    top_k: int = 5,
+    top_k: int = DEFAULT_TOP_K_TABLES,
     compact: bool = False,
 ) -> str:
     """

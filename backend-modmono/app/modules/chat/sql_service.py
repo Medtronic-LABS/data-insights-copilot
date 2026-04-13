@@ -135,6 +135,7 @@ class SQLService:
         schema: Optional[str] = None,
         max_result_rows: int = 100,
         enable_few_shot: bool = True,
+        config_id: Optional[int] = None,
     ):
         """
         Initialize SQL service with a database URL.
@@ -144,6 +145,7 @@ class SQLService:
             schema: Optional schema name for table discovery
             max_result_rows: Maximum rows to return (default 100)
             enable_few_shot: Enable few-shot example retrieval (default True)
+            config_id: Optional agent config ID for semantic schema retrieval
         """
         self._db_url = db_url
         self._schema = schema
@@ -153,6 +155,7 @@ class SQLService:
         self._table_names: List[str] = []
         self._settings = get_settings()
         self._enable_few_shot = enable_few_shot
+        self._config_id = config_id  # For semantic schema retrieval
         
         # Initialize query relevance checker
         self._enable_relevance_check = getattr(self._settings, 'enable_query_relevance_check', True)
@@ -507,6 +510,54 @@ class SQLService:
             logger.error(f"Failed to get schema context: {e}")
             return f"Tables: {', '.join(tables)}"
 
+
+    async def get_semantic_schema_context(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> str:
+        """
+        Get semantically relevant schema context for a specific query using vector search.
+        
+        Instead of blindly loading the first N tables, this method uses the SchemaRetriever
+        to fetch only the tables that are semantically relevant to the user's query.
+        Falls back to blind loading if vector search is not available.
+        
+        Args:
+            query: The natural language query to find relevant tables for
+            top_k: Number of relevant tables to retrieve (default 5)
+            
+        Returns:
+            Formatted DDL context string with relevant tables
+        """
+        # Try semantic retrieval if config_id is available
+        if self._config_id:
+            try:
+                from app.modules.embeddings.schema_retriever import get_ddl_context_for_sql
+                
+                # Use vector search to get relevant table DDLs
+                ddl_context = await get_ddl_context_for_sql(
+                    query=query,
+                    config_id=self._config_id,
+                    top_k=top_k,
+                    compact=False,
+                )
+                
+                if ddl_context and ddl_context.strip():
+                    logger.info(f"Retrieved semantic schema context for query (top_k={top_k})")
+                    return ddl_context
+                else:
+                    logger.warning("Semantic schema retrieval returned empty, falling back to blind loading")
+                    
+            except ImportError as e:
+                logger.warning(f"SchemaRetriever not available, falling back to blind loading: {e}")
+            except Exception as e:
+                logger.warning(f"Semantic schema retrieval failed, falling back to blind loading: {e}")
+        
+        # Fallback: use traditional blind schema loading
+        logger.debug("Using fallback blind schema loading (no config_id or semantic retrieval failed)")
+        return self.get_schema_context(max_tables=top_k)
+
     @property
     def cached_schema(self) -> str:
         """Get cached schema or generate it."""
@@ -573,15 +624,22 @@ class SQLService:
         
         return "Query executed but returned no data."
     
-    async def query_async(self, natural_language_query: str) -> str:
+    async def query_async(
+        self,
+        natural_language_query: str,
+        max_retries: int = 3,
+    ) -> str:
         """
         Execute a natural language query using LLM to generate SQL (async version).
         
         This is the main entry point for Intent A (SQL-only) queries with few-shot learning.
         Includes relevance checking to filter out irrelevant queries early.
+        Implements retry logic: if SQL execution fails, the error is appended to the
+        prompt and the LLM is asked to fix the query (up to max_retries attempts).
         
         Args:
             natural_language_query: User's question in natural language
+            max_retries: Maximum number of retry attempts (default 3)
             
         Returns:
             Formatted response string with query results
@@ -645,7 +703,11 @@ class SQLService:
                     _relevance_stats["passed"]
                 )
         
-        schema = self.get_schema_context()
+        # Use semantic schema retrieval based on the query (not blind loading)
+        schema = await self.get_semantic_schema_context(
+            query=natural_language_query,
+            top_k=5,  # Retrieve top 5 most relevant tables
+        )
         
         # Get few-shot examples
         few_shot_examples = []
@@ -679,41 +741,97 @@ class SQLService:
         
         full_system_prompt = "\n\n".join(system_prompt_parts)
         
-        # Generate SQL using LLM
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", full_system_prompt),
-            ("user", "{question}")
-        ])
-        
+        # Create LLM provider
         try:
             provider = create_llm_provider("openai", {
                 "model": "gpt-4o-mini",
                 "temperature": 0,
             })
             llm = provider.get_langchain_llm()
-            
-            chain = prompt | llm
-            response = chain.invoke({
-                "schema": schema,
-                "question": natural_language_query
-            })
-            
-            # Extract SQL from response (remove markdown code blocks if present)
-            sql = response.content.strip()
-            sql = re.sub(r'^```sql\s*', '', sql)
-            sql = re.sub(r'\s*```$', '', sql)
-            
-            logger.debug(f"Generated SQL: {sql[:200]}...")
-            
-            # Execute the generated SQL
-            results, count = self.execute_query(sql)
-            
-            # Format results for response
-            return self._format_results(results, count)
-            
         except Exception as e:
-            logger.error(f"Natural language query failed: {e}")
-            return f"Failed to execute query: {str(e)}"
+            logger.error(f"Failed to create LLM provider: {e}")
+            return f"Failed to initialize LLM: {str(e)}"
+        
+        # =========================================================================
+        # RETRY LOOP: Generate SQL, execute, retry on error with error feedback
+        # =========================================================================
+        previous_error: Optional[str] = None
+        last_sql: Optional[str] = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Build prompt - include previous error if this is a retry
+                if previous_error and last_sql:
+                    # Add error context for retry attempts
+                    error_context = f"""
+
+PREVIOUS ATTEMPT FAILED:
+SQL that failed:
+```sql
+{last_sql}
+```
+
+Previous Error: {previous_error}
+
+Please fix the SQL query to resolve this error. Generate ONLY the corrected SQL.
+"""
+                    retry_prompt = ChatPromptTemplate.from_messages([
+                        ("system", full_system_prompt + error_context),
+                        ("user", "{question}")
+                    ])
+                    chain = retry_prompt | llm
+                    logger.info(f"Retry attempt {attempt + 1}/{max_retries} with error feedback")
+                else:
+                    # First attempt - normal prompt
+                    prompt = ChatPromptTemplate.from_messages([
+                        ("system", full_system_prompt),
+                        ("user", "{question}")
+                    ])
+                    chain = prompt | llm
+                
+                # Generate SQL using LLM
+                response = chain.invoke({
+                    "schema": schema,
+                    "question": natural_language_query
+                })
+                
+                # Extract SQL from response (remove markdown code blocks if present)
+                sql = response.content.strip()
+                sql = re.sub(r'^```sql\s*', '', sql)
+                sql = re.sub(r'^```\s*', '', sql)
+                sql = re.sub(r'\s*```$', '', sql)
+                sql = sql.strip()
+                last_sql = sql
+                
+                logger.debug(f"Generated SQL (attempt {attempt + 1}): {sql[:200]}...")
+                
+                # Execute the generated SQL using read-only session
+                results, count = self.execute_query(sql)
+                
+                # Success! Format and return results
+                logger.info(f"Query succeeded on attempt {attempt + 1}")
+                return self._format_results(results, count)
+                
+            except Exception as e:
+                error_str = str(e)
+                previous_error = error_str
+                
+                logger.warning(
+                    f"SQL execution failed on attempt {attempt + 1}/{max_retries}: {error_str[:200]}"
+                )
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(
+                        f"All {max_retries} attempts failed. Last error: {error_str}"
+                    )
+                    return f"Failed to execute query after {max_retries} attempts. Last error: {error_str}"
+                
+                # Otherwise, continue to next iteration with error feedback
+                continue
+        
+        # Should not reach here, but just in case
+        return f"Failed to execute query: Unknown error after {max_retries} attempts"
     
     def query(self, natural_language_query: str) -> str:
         """
@@ -911,7 +1029,8 @@ class SQLServiceFactory:
     async def from_data_source_id(
         data_source_id: UUID,
         db_session,
-        enable_few_shot: bool = True
+        enable_few_shot: bool = True,
+        config_id: Optional[int] = None,
     ) -> Optional[SQLService]:
         """
         Create a SQLService from a data source ID.
@@ -920,6 +1039,7 @@ class SQLServiceFactory:
             data_source_id: UUID of the data source
             db_session: Async SQLAlchemy session
             enable_few_shot: Enable few-shot example retrieval
+            config_id: Optional agent config ID for semantic schema retrieval
             
         Returns:
             SQLService instance or None if not found
@@ -948,7 +1068,7 @@ class SQLServiceFactory:
                     logger.warning(f"Data source {data_source_id} has no db_url configured")
                     return None
                     
-                return SQLService(db_url=db_url, enable_few_shot=enable_few_shot)
+                return SQLService(db_url=db_url, enable_few_shot=enable_few_shot, config_id=config_id)
                 
             elif data_source.source_type == "file":
                 # Use DuckDB for file-based data sources
@@ -956,7 +1076,8 @@ class SQLServiceFactory:
                 if duckdb_path:
                     return SQLService(
                         db_url=f"duckdb://{duckdb_path}",
-                        enable_few_shot=enable_few_shot
+                        enable_few_shot=enable_few_shot,
+                        config_id=config_id,
                     )
                 
                 # Fallback: Create DuckDB service that reads CSV directly
@@ -1015,7 +1136,8 @@ class SQLServiceFactory:
             return await SQLServiceFactory.from_data_source_id(
                 config.data_source_id,
                 db_session,
-                enable_few_shot=enable_few_shot
+                enable_few_shot=enable_few_shot,
+                config_id=config.id,  # Pass config ID for semantic schema retrieval
             )
             
         except Exception as e:

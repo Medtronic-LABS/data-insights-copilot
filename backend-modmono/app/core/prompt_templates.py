@@ -25,29 +25,30 @@ logger = get_logger(__name__)
 
 SQL_GENERATOR_SYSTEM_PROMPT = """You are an expert SQL developer. Your task is to convert natural language questions into precise, executable SQL queries.
 
-## Your Responsibilities
-1. Analyze the user's question to understand their intent
-2. Use ONLY the tables and columns provided in the schema context
-3. Generate a single, valid SQL query that answers the question
-4. Include appropriate JOINs when data spans multiple tables
-5. Use proper SQL syntax for the target database dialect
+## STRICT RULES - FOLLOW EXACTLY
+1. Generate SQL using ONLY the tables and columns provided in the schema below
+2. Return ONLY valid SQL - no explanations, no markdown, no code blocks
+3. NEVER invent or assume tables/columns that are not explicitly listed
+4. If the question cannot be answered with the provided schema, respond with: "-- ERROR: Cannot answer with available schema"
 
-## Critical Rules
-- NEVER invent tables or columns not in the schema
-- ALWAYS check column data types before operations
+## SQL Best Practices
+- Use explicit JOIN syntax (INNER JOIN, LEFT JOIN) - never comma joins
+- Include appropriate WHERE clauses for filtering
 - Use proper NULL handling with COALESCE or IS NULL
-- Prefer explicit JOINs over implicit (comma) joins
 - Add meaningful column aliases for clarity
-
-## Output Format
-Return ONLY the SQL query, no explanations or markdown formatting.
-If you cannot answer the question with the available schema, explain why briefly.
+- Check column data types before operations
 
 {dialect_rules}
 
-{schema_context}
+## DATABASE SCHEMA
+The following CREATE TABLE statements define the ONLY tables and columns you may use:
+
+{retrieved_ddls}
 
 {few_shot_examples}
+
+## FINAL REMINDER
+Generate SQL using ONLY the provided schemas. Return ONLY valid SQL.
 """
 
 
@@ -123,11 +124,7 @@ def format_schema_context(ddl_blocks: str) -> str:
     if not ddl_blocks or not ddl_blocks.strip():
         return ""
     
-    return f"""## Database Schema
-The following tables are available for your query. Use ONLY these tables and columns.
-
-{ddl_blocks}
-"""
+    return ddl_blocks
 
 
 def format_few_shot_examples(examples: List[Dict[str, Any]]) -> str:
@@ -177,7 +174,7 @@ def build_sql_generation_prompt(
     with schema context formatted as raw CREATE TABLE blocks.
     
     Args:
-        schema_context: DDL blocks from schema retriever
+        schema_context: DDL blocks (retrieved_ddls) from schema retriever
         dialect: Target SQL dialect
         few_shot_examples: Optional list of similar examples
         additional_rules: Optional additional SQL rules
@@ -191,18 +188,18 @@ def build_sql_generation_prompt(
     if additional_rules:
         dialect_rules = f"{dialect_rules}\n\n{additional_rules}"
     
-    # Format schema context
-    formatted_schema = format_schema_context(schema_context)
+    # Format schema context (raw DDLs)
+    formatted_ddls = format_schema_context(schema_context)
     
     # Format few-shot examples
     formatted_examples = ""
     if few_shot_examples:
         formatted_examples = format_few_shot_examples(few_shot_examples)
     
-    # Build final prompt
+    # Build final prompt with dynamic {retrieved_ddls} injection
     prompt = SQL_GENERATOR_SYSTEM_PROMPT.format(
         dialect_rules=dialect_rules,
-        schema_context=formatted_schema,
+        retrieved_ddls=formatted_ddls,
         few_shot_examples=formatted_examples,
     )
     

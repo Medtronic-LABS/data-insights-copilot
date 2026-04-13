@@ -203,12 +203,17 @@ class TableSchema:
                 summary["desc"] = col.description
             column_summaries.append(summary)
         
+        # Get FK dependencies as list of table names
+        fk_dependencies = self.get_foreign_key_dependencies()
+        
         metadata = {
             "doc_type": "ddl_schema",
             "table_name": self.table_name,
             "column_count": len(self.columns),
             "primary_keys": self.primary_key_columns,
-            "foreign_key_dependencies": self.get_foreign_key_dependencies(),
+            # Store FK dependencies in both keys for compatibility with schema_retriever
+            "foreign_keys": fk_dependencies,  # Used by schema_retriever.py for FK resolution
+            "foreign_key_dependencies": fk_dependencies,  # Legacy key
             "has_foreign_keys": len(self.foreign_keys) > 0,
             "columns": json.dumps(column_summaries),
         }

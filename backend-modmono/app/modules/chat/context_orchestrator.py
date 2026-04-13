@@ -27,9 +27,8 @@ Usage:
     # Use in prompt
     prompt = context.to_prompt()
 """
-import json
 import asyncio
-from typing import Dict, List, Any, Optional, Set, Tuple
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -43,6 +42,13 @@ from app.core.prompt_templates import (
 
 logger = get_logger(__name__)
 
+
+# =============================================================================
+# Default Retrieval Settings
+# =============================================================================
+# These control how many tables are retrieved for SQL generation context
+DEFAULT_TOP_K_TABLES = 5  # Number of most relevant tables to retrieve (recommended: 3-5)
+DEFAULT_MAX_DEPENDENCIES = 3  # Maximum FK dependency tables to add
 
 # Maximum context token budget (approximate)
 MAX_CONTEXT_TOKENS = 8000
@@ -274,8 +280,8 @@ class ContextOrchestrator:
     async def _retrieve_relevant_tables(
         self,
         query: str,
-        top_k: int = 5,
-        max_dependencies: int = 3,
+        top_k: int = DEFAULT_TOP_K_TABLES,
+        max_dependencies: int = DEFAULT_MAX_DEPENDENCIES,
     ) -> Tuple[List[TableContext], List[TableContext]]:
         """
         Phase 4: Retrieve relevant tables with FK dependency resolution.
@@ -446,8 +452,8 @@ class ContextOrchestrator:
     async def assemble_context(
         self,
         query: str,
-        max_tables: int = 5,
-        max_dependencies: int = 3,
+        max_tables: int = DEFAULT_TOP_K_TABLES,
+        max_dependencies: int = DEFAULT_MAX_DEPENDENCIES,
         max_examples: int = 3,
         category_hint: Optional[str] = None,
     ) -> AssembledContext:
@@ -525,7 +531,7 @@ class ContextOrchestrator:
     async def get_context_for_sql_generation(
         self,
         query: str,
-        max_tables: int = 5,
+        max_tables: int = DEFAULT_TOP_K_TABLES,
         max_examples: int = 3,
     ) -> str:
         """
@@ -551,7 +557,7 @@ async def get_orchestrated_context(
     query: str,
     config_id: Optional[int] = None,
     dialect: str = "postgresql",
-    max_tables: int = 5,
+    max_tables: int = DEFAULT_TOP_K_TABLES,
     max_examples: int = 3,
     embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
     api_key: Optional[str] = None,
@@ -592,7 +598,7 @@ async def get_sql_generation_prompt(
     query: str,
     config_id: Optional[int] = None,
     dialect: str = "postgresql",
-    max_tables: int = 5,
+    max_tables: int = DEFAULT_TOP_K_TABLES,
     max_examples: int = 3,
 ) -> Tuple[str, Dict[str, Any]]:
     """
