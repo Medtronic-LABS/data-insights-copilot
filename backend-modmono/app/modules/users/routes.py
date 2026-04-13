@@ -182,6 +182,62 @@ async def update_user(
     return BaseResponse.ok(data=user, message="User updated successfully")
 
 
+@router.patch("/{user_id}", response_model=BaseResponse[User])
+async def patch_user(
+    user_id: str,
+    data: UserUpdate,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(require_admin),
+    audit: AuditLogger = Depends(get_audit_logger),
+):
+    """
+    Partially update user (PATCH).
+    
+    **Required Permission:** ADMIN
+    
+    **Note:** Only provided fields will be updated.
+    """
+    service = UserService(session)
+    
+    # Get existing user to detect role changes
+    existing_user = await service.get_user(user_id)
+    old_role = existing_user.role
+    
+    user = await service.update_user(user_id, data)
+    
+    # Audit log: Detect role promotion/demotion
+    if data.role and data.role != old_role:
+        role_change = detect_role_change(old_role, data.role)
+        if role_change == "promoted":
+            await audit.log(
+                action=AuditAction.ROLE_PROMOTED,
+                actor=current_user,
+                resource_type="user",
+                resource_id=str(user.id),
+                resource_name=user.username,
+                details={
+                    "old_role": old_role,
+                    "new_role": data.role,
+                    "promoted_by": current_user.username
+                },
+            )
+        elif role_change == "demoted":
+            await audit.log(
+                action=AuditAction.ROLE_DEMOTED,
+                actor=current_user,
+                resource_type="user",
+                resource_id=str(user.id),
+                resource_name=user.username,
+                details={
+                    "old_role": old_role,
+                    "new_role": data.role,
+                    "demoted_by": current_user.username
+                },
+            )
+    
+    return BaseResponse.ok(data=user, message="User updated successfully")
+
+
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: str,
