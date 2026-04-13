@@ -198,7 +198,7 @@ class FewShotEngine:
         self,
         config_id: Optional[int] = None,
         dialect: str = "postgresql",
-        embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+        embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
         api_key: Optional[str] = None,
         api_base_url: Optional[str] = None,
     ):
@@ -529,7 +529,7 @@ async def get_few_shot_context(
     query: str,
     dialect: str = "postgresql",
     top_k: int = 3,
-    embedding_model: str = "huggingface/BAAI/bge-large-en-v1.5",
+    embedding_model: str = "huggingface/BAAI/bge-base-en-v1.5",
     api_key: Optional[str] = None,
 ) -> str:
     """
