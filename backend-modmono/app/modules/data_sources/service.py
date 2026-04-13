@@ -236,6 +236,9 @@ class DataSourceService:
                         else:
                             raise e
                     
+                    # Track if we should skip the inspector due to persistent permission issues
+                    force_fallback = False
+                    
                     for table_name in table_names:
                         # Get primary key columns
                         pk_columns = set()
@@ -275,13 +278,22 @@ class DataSourceService:
                         
                         columns = []
                         raw_columns = []
-                        try:
-                            raw_columns = inspector.get_columns(table_name)
-                        except Exception as e:
-                            # Fallback for column reflection if inspector fails (e.g. pg_collation permissions)
+                        
+                        # Try inspector unless we've already determined it fails
+                        if not force_fallback:
+                            try:
+                                raw_columns = inspector.get_columns(table_name)
+                            except Exception as e:
+                                if is_postgresql:
+                                    import logging
+                                    logging.warning(f"Standard inspector failed for {table_name}: {e}. Enabling fallback mode.")
+                                    force_fallback = True
+                                else:
+                                    raise e
+                        
+                        # Use fallback if inspector failed or is disabled
+                        if force_fallback or not raw_columns:
                             if is_postgresql:
-                                import logging
-                                logging.warning(f"Standard inspector failed for columns of {table_name}: {e}. Trying fallback.")
                                 query = text("""
                                     SELECT column_name, data_type, is_nullable
                                     FROM information_schema.columns
@@ -295,8 +307,9 @@ class DataSourceService:
                                         "nullable": row[2] == 'YES'
                                     } for row in res
                                 ]
-                            else:
-                                raise e
+                            elif not raw_columns:
+                                # If not postgres and inspector failed, we have to stop
+                                raise ValueError(f"Failed to reflect columns for {table_name} and no fallback available.")
 
                         for col in raw_columns:
                             col_name = col["name"]
