@@ -192,7 +192,7 @@ class DataSourceService:
         Includes primary key and foreign key information for databases.
         """
         import json
-        from sqlalchemy import create_engine, inspect
+        from sqlalchemy import create_engine, inspect, text
         
         source = await self.repo.get_by_id(source_id)
         if not source:
@@ -217,65 +217,71 @@ class DataSourceService:
                 engine = create_engine(db_url, pool_pre_ping=True, pool_size=1)
                 inspector = inspect(engine)
                 
-                try:
-                    table_names = inspector.get_table_names()
-                except Exception as e:
-                    # Fallback for table names if inspector fails
-                    if "postgresql" in source.db_engine_type.lower():
-                        from sqlalchemy import text
-                        with engine.connect() as conn:
+                # Check if we are using PostgreSQL for fallbacks
+                is_postgresql = "postgresql" in source.db_engine_type.lower()
+                
+                # Use a single connection for all fallbacks to improve performance
+                with engine.connect() as conn:
+                    try:
+                        table_names = inspector.get_table_names()
+                    except Exception as e:
+                        import logging
+                        logging.warning(f"Standard inspector failed to get table names: {e}. Trying fallback.")
+                        # Fallback for table names
+                        if is_postgresql:
                             result = conn.execute(text(
                                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
                             ))
                             table_names = [row[0] for row in result]
-                    else:
-                        raise e
-                
-                for table_name in table_names:
-                    # Get primary key columns
-                    pk_columns = set()
-                    try:
-                        pk_constraint = inspector.get_pk_constraint(table_name)
-                        pk_columns = set(pk_constraint.get("constrained_columns", []) if pk_constraint else [])
-                    except Exception:
-                        # PK info is optional for reflection
-                        pass
+                        else:
+                            raise e
                     
-                    # Get foreign keys for this table
-                    fk_columns = {}  # column_name -> referenced table info
-                    try:
-                        foreign_keys = inspector.get_foreign_keys(table_name)
-                        for fk in foreign_keys:
-                            ref_table = fk.get("referred_table")
-                            ref_columns = fk.get("referred_columns", [])
-                            constrained_columns = fk.get("constrained_columns", [])
-                            
-                            for i, col in enumerate(constrained_columns):
-                                fk_columns[col] = {
-                                    "referenced_table": ref_table,
-                                    "referenced_column": ref_columns[i] if i < len(ref_columns) else None,
-                                }
-                            
-                            # Add to relationships list
-                            if ref_table and constrained_columns:
-                                relationships.append({
-                                    "from_table": table_name,
-                                    "from_columns": constrained_columns,
-                                    "to_table": ref_table,
-                                    "to_columns": ref_columns,
-                                })
-                    except Exception:
-                        # FK info is optional for reflection
-                        pass
-                    
-                    columns = []
-                    try:
-                        raw_columns = inspector.get_columns(table_name)
-                    except Exception as e:
-                        # Fallback for column reflection if inspector fails (e.g. pg_collation permissions)
-                        if "postgresql" in source.db_engine_type.lower():
-                            from sqlalchemy import text
-                            with engine.connect() as conn:
+                    for table_name in table_names:
+                        # Get primary key columns
+                        pk_columns = set()
+                        try:
+                            pk_constraint = inspector.get_pk_constraint(table_name)
+                            pk_columns = set(pk_constraint.get("constrained_columns", []) if pk_constraint else [])
+                        except Exception:
+                            # PK info is optional for reflection
+                            pass
+                        
+                        # Get foreign keys for this table
+                        fk_columns = {}  # column_name -> referenced table info
+                        try:
+                            foreign_keys = inspector.get_foreign_keys(table_name)
+                            for fk in foreign_keys:
+                                ref_table = fk.get("referred_table")
+                                ref_columns = fk.get("referred_columns", [])
+                                constrained_columns = fk.get("constrained_columns", [])
+                                
+                                for i, col in enumerate(constrained_columns):
+                                    fk_columns[col] = {
+                                        "referenced_table": ref_table,
+                                        "referenced_column": ref_columns[i] if i < len(ref_columns) else None,
+                                    }
+                                
+                                # Add to relationships list
+                                if ref_table and constrained_columns:
+                                    relationships.append({
+                                        "from_table": table_name,
+                                        "from_columns": constrained_columns,
+                                        "to_table": ref_table,
+                                        "to_columns": ref_columns,
+                                    })
+                        except Exception:
+                            # FK info is optional for reflection
+                            pass
+                        
+                        columns = []
+                        raw_columns = []
+                        try:
+                            raw_columns = inspector.get_columns(table_name)
+                        except Exception as e:
+                            # Fallback for column reflection if inspector fails (e.g. pg_collation permissions)
+                            if is_postgresql:
+                                import logging
+                                logging.warning(f"Standard inspector failed for columns of {table_name}: {e}. Trying fallback.")
                                 query = text("""
                                     SELECT column_name, data_type, is_nullable
                                     FROM information_schema.columns
@@ -289,29 +295,29 @@ class DataSourceService:
                                         "nullable": row[2] == 'YES'
                                     } for row in res
                                 ]
-                        else:
-                            raise e
+                            else:
+                                raise e
 
-                    for col in raw_columns:
-                        col_name = col["name"]
-                        col_info = {
-                            "column_name": col_name,
-                            "data_type": str(col["type"]),
-                            "is_nullable": col.get("nullable", True),
-                            "is_primary_key": col_name in pk_columns,
-                        }
+                        for col in raw_columns:
+                            col_name = col["name"]
+                            col_info = {
+                                "column_name": col_name,
+                                "data_type": str(col["type"]),
+                                "is_nullable": col.get("nullable", True),
+                                "is_primary_key": col_name in pk_columns,
+                            }
+                            
+                            # Add foreign key info if applicable
+                            if col_name in fk_columns:
+                                col_info["foreign_key"] = fk_columns[col_name]
+                            
+                            columns.append(col_info)
                         
-                        # Add foreign key info if applicable
-                        if col_name in fk_columns:
-                            col_info["foreign_key"] = fk_columns[col_name]
-                        
-                        columns.append(col_info)
-                    
-                    tables_info.append({
-                        "table_name": table_name,
-                        "columns": columns,
-                        "primary_key_columns": list(pk_columns),
-                    })
+                        tables_info.append({
+                            "table_name": table_name,
+                            "columns": columns,
+                            "primary_key_columns": list(pk_columns),
+                        })
                 
                 engine.dispose()
                 
