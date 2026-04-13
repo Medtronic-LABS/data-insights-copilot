@@ -13,6 +13,7 @@ import {
     handleApiError,
     startEmbeddingJob,
     getDataSource,
+    getConfigHistory,
     type DataSource
 } from '../services/api';
 import type { IngestionResponse } from '../services/api';
@@ -21,7 +22,7 @@ import type { Agent } from '../types/agent';
 import type { AdvancedSettings } from '../contexts/AgentContext';
 
 // Utility to convert snake_case keys to camelCase
-const snakeToCamel = (str: string): string => 
+const snakeToCamel = (str: string): string =>
     str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
 
 const toCamelCaseKeys = <T extends Record<string, unknown>>(obj: T | null | undefined): Record<string, unknown> | null => {
@@ -108,6 +109,7 @@ const AgentConfigPage: React.FC = () => {
     const [draftPrompt, setDraftPrompt] = useState('');
     const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(defaultAdvancedSettings);
     const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
+    const [isDataSourceLocked, setIsDataSourceLocked] = useState(false);
 
     // Refs for auto-scrolling steps
     const stepsContainerRef = useRef<HTMLDivElement>(null);
@@ -125,7 +127,7 @@ const AgentConfigPage: React.FC = () => {
     useEffect(() => {
         // Skip if already loaded
         if (initialLoadDoneRef.current) return;
-        
+
         const loadAgentAndConfig = async () => {
             if (!id) return;
             initialLoadDoneRef.current = true;
@@ -133,7 +135,16 @@ const AgentConfigPage: React.FC = () => {
             try {
                 const foundAgent = await getAgent(id);
                 setAgent(foundAgent);
-                
+
+                // Check if agent has published configs to lock data source
+                try {
+                    const history = await getConfigHistory(id);
+                    const hasPublished = history.configs.some(c => c.status === 'published');
+                    setIsDataSourceLocked(hasPublished);
+                } catch (err) {
+                    console.error('Failed to fetch config history:', err);
+                }
+
                 // If versionId is in URL, load that specific version
                 // Otherwise, check for existing draft
                 let config = null;
@@ -142,7 +153,7 @@ const AgentConfigPage: React.FC = () => {
                 } else {
                     config = await loadDraft(id);
                 }
-                
+
                 if (config) {
                     setHasDraft(true);
                     // Use URL step if present, otherwise go to next step after last completed
@@ -215,7 +226,7 @@ const AgentConfigPage: React.FC = () => {
             }
         };
         loadAgentAndConfig();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id]);
 
     // Sync state to window for API use (temporary solution)
@@ -242,16 +253,16 @@ const AgentConfigPage: React.FC = () => {
         const currentStepParam = searchParams.get('step');
         const currentVersionParam = searchParams.get('versionId');
         const newParams: Record<string, string> = { step: currentStep.toString() };
-        
+
         // Add versionId to URL if we have one
         if (hookVersionId) {
             newParams.versionId = hookVersionId.toString();
         }
-        
+
         // Only update if something changed
         const stepChanged = currentStep.toString() !== currentStepParam;
         const versionChanged = hookVersionId?.toString() !== currentVersionParam;
-        
+
         if (stepChanged || versionChanged) {
             setSearchParams(newParams, { replace: true });
         }
@@ -312,7 +323,7 @@ const AgentConfigPage: React.FC = () => {
                 setError("Please select a data source.");
                 return;
             }
-            
+
             // Create new draft when starting (if no draft was loaded on page init)
             if (!draft && agent) {
                 const newDraft = await createNewDraft(agent.id, selectedDataSource.id);
@@ -331,7 +342,7 @@ const AgentConfigPage: React.FC = () => {
             const stepData = getStepData(currentStep);
             await saveStep(currentStep, stepData);
         }
-        
+
         if (currentStep === 2 && dataSourceType === 'database') {
             // For databases, schema selection is temporarily skipped
             // Just proceed to next step
@@ -384,7 +395,7 @@ const AgentConfigPage: React.FC = () => {
         try {
             // Use the new step-based publish API
             const published = await publish(draftPrompt, exampleQuestions);
-            
+
             if (published) {
                 setSuccessMessage(`Configuration published successfully!`);
                 setCurrentStep(6); // Move to Summary
@@ -551,6 +562,7 @@ const AgentConfigPage: React.FC = () => {
                                     onFileColumnsInit={setSelectedFileColumns}
                                     selectedDataSource={selectedDataSource}
                                     setSelectedDataSource={setSelectedDataSource}
+                                    isLocked={isDataSourceLocked}
                                 />
                             )}
 
