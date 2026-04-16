@@ -750,6 +750,7 @@ class EmbeddingJobService:
             elapsed_seconds=elapsed_seconds,
             errors_count=job.errors_count,
             recent_errors=job.recent_errors or [],
+            error_message=job.error_message,
             started_at=job.started_at,
             completed_at=job.completed_at
         )
