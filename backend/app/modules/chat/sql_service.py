@@ -75,12 +75,14 @@ DUCKDB_SQL_RULES = """CRITICAL DUCKDB SQL RULES:
 15. **AGGREGATE vs ROW-WISE FUNCTIONS**: 
     - max()/min() are AGGREGATE functions - they work ACROSS ROWS (vertical)
     - GREATEST()/LEAST() are SCALAR functions - they work ACROSS COLUMNS in a single row (horizontal)
-16. **TIMEZONE-AWARE TIMESTAMPS**: If a timestamp column contains timezone info (e.g., "+0300", "UTC", "Z"), you MUST use TIMESTAMPTZ, not TIMESTAMP:
-    - WRONG: CAST(created_at AS TIMESTAMP) - fails with "timestamp that is not UTC" error
+16. **TIMEZONE-AWARE TIMESTAMPS & DIRTY STRINGS**: If a timestamp column contains timezone info (e.g., "+0300", "UTC", "Z") or if a VARCHAR needs conversion, ALWAYS use TIMESTAMPTZ:
+    - WRONG: CAST(created_at AS TIMESTAMP) - fails if string has timezone or is already a DATE.
     - CORRECT: CAST(created_at AS TIMESTAMPTZ) or created_at::TIMESTAMPTZ
     - Example: DATE_TRUNC('month', CAST(created_at AS TIMESTAMPTZ))
-    - For columns like 'created_at', 'updated_at', always prefer TIMESTAMPTZ to be safe
-17. **PREFER DEDICATED DATE COLUMNS**: If a table has both a date column (like 'ymd', 'date', 'assessment_date') AND a timestamp column (like 'created_at'), prefer the dedicated date column for date-based queries as it avoids timezone issues."""
+    - For any string-to-date conversion where formatting is complex, prefer TIMESTAMPTZ.
+17. **PREFER DEDICATED DATE COLUMNS**: If a table has both a date column (like 'ymd', 'date') and a timestamp, prefer the dedicated date column to avoid timezone issues.
+18. **NO SUBSTRING FOR DATES**: Never use SUBSTRING() on a DATE or TIMESTAMP column. Only use it on VARCHAR if absolutely necessary. DuckDB's CAST is usually smart enough without it.
+"""
 
 # Query type classification keywords
 QUERY_TYPE_KEYWORDS = {
@@ -195,6 +197,16 @@ class SQLService:
         except Exception as e:
             logger.warning(f"Failed to initialize data dictionary: {e}")
             self._data_dictionary = None
+        
+        # Initialize reflection service for SQL validation
+        self._reflection_service = None
+        try:
+            from app.modules.chat.query.reflection_service import ReflectionService
+            self._reflection_service = ReflectionService()
+            logger.info("ReflectionService initialized for SQL validation")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ReflectionService: {e}")
+            self._reflection_service = None
     
     def _classify_query_type(self, question: str) -> str:
         """
@@ -301,16 +313,48 @@ class SQLService:
         if not self._data_dictionary:
             return ""
         
-        try:
-            tables = self._discover_tables()
-            context = self._data_dictionary.to_prompt_context(tables)
-            if context:
-                logger.debug(f"Added data dictionary context for {len(tables)} tables")
-            return context
-        except Exception as e:
-            logger.warning(f"Failed to get data dictionary context: {e}")
-            return ""
+        tables = self._discover_tables()
+        return self._data_dictionary.to_prompt_context(tables)
     
+    def _get_table_descriptions(self) -> dict:
+        """
+        Get table descriptions for the relevance checker.
+        
+        Priority:
+        1. DataDictionary (user-curated descriptions)
+        2. Auto-generated from schema columns (lightweight summaries)
+        
+        Returns:
+            Dict of {table_name: description}
+        """
+        tables = self._discover_tables()
+        descriptions = {}
+        
+        # Try DataDictionary first (user-curated descriptions)
+        if self._data_dictionary:
+            for table in tables:
+                desc = self._data_dictionary.get_table_description(table)
+                if desc:
+                    descriptions[table] = desc
+        
+        # Auto-generate for any tables missing descriptions
+        if len(descriptions) < len(tables):
+            schema = self.get_schema_context()
+            for table in tables:
+                if table not in descriptions:
+                    # Extract column info from cached schema
+                    for line in schema.split("\n"):
+                        if line.strip().startswith(f"- {table}:"):
+                            col_info = line.strip()[len(f"- {table}: "):]
+                            # Take first 5 column names to form a description
+                            cols = [c.split("(")[0].strip() for c in col_info.split(",")[:5]]
+                            descriptions[table] = f"Data table with columns: {', '.join(cols)}, and more"
+                            break
+                    if table not in descriptions:
+                        descriptions[table] = "General data table"
+        
+        return descriptions
+
     def _format_few_shot_examples(self, examples: List[Dict[str, Any]]) -> str:
         """
         Format few-shot examples as a string for prompt injection.
@@ -370,6 +414,15 @@ class SQLService:
                     f"duckdb:///{file_path}",
                     connect_args={"read_only": True},
                 )
+                
+                # Load ICU extension for DuckDB to handle non-UTC timestamps
+                try:
+                    with self._engine.connect() as conn:
+                        conn.execute(text("INSTALL icu; LOAD icu;"))
+                        conn.commit()
+                    logger.info("Loaded ICU extension for DuckDB")
+                except Exception as e:
+                    logger.warning(f"Failed to load DuckDB ICU extension: {e}")
             else:
                 # PostgreSQL, MySQL, etc.
                 self._engine = create_engine(
@@ -589,6 +642,10 @@ class SQLService:
         Returns:
             Tuple of (results as list of dicts, total row count)
         """
+        
+        # DuckDB handles standard ISO strings correctly in CAST(col AS TIMESTAMP)
+        # No automatic SUBSTRING injection needed - it breaks DATE columns.
+        
         engine = self._get_engine()
         
         # Do NOT add automatic LIMIT - data analysts need full results
@@ -685,9 +742,11 @@ class SQLService:
         # Check query relevance first (if enabled)
         if self._enable_relevance_check and self._relevance_checker:
             table_names = self._discover_tables()
+            table_descriptions = self._get_table_descriptions()
             is_relevant, classification = self._relevance_checker.check(
                 question=natural_language_query,
-                table_names=table_names
+                table_names=table_names,
+                table_descriptions=table_descriptions
             )
             
             # Update statistics (without logging query content for privacy)
@@ -837,6 +896,38 @@ Please fix the SQL query to resolve this error. Generate ONLY the corrected SQL.
                 
                 logger.info("LLM generated SQL", attempt=attempt + 1, generated_sql=sql, question=natural_language_query[:100])
                 
+                # =========================================================
+                # REFLECTION GATE: Validate SQL before execution
+                # =========================================================
+                if self._reflection_service:
+                    try:
+                        critique = self._reflection_service.critique(
+                            question=natural_language_query,
+                            sql_query=sql,
+                            schema_context=schema,
+                        )
+                        if not critique.is_valid:
+                            logger.warning(
+                                f"Reflection rejected SQL (attempt {attempt + 1}): {critique.issues}"
+                            )
+                            # If the critique provides a corrected SQL, use it directly
+                            if critique.corrected_sql:
+                                logger.info("Using corrected SQL from reflection service")
+                                sql = critique.corrected_sql
+                                last_sql = sql
+                            else:
+                                # Feed issues into the retry loop
+                                previous_error = (
+                                    f"SQL VALIDATION FAILED: {'; '.join(critique.issues)}. "
+                                    f"Reasoning: {critique.reasoning}"
+                                )
+                                last_sql = sql
+                                continue  # Skip execution, go to next retry
+                        else:
+                            logger.info(f"Reflection validated SQL (attempt {attempt + 1})")
+                    except Exception as e:
+                        logger.warning(f"Reflection service error, proceeding without validation: {e}")
+                
                 # Execute the generated SQL using read-only session
                 results, count = self.execute_query(sql)
                 
@@ -869,29 +960,49 @@ Please fix the SQL query to resolve this error. Generate ONLY the corrected SQL.
         """
         Execute a natural language query using LLM to generate SQL.
         
-        This is the synchronous version that wraps the async implementation.
-        For new code, prefer using query_async() directly.
-        
-        Args:
-            natural_language_query: User's question in natural language
-            
-        Returns:
-            Formatted response string with query results
+        This is a synchronous wrapper around query_async.
+        Warning: For new code, prefer using query_async() directly.
         """
-        # Try to use existing event loop, or create a new one
+        import asyncio
+        import concurrent.futures
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're already in an async context, create new loop in thread
-                import concurrent.futures
+            # Check if we are already in an event loop
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+                
+            if loop and loop.is_running():
+                # In an async context, we must run the coroutine in the current thread's loop properly.
+                # Using asyncio.run in a thread pool is dangerous as it creates a NEW loop, 
+                # breaking shared async resources (like httpx/qdrant clients).
+                # Instead, we'll run it in the background thread but bridge back to the current loop
+                # or use a safer approach for NL2SQL which is primarily IO bound.
+                
+                # Since query_async is already async, if we are in a running loop, 
+                # it's better to just warn and use query_async directly if possible.
+                # But for a sync wrapper, we use nested_asyncio if available or a separate thread with a clean loop.
+                
+                logger.warning("Sync SQLService.query called from async context. Prefer query_async.")
+                
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, self.query_async(natural_language_query))
-                    return future.result(timeout=60)
+                    # Create a clean loop in the thread and run it
+                    def run_with_new_loop(coro):
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            asyncio.set_event_loop(new_loop)
+                            return new_loop.run_until_complete(coro)
+                        finally:
+                            new_loop.close()
+                            
+                    future = executor.submit(run_with_new_loop, self.query_async(natural_language_query))
+                    return future.result(timeout=120)
             else:
-                return loop.run_until_complete(self.query_async(natural_language_query))
-        except RuntimeError:
-            # No event loop, create a new one
-            return asyncio.run(self.query_async(natural_language_query))
+                # Not in an async context, safe to use asyncio.run
+                return asyncio.run(self.query_async(natural_language_query))
+        except Exception as e:
+            logger.error(f"SQL execution failed in sync wrapper: {e}")
+            return f"Error: {str(e)}"
     
     def run(self, sql: str) -> str:
         """

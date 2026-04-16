@@ -220,10 +220,12 @@ export default function ChatPage() {
         sqlQuery: data.sql_query,
         suggestedQuestions: data.suggested_questions,
         chartData: data.chart_data,
+        dashboards: data.dashboards,
         traceId: data.trace_id,
         processingTime: data.processing_time,
         queryMode: data.query_mode as QueryMode,
         agenticHybridResult: data.agentic_hybrid_result as AgenticHybridResult,
+        comparisonInsights: data.comparison_insights,
       };
       setMessages((prev) => [...prev, assistantMessage]);
 
