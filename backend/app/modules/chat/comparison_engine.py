@@ -156,7 +156,7 @@ def _parse_comparison_response(raw_output: str) -> Optional[Dict[str, Any]]:
 
 def _format_comparison_insights(comparison_results: List[Dict[str, Any]]) -> str:
     """Format comparison results into a readable insights section."""
-    parts = ["\n---\n**📊 Additional Insights**\n"]
+    parts = ["\n---\n**Additional Insights**\n"]
     
     for i, result in enumerate(comparison_results, 1):
         if result["success"]:

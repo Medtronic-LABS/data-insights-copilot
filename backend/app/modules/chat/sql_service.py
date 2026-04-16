@@ -631,6 +631,17 @@ class SQLService:
         Returns:
             Tuple of (results as list of dicts, total row count)
         """
+        
+        # Apply DuckDB-specific syntax corrections
+        if self._is_duckdb():
+            import re
+            sql = re.sub(
+                r'CAST\s*\(\s*([a-zA-Z0-9_]+)\s+AS\s+TIMESTAMP(?:TZ)?\s*\)', 
+                r'CAST(SUBSTRING(\1, 1, 19) AS TIMESTAMP)', 
+                sql, 
+                flags=re.IGNORECASE
+            )
+            
         engine = self._get_engine()
         
         # Do NOT add automatic LIMIT - data analysts need full results
