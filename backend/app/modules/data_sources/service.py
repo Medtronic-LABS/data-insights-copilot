@@ -48,6 +48,9 @@ class DataSourceService:
             "created_by": source.created_by,
             "created_at": source.created_at,
             "updated_at": source.updated_at,
+            # Dependency info (populated by repository)
+            "dependent_agents": getattr(source, 'dependent_agents', []),
+            "dependent_config_count": getattr(source, 'dependent_config_count', 0),
         }
         
         # Mask credentials in db_url

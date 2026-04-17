@@ -9,6 +9,7 @@
  */
 import { useState, useEffect, useRef } from 'react';
 import { ChatHeader } from '../components/chat';
+import { useToast } from '../components/Toast';
 import { APP_CONFIG } from '../config';
 import ConfirmationModal from '../components/ConfirmationModal';
 import {
@@ -42,7 +43,9 @@ export default function DataSourcesPage() {
   // Data state
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  
+  // Toast notifications
+  const { error: errorToast } = useToast();
 
   // Tab state
   const [activeTab, setActiveTab] = useState<TabType>('all');
@@ -80,7 +83,6 @@ export default function DataSourcesPage() {
   const loadDataSources = async () => {
     try {
       setLoading(true);
-      setError(null);
       const sourceType = activeTab === 'all' ? undefined : activeTab;
       const response = await getDataSources({ source_type: sourceType });
       setDataSources(response.data_sources || []);
@@ -188,11 +190,24 @@ export default function DataSourcesPage() {
       setDeleteConfirm({ show: false, id: null, title: '' });
       loadDataSources();
     } catch (err: any) {
-      const errorData = err.response?.data?.detail;
-      if (err.response?.status === 409 && errorData?.reason) {
-        setError(errorData.reason);
+      // Handle both error structures:
+      // 1. FastAPI HTTPException: err.response.data.detail
+      // 2. Wrapped error: err.response.data.message
+      const errorDetail = err.response?.data?.detail;
+      const errorMessage = err.response?.data?.message;
+      
+      // Try to get reason from either structure
+      const reason = errorDetail?.reason || errorMessage?.reason;
+      
+      if (err.response?.status === 409 && reason) {
+        errorToast('Cannot Delete', reason);
       } else {
-        setError(errorData?.message || err.response?.data?.detail || 'Failed to delete data source');
+        // Fallback to message or generic error
+        const fallbackMsg = errorDetail?.message || errorMessage?.message || 
+                           (typeof errorDetail === 'string' ? errorDetail : null) ||
+                           (typeof errorMessage === 'string' ? errorMessage : null) ||
+                           'Failed to delete data source';
+        errorToast('Error', fallbackMsg);
       }
       setDeleteConfirm({ show: false, id: null, title: '' });
     }
@@ -380,13 +395,6 @@ export default function DataSourcesPage() {
               </button>
             ))}
           </div>
-
-          {/* Error Message */}
-          {error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-              {error}
-            </div>
-          )}
 
           {/* Loading State */}
           {loading && (
