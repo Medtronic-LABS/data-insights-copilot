@@ -83,19 +83,39 @@ This page helps diagnose and fix common issues in the Data Insights Copilot.
        docker-compose -f docker-compose.langfuse.yml ps
        ```
 
-### 7. "LangchainCallbackHandler unexpected keyword argument"
+### 8. `ERR_EMPTY_RESPONSE` or SQL Query Timeouts
 
-- **Error**: `LangchainCallbackHandler.__init__() got an unexpected keyword argument 'secret_key'`
-- **Cause**: Langfuse v3.x API change - CallbackHandler no longer accepts direct credentials.
+- **Error**: API returns `ERR_EMPTY_RESPONSE` or a 504 Gateway Timeout during dashboard generation.
+- **Cause**: High-concurrency dashboard synthesis blocking the event loop or exceeding the 60s timeout.
 - **Fix**:
-    1. Ensure langfuse v3.x is installed: `pip install langfuse>=3.0.0`
-    2. Set credentials via environment variables (not constructor args):
-       ```bash
-       export LANGFUSE_PUBLIC_KEY=pk-lf-...
-       export LANGFUSE_SECRET_KEY=sk-lf-...
-       export LANGFUSE_HOST=http://localhost:3001
-       ```
-    3. The code should use `CallbackHandler()` with no arguments.
+    1.  Verify the `SQLService` **Async-to-Sync Bridge** is enabled.
+    2.  Check the database connection pool settings (increase `POSTGRES_MAX_OVERFLOW` if needed).
+    3.  See [Concurrency Guide](../docs/CONCURRENCY_GUIDE.md) for tuning parameters.
+
+### 9. Redis/Celery Task Stalling
+
+- **Error**: Embedding jobs stay in `QUEUED` or `PREPARING` indefinitely.
+- **Cause**: Redis backend is full or the Celery worker is not responding.
+- **Fix**:
+    1.  Check Redis health: `docker exec data_insights_redis redis-cli ping`.
+    2.  Verify Celery Beat is running: `conda run -n data-insights-copilot celery -A backend.app.core.celery_app inspect ping`.
+    3.  Clear the task queue if it's deadlocked: `redis-cli flushall`.
+
+### 10. Qdrant Dimension Mismatch
+
+- **Error**: `GRPC Error: Invalid vector dimension: expected 1536, got 1024`.
+- **Cause**: The agent's selected embedding model changed, but the existing Qdrant collection uses a different dimension.
+- **Fix**:
+    1.  Navigate to the Agent settings.
+    2.  Click **Force Re-index**. This will purge the old collection and recreate it with the correct dimensions for the new model.
+
+### 11. HuggingFace Model Download Failures
+
+- **Error**: `OSError: [Errno 28] No space left on device` or `ReadTimeout`.
+- **Cause**: Insufficient disk space for weights or stable internet connection.
+- **Fix**:
+    1.  Ensure `/backend/data/models` has at least 10GB of free space.
+    2.  Increase `HF_HUB_TIMEOUT` in `.env` if your connection is slow.
 
 ## Debugging
 

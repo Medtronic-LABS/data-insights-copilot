@@ -37,15 +37,15 @@ A production-ready Enterprise RAG system featuring a FastAPI backend and React f
 │                               │                 │           │
 │  ┌────────────────────────────┼─────────────────┼────────┐  │
 │  │ SQLite (Internal Config)   │                 │        │  │
-│  │ Celery/Redis (Jobs)        │                 │        │  │
-│  │ APScheduler (Sync tasks)   │                 │        │  │
+│  │ Celery/Redis (Jobs/Tasks)  │                 │        │  │
+│  │ Celery Beat (Scheduled)    │                 │        │  │
 │  └────────────────────────────┼─────────────────┼────────┘  │
 └───────────────────────────────┼─────────────────┼───────────┘
                                 │                 │
                         ┌───────▼───────┐   ┌─────▼──────┐
                         │ Clinical DB   │   │ Vector DB  │
-                        │ (PostgreSQL/  │   │ (Chroma/   │
-                        │ MySQL)        │   │ Qdrant)    │
+                        │ (PostgreSQL/  │   │ (Qdrant/    │
+                        │ MySQL)        │   │ Chroma)    │
                         └───────────────┘   └────────────┘
 ```
 
@@ -56,7 +56,7 @@ A production-ready Enterprise RAG system featuring a FastAPI backend and React f
 - **Automated RAG Evaluation:** Standalone testing module mapping metrics for Retrieval hit-rates, SQL DataFrame execution equivalence, RAGAS text metrics, and custom G-Eval Clinical safety guardrails.
 - **Enterprise Observability:** Fully instrumented with Langfuse tracing, token estimation, and process latency logging.
 - **Background Processing:** Celery + Redis message queues handle parsing and embedding large document workloads asynchronously without blocking the main API.
-- **Native Scheduling:** In-app APScheduler directly handles triggering cyclical vector updates and database synchronization tasks natively.
+- **Scheduled Tasks:** Celery Beat handles triggering cyclical vector updates and database synchronization tasks reliably across workers.
 - **Authentication:** Dual-mode authentication supporting local JWT tokens or full OpenID Connect (OIDC/Keycloak).
 - **Multi-tenant Data Connections:** Admin UI provisions dynamic DB connection strings per agent at runtime.
 - **Automatic Web Charts:** JSON-based UI rendering translates analytical outputs directly into dynamic graphical charts and visualizations within the chat.
@@ -139,9 +139,13 @@ You must run the FastApi Backend, the Celery Queue, and the Frontend.
 uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Terminal 2 (Celery Background Worker):**
+**Terminal 2 (Celery Background Worker & Beat):**
 ```bash
-python -m celery -A backend.services.celery_worker.celery_app worker --loglevel=info
+# Start worker
+python -m celery -A app.core.celery_app worker --loglevel=info
+
+# Start Beat (in another terminal or as background process)
+python -m celery -A app.core.celery_app beat --loglevel=info
 ```
 
 **Terminal 3 (React Frontend):**
@@ -157,6 +161,22 @@ npm run dev
 3. Add your clinical database string (PostgreSQL/MySQL/SQLite).
 4. Create a **RAG Configuration** that binds the respective DB connection.
 5. Set Model rules and **Publish** the configuration to begin routing queries!
+
+---
+
+## Project Documentation
+
+For detailed technical guides and system documentation, refer to the [docs/](docs/) directory:
+
+| Guide | Description |
+|-------|-------------|
+| [**Setup & Installation**](docs/SETUP_STEP_BY_STEP.md) | Foolproof guide for local and Docker setup. |
+| [**Agent Creation**](docs/AGENT_CREATION_GUIDE.md) | Step-by-step assistant configuration. |
+| [**Ingestion & Indexing**](docs/INGESTION_GUIDE.md) | Managing vector and SQL data intake. |
+| [**Backend Architecture**](docs/Backend.md) | Technical deep-dive into the modular monolith. |
+| [**Database Schema**](docs/Database.md) | Core PostgreSQL and Qdrant table definitions. |
+| [**Observability**](docs/Observability.md) | Tracing, logging, and QA Debug metadata. |
+| [**Troubleshooting**](docs/Troubleshooting.md) | Common errors and how to fix them. |
 
 ---
 
@@ -193,7 +213,7 @@ Once the backend is live, review endpoint documentation at:
 | `POST` | `/api/v1/chat` | Issue queries to the primary RAG Router |
 | `POST` | `/api/v1/ingest/upload` | Queue clinical files for Celery async embedding |
 | `GET`  | `/api/v1/settings` | Acquire currently active model settings |
-| `GET`  | `/api/v1/vector/status`| Poll for status of APScheduler sync jobs |
+| `GET`  | `/api/v1/vector/status`| Poll for status of scheduled sync jobs |
 
 ---
 

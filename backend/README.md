@@ -214,17 +214,23 @@ Once running, visit:
 
 ## Module Implementation Status
 
-- ✅ **Core Infrastructure**: Database, auth, logging, tracing, exceptions
+- ✅ **Core Infrastructure**: Database (with Connection Pooling), auth, logging, tracing, exceptions
 - ✅ **System Defaults**: Agent configuration templates
 - ✅ **Users Module**: User CRUD, authentication, RBAC (JWT + OIDC)
   - 13 endpoints: login, me, user management, password operations
-- ✅ **Observability Module**: Audit logging, system monitoring
+- ✅ **Observability Module**: Audit logging, system monitoring, QA Debug metadata
   - 3 endpoints: query logs, recent logs, user activity
 - ✅ **Agents Module**: Agent CRUD, full configuration management
   - 28 endpoints: CRUD, user access, 8 config types, system prompts
-- 🚧 **Chat Module**: Query execution, RAG pipeline (pending)
-- 🚧 **Embeddings Module**: Vector stores, embedding jobs (pending)
-- 🚧 **Ingestion Module**: File upload, SQL queries (pending)
+- ✅ **Chat Module**: RAG query processing, SQL execution, context orchestration
+  - High reliability SQL pipeline with semantic reflection and error masking
+  - Async-to-sync bridge for thread-safe dashboard synthesis
+- ✅ **Embeddings Module**: Vector stores (Qdrant), job management, progress tracking
+  - Dual-task model: In-process async for immediate jobs, Celery Beat for scheduled tasks
+  - Schema-aware indexing (DDL) and medical context enrichment
+- ✅ **Ingestion Module**: Multi-format file upload, SQL schema discovery
+  - Robust schema discovery with raw SQL fallsback for restricted DB environments
+
 
 ## Database Migrations
 
