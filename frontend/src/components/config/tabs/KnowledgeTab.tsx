@@ -1,37 +1,71 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import EmbeddingProgress from '../../EmbeddingProgress';
 import EmbeddingSettingsModal from '../../EmbeddingSettingsModal';
+import type { EmbeddingSettings } from '../../EmbeddingSettingsModal';
 import { CheckCircleIcon, ExclamationTriangleIcon, Cog6ToothIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
-import type { ActiveConfig, VectorDbStatus } from '../../../contexts/AgentContext';
+import type { VectorDbStatus } from '../../../contexts/AgentContext';
 import { useSystemSettings } from '../../../contexts/SystemSettingsContext';
+import { useToast } from '../../Toast';
 import { formatDateTime } from '../../../utils/datetime';
+import {
+    startEmbeddingJob,
+    getVectorDbStatusByConfig,
+    listEmbeddingJobs,
+    handleApiError
+} from '../../../services/api';
 
 interface KnowledgeTabProps {
-    activeConfig: ActiveConfig;
-    vectorDbStatus: VectorDbStatus | null;
-    embeddingJobId: string | null;
-    onStartEmbedding: (incremental: boolean, settings?: any) => void;
-    onEmbeddingComplete: () => void;
-    onEmbeddingError: (err: string) => void;
-    onEmbeddingCancel: () => void;
+    configId: number | undefined;
 }
 
-export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
-    activeConfig: _activeConfig,  // Kept for interface compatibility, chunking from agent_config is used by backend
-    vectorDbStatus,
-    embeddingJobId,
-    onStartEmbedding,
-    onEmbeddingComplete,
-    onEmbeddingError,
-    onEmbeddingCancel
-}) => {
-    const [showSettingsModal, setShowSettingsModal] = useState(false);
-
-    // Get system settings from context (loaded from backend Settings page)
+export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({ configId }) => {
+    const { success: showSuccess, error: showError } = useToast();
     const { getEmbeddingModalDefaults } = useSystemSettings();
 
-    // Get complete default settings for the modal from system settings
-    // Note: chunking is NOT included - backend uses chunking_config from agent_config table
+    // Internal state - KnowledgeTab owns its domain
+    const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
+    const [vectorDbStatus, setVectorDbStatus] = useState<VectorDbStatus | null>(null);
+    const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+    const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+    // Load vector DB status
+    const loadVectorDbStatus = useCallback(async () => {
+        if (!configId) return;
+        setIsLoadingStatus(true);
+        try {
+            const status = await getVectorDbStatusByConfig(configId);
+            setVectorDbStatus(status);
+        } catch (err) {
+            console.log('Could not fetch vector DB status:', err);
+            setVectorDbStatus(null);
+        } finally {
+            setIsLoadingStatus(false);
+        }
+    }, [configId]);
+
+    // Check for running embedding jobs
+    const checkForRunningJob = useCallback(async () => {
+        if (!configId) return;
+        try {
+            const jobs = await listEmbeddingJobs({ config_id: configId, limit: 1 });
+            if (jobs.length > 0) {
+                const latestJob = jobs[0];
+                const activeStatuses = ['QUEUED', 'PREPARING', 'EMBEDDING', 'VALIDATING', 'STORING'];
+                if (activeStatuses.includes(latestJob.status)) {
+                    setEmbeddingJobId(latestJob.job_id);
+                }
+            }
+        } catch (err) {
+            console.error('Failed to check for running jobs:', err);
+        }
+    }, [configId]);
+
+    useEffect(() => {
+        loadVectorDbStatus();
+        checkForRunningJob();
+    }, [loadVectorDbStatus, checkForRunningJob]);
+
+    // Get default settings for the modal (excluding chunking - backend uses agent_config)
     const getDefaultSettings = () => {
         const systemDefaults = getEmbeddingModalDefaults();
         return {
@@ -48,10 +82,61 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
         };
     };
 
-    const handleEmbeddingConfirm = (settings: any, incremental: boolean) => {
-        onStartEmbedding(incremental, settings);
+    // Start embedding job - all logic contained here
+    const handleStartEmbedding = async (incremental: boolean, settings?: EmbeddingSettings) => {
+        if (!configId) return;
+        try {
+            const batchSize = settings?.batch_size || 50;
+            const maxConcurrent = settings?.max_concurrent || 5;
+
+            const result = await startEmbeddingJob({
+                config_id: configId,
+                batch_size: batchSize,
+                max_concurrent: maxConcurrent,
+                incremental: incremental,
+                parallelization: settings?.parallelization,
+                medical_context_config: settings?.medical_context_config,
+                max_consecutive_failures: settings?.max_consecutive_failures,
+                retry_attempts: settings?.retry_attempts,
+            });
+            setEmbeddingJobId(result.job_id);
+            showSuccess('Embedding Job Started', result.message);
+        } catch (err) {
+            showError('Failed to start embedding job', handleApiError(err));
+        }
+    };
+
+    // Embedding callbacks - all handled internally
+    const handleEmbeddingComplete = async () => {
+        showSuccess('Embeddings Generated', 'Knowledge base updated successfully');
+        setEmbeddingJobId(null);
+        await loadVectorDbStatus(); // Refresh status
+    };
+
+    const handleEmbeddingError = (err: string) => {
+        showError('Embedding Failed', err);
+        setEmbeddingJobId(null);
+    };
+
+    const handleEmbeddingCancel = () => {
+        showError('Job Cancelled', 'Embedding generation cancelled');
+        setEmbeddingJobId(null);
+    };
+
+    const handleEmbeddingConfirm = (settings: EmbeddingSettings, incremental: boolean) => {
+        handleStartEmbedding(incremental, settings);
         setShowSettingsModal(false);
     };
+
+    // Show loading state while fetching initial status
+    if (isLoadingStatus && !embeddingJobId) {
+        return (
+            <div className="flex items-center justify-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+                <span className="ml-3 text-gray-500">Loading knowledge base status...</span>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-8">
@@ -73,9 +158,9 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
                 {embeddingJobId ? (
                     <EmbeddingProgress
                         jobId={embeddingJobId}
-                        onComplete={onEmbeddingComplete}
-                        onError={onEmbeddingError}
-                        onCancel={onEmbeddingCancel}
+                        onComplete={handleEmbeddingComplete}
+                        onError={handleEmbeddingError}
+                        onCancel={handleEmbeddingCancel}
                     />
                 ) : (
                     <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-200 shadow-sm transition-all hover:shadow-md">
@@ -88,7 +173,7 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
                             </div>
                             <div className="flex flex-wrap gap-2 sm:gap-3">
                                 <button
-                                    onClick={() => onStartEmbedding(true)}
+                                    onClick={() => handleStartEmbedding(true)}
                                     className="flex-1 sm:flex-none px-4 sm:px-6 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-semibold shadow-sm transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-2 text-sm sm:text-base"
                                     title="Quick incremental sync - only processes new or changed data"
                                 >
@@ -106,7 +191,7 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({
                                 <button
                                     onClick={() => {
                                         if (window.confirm('Are you sure you want to rebuild the vector database? This will delete all existing knowledge and re-index everything from scratch. This may take a long time and consume LLM tokens.')) {
-                                            onStartEmbedding(false);
+                                            handleStartEmbedding(false);
                                         }
                                     }}
                                     className="px-3 sm:px-6 py-2.5 bg-white border border-red-200 text-red-600 rounded-lg hover:bg-red-50 font-semibold transition-all hover:border-red-300 text-sm sm:text-base"
