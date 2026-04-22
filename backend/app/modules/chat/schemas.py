@@ -79,6 +79,10 @@ class ChatRequest(BaseModel):
     """Chat request payload."""
     query: str = Field(..., min_length=1, max_length=2000, description="User question")
     agent_id: Optional[UUID] = Field(default=None, description="Target agent ID (UUID)")
+    config_id: Optional[int] = Field(
+        default=None,
+        description="Optional config version ID. If provided, uses this specific config instead of the active one. Useful for sandbox testing different versions."
+    )
     session_id: Optional[str] = Field(
         default=None,
         description="Session ID for conversation tracking. Auto-generated if not provided."
@@ -89,6 +93,7 @@ class ChatRequest(BaseModel):
         "example": {
             "query": "How many active users are there?",
             "agent_id": "123e4567-e89b-12d3-a456-426614174000",
+            "config_id": 42,
             "session_id": "abc123-session-id",
             "stream": False
         }
