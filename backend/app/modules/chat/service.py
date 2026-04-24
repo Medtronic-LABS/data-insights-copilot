@@ -123,11 +123,19 @@ class ChatService:
                 sql_service = None
                 
                 if request.agent_id:
-                    agent_config = await self._get_agent_config(request.agent_id)
+                    agent_config = await self._get_agent_config(
+                        request.agent_id, 
+                        config_id=request.config_id
+                    )
                     if not agent_config:
+                        error_msg = (
+                            f"Config {request.config_id} not found or not ready for testing"
+                            if request.config_id
+                            else f"Agent {request.agent_id} not found or has no active configuration"
+                        )
                         raise AppException(
                             error_code=ErrorCode.RESOURCE_NOT_FOUND,
-                            message=f"Agent {request.agent_id} not found or has no active configuration",
+                            message=error_msg,
                             status_code=404,
                         )
                     
@@ -832,9 +840,49 @@ class ChatService:
             logger.error(f"RAG response synthesis failed: {e}")
             return f"I encountered an error generating a response: {str(e)}"
     
-    async def _get_agent_config(self, agent_id: uuid.UUID) -> Optional[Dict[str, Any]]:
-        """Get the active configuration for an agent."""
-        config = await self.configs.get_active_config(agent_id)
+    async def _get_agent_config(
+        self, 
+        agent_id: uuid.UUID,
+        config_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the configuration for an agent.
+        
+        Args:
+            agent_id: The agent's UUID
+            config_id: Optional specific config version ID. If provided, fetches that
+                      specific config instead of the active one (for sandbox testing).
+                      
+        Returns:
+            Configuration dict or None if not found/not ready.
+        """
+        config = None
+        
+        if config_id:
+            # Fetch specific config version (for sandbox testing)
+            config = await self.configs.get_by_id(config_id)
+            
+            # Validate: config must exist and belong to the specified agent
+            if not config or str(config.agent_id) != str(agent_id):
+                logger.warning(
+                    "Config not found or doesn't belong to agent",
+                    config_id=config_id,
+                    agent_id=str(agent_id),
+                )
+                return None
+            
+            # Validate: config must have completed embeddings to be testable
+            if config.embedding_status != "completed":
+                logger.warning(
+                    "Config embeddings not ready for testing",
+                    config_id=config_id,
+                    embedding_status=config.embedding_status,
+                )
+                return None
+        else:
+            # Fetch active config (default behavior)
+            config = await self.configs.get_active_config(agent_id)
+        
         if not config:
             return None
         

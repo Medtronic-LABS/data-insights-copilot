@@ -210,7 +210,21 @@ export const oidcService = {
       return await userManager.signinSilent();
     } catch (error) {
       console.error('Silent token renewal failed:', error);
-      // Don't spam console with expected errors
+      
+      // Check if the error indicates the token is completely invalid
+      // In this case, clear the stale session to prevent cascading errors
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('Token is not active') || 
+          errorMessage.includes('invalid_grant') ||
+          errorMessage.includes('refresh token')) {
+        console.log('Token is invalid, clearing stale session');
+        try {
+          await userManager.removeUser();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      
       return null;
     }
   },
