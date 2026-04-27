@@ -15,6 +15,7 @@ The prompt structure:
 from typing import List, Dict, Any, Optional
 
 from app.core.utils.logging import get_logger
+from app.core.prompts import get_dialect_rules_prompt
 
 logger = get_logger(__name__)
 
@@ -341,8 +342,12 @@ def _extract_raw_ddl(enriched_ddl: str) -> str:
 # =============================================================================
 
 def get_dialect_rules(dialect: str) -> str:
-    """Get SQL rules for a specific dialect."""
-    return DIALECT_RULES_MAP.get(dialect.lower(), POSTGRESQL_RULES)
+    """Get SQL rules for a specific dialect from centralized templates."""
+    # Try to load from centralized template first, fallback to inline constants
+    try:
+        return get_dialect_rules_prompt(dialect)
+    except Exception:
+        return DIALECT_RULES_MAP.get(dialect.lower(), POSTGRESQL_RULES)
 
 
 def estimate_prompt_tokens(prompt: str) -> int:

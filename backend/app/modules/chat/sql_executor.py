@@ -40,6 +40,7 @@ from sqlalchemy.engine import Engine
 
 from app.core.utils.logging import get_logger
 from app.core.settings import get_settings
+from app.core.prompts import get_sql_correction_prompt
 
 
 logger = get_logger(__name__)
@@ -472,6 +473,8 @@ Return ONLY the corrected SQL query. No explanations, no markdown code blocks, j
         self.model = model
         self.temperature = temperature
         self._settings = get_settings()
+        # Load prompt from centralized template
+        self._correction_prompt = get_sql_correction_prompt()
     
     async def correct_sql(
         self,
@@ -500,7 +503,7 @@ Return ONLY the corrected SQL query. No explanations, no markdown code blocks, j
             return failed_sql, False
         
         # Build correction prompt
-        prompt = self.CORRECTION_PROMPT.format(
+        prompt = self._correction_prompt.format(
             original_query=original_query,
             schema_context=schema_context,
             failed_sql=failed_sql,

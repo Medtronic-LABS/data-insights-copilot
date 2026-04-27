@@ -23,6 +23,7 @@ import duckdb
 from langchain_openai import ChatOpenAI
 
 from app.core.settings import get_settings
+from app.core.prompts import get_duckdb_sql_rules_prompt, get_result_formatter_prompt
 from app.core.utils.logging import get_logger
 from app.modules.chat.query.prompt_builder import PromptBuilder
 from app.modules.chat.query.schema_context_service import SchemaContextService, get_schema_context_service
@@ -43,15 +44,13 @@ DATA_STORAGE_DIR = Path(__file__).parent.parent.parent.parent / "data" / "duckdb
 # =============================================================================
 # DuckDB Constraints (Fallback)
 # =============================================================================
-DUCKDB_CONSTRAINTS_FALLBACK = """
-CRITICAL DUCKDB RULES:
-- Window functions (LAG, LEAD, ROW_NUMBER) CANNOT be in WHERE clause - use CTE
-- Aggregates (AVG, STDDEV) CANNOT be in WHERE clause - use subquery/CTE
-- Date difference: CAST(date2 AS DATE) - CAST(date1 AS DATE) or DATEDIFF('day', d1, d2)
-- Date subtraction: CAST(date AS DATE) - INTERVAL '90 days' (not DATE_SUB)
-- For first/last comparisons: use ROW_NUMBER() with CTE pattern
-- Boolean values may be strings: use = 'true' or = 'false'
-"""
+# Load DuckDB constraints from centralized template
+def _get_duckdb_constraints() -> str:
+    """Get DuckDB SQL constraints from centralized prompt template."""
+    return get_duckdb_sql_rules_prompt()
+
+# Kept for backward compatibility - now loads from template
+DUCKDB_CONSTRAINTS_FALLBACK = _get_duckdb_constraints()
 
 
 # =============================================================================
