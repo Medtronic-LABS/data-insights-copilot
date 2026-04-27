@@ -14,10 +14,15 @@ Generate exactly 3 follow-up comparison questions with valid SQL queries that:
 2. **Validate or contextualize** the primary result through cross-referencing
 3. **Reveal trends** that complement the primary answer
 
-## SQL Rules
+## SQL Rules for {dialect}
 - Use ONLY tables and columns from the provided schema
 - Generate {dialect}-compliant SQL
-- For DuckDB: String timestamps with timezone offsets (e.g., '+0300') fail standard CASTs. You MUST strip the timezone first using `CAST(SUBSTRING(column_name, 1, 19) AS TIMESTAMP)` when filtering or grouping by dates.
+- **CHECK COLUMN TYPES IN SCHEMA**: Before using date functions, verify the column type:
+  - If the column is already TIMESTAMP/TIMESTAMPTZ/DATE: Use it directly with DATE_TRUNC, no casting needed
+  - If the column is VARCHAR containing dates: CAST to TIMESTAMP first
+  - **NEVER use SUBSTRING() on DATE/TIMESTAMP columns** - it only works on strings
+- For PostgreSQL: Use DATE_TRUNC('month', column_name) directly on timestamp columns
+- For DuckDB with VARCHAR date columns: Use CAST(column_name AS TIMESTAMP) before DATE_TRUNC
 - Ensure all queries are executable and free of syntax errors
 - Use aggregations (COUNT, SUM, AVG) — never return individual-level data
 

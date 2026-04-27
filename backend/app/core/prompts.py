@@ -155,3 +155,7 @@ def get_file_generator_prompt() -> str:
 def get_reasoning_generator_prompt() -> str:
     """Get the reasoning and example questions generator template."""
     return load_prompt("reasoning_generator", fallback="Generate reasoning and example questions for the data schema.")
+
+def get_duckdb_sql_rules_prompt() -> str:
+    """Get the DuckDB-specific SQL rules prompt."""
+    return load_prompt("duckdb_sql_rules", fallback="Follow standard SQL best practices for DuckDB.")
