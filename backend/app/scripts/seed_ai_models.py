@@ -44,13 +44,6 @@ SEED_MODELS = [
         "api_base_url": "https://api.openai.com/v1",
         "api_key_env_var": "OPENAI_API_KEY",  # Read from environment
         
-        # Model specs
-        "context_length": 128000,  # 128K context window
-        
-        # RAG hints
-        "recommended_chunk_size": 1500,
-        "compatibility_notes": "Works well with any embedding model. Supports function calling.",
-        
         # Status
         "is_default": True,  # Set as default LLM
         "download_status": "ready",  # Cloud models are always ready
@@ -65,10 +58,6 @@ SEED_MODELS = [
         
         "api_base_url": "https://api.openai.com/v1",
         "api_key_env_var": "OPENAI_API_KEY",
-        
-        "context_length": 128000,
-        "recommended_chunk_size": 1500,
-        "compatibility_notes": "Cost-effective option. Same capabilities as GPT-4o but faster.",
         
         "is_default": False,
         "download_status": "ready",
@@ -86,16 +75,7 @@ SEED_MODELS = [
         "description": "Best multilingual embedding model. Supports 100+ languages. Runs locally.",
         
         # Local config
-        "hf_model_id": "BAAI/bge-base-en-v1.5",
         "local_path": "./data/models/BAAI/bge-base-en-v1.5",
-        
-        # Model specs
-        "dimensions": 1024,
-        "max_input_tokens": 8192,
-        
-        # RAG hints
-        "recommended_chunk_size": 512,
-        "compatibility_notes": "Best paired with bge-reranker-v2-m3. Excellent for medical text.",
         
         "is_default": True,  # Set as default embedding
         "download_status": "not_downloaded",  # Needs download
@@ -111,12 +91,6 @@ SEED_MODELS = [
         "api_base_url": "https://api.openai.com/v1",
         "api_key_env_var": "OPENAI_API_KEY",
         
-        "dimensions": 1536,
-        "max_input_tokens": 8191,
-        
-        "recommended_chunk_size": 512,
-        "compatibility_notes": "Use with OpenAI LLMs for best results. Fast API response.",
-        
         "is_default": False,
         "download_status": "ready",
     },
@@ -128,14 +102,7 @@ SEED_MODELS = [
         "deployment_type": "local",
         "description": "Fast local embedding model. English only. Good for prototyping.",
         
-        "hf_model_id": "BAAI/bge-base-en-v1.5",
         "local_path": "./data/models/BAAI/bge-base-en-v1.5",
-        
-        "dimensions": 768,
-        "max_input_tokens": 512,
-        
-        "recommended_chunk_size": 400,
-        "compatibility_notes": "Smaller model, faster inference. English only.",
         
         "is_default": False,
         "download_status": "not_downloaded",
@@ -152,12 +119,7 @@ SEED_MODELS = [
         "deployment_type": "local",
         "description": "Best multilingual reranker. Pairs perfectly with bge-base-en-v1.5 embeddings.",
         
-        "hf_model_id": "BAAI/bge-reranker-v2-m3",
         "local_path": "./data/models/BAAI/bge-reranker-v2-m3",
-        
-        "max_input_tokens": 8192,
-        
-        "compatibility_notes": "Use with bge-base-en-v1.5 embeddings for best results. Improves retrieval accuracy.",
         
         "is_default": True,  # Set as default reranker
         "download_status": "not_downloaded",
@@ -170,12 +132,7 @@ SEED_MODELS = [
         "deployment_type": "local",
         "description": "Fast reranker for English. Good balance of speed and accuracy.",
         
-        "hf_model_id": "BAAI/bge-reranker-base",
         "local_path": "./data/models/BAAI/bge-reranker-base",
-        
-        "max_input_tokens": 512,
-        
-        "compatibility_notes": "Use with bge-base-en embeddings. Faster than v2-m3.",
         
         "is_default": False,
         "download_status": "not_downloaded",
