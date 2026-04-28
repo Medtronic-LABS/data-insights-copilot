@@ -159,3 +159,16 @@ def get_reasoning_generator_prompt() -> str:
 def get_duckdb_sql_rules_prompt() -> str:
     """Get the DuckDB-specific SQL rules prompt."""
     return load_prompt("duckdb_sql_rules", fallback="Follow standard SQL best practices for DuckDB.")
+
+def get_sql_correction_prompt() -> str:
+    """Get the SQL correction/error fixing prompt."""
+    return load_prompt("sql_correction", fallback="""You are a SQL debugging expert. Your task is to fix SQL syntax errors.
+
+Given the original query and the error message, provide a corrected SQL query.
+
+Rules:
+1. Only fix the specific error mentioned
+2. Preserve the original intent of the query
+3. Return ONLY the corrected SQL, no explanations
+4. If the error cannot be fixed, return the original query with a comment explaining why
+""")
