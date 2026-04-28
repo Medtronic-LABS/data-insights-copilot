@@ -245,46 +245,79 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
     // Sync default models to local settings on initial load (only if not already set)
     useEffect(() => {
         if (readOnly || loadingModels) return;
+        
+        // Need at least one model type to have loaded
+        if (embeddingModels.length === 0 && llmModels.length === 0) return;
 
-        // Use functional update to access current state and avoid stale closures
+        // Determine which model to select for embedding
+        let embeddingToSelect: { id: number; model_id: string; display_name: string } | null = null;
+        if (!hasSetDefaultEmbedding.current && embeddingModels.length > 0) {
+            if (activeEmbedding) {
+                embeddingToSelect = activeEmbedding;
+            } else {
+                // Fallback to model marked as is_default in the list, or first available model
+                embeddingToSelect = embeddingModels.find(m => m.is_default) || embeddingModels[0];
+            }
+        }
+
+        // Determine which model to select for LLM
+        let llmToSelect: { id: number; model_id: string; display_name: string } | null = null;
+        if (!hasSetDefaultLLM.current && llmModels.length > 0) {
+            if (activeLLM) {
+                llmToSelect = activeLLM;
+            } else {
+                // Fallback to model marked as is_default in the list, or first available model
+                llmToSelect = llmModels.find(m => m.is_default) || llmModels[0];
+            }
+        }
+
+        // Only proceed if we have something to select
+        if (!embeddingToSelect && !llmToSelect) return;
+
         setLocalSettings(currentSettings => {
-            let needsUpdate = false;
+            // Skip if already has model IDs set
+            if (embeddingToSelect && currentSettings.embeddingModelId) {
+                embeddingToSelect = null;
+            }
+            if (llmToSelect && currentSettings.llmModelId) {
+                llmToSelect = null;
+            }
+
+            // Nothing to update
+            if (!embeddingToSelect && !llmToSelect) {
+                return currentSettings;
+            }
+
             const newSettings: AdvancedSettings = { ...currentSettings };
 
-            // Sync embedding model (model string + top-level embeddingModelId)
-            if (activeEmbedding && !hasSetDefaultEmbedding.current && !currentSettings.embeddingModelId) {
+            if (embeddingToSelect) {
                 newSettings.embedding = {
                     ...currentSettings.embedding,
-                    model: activeEmbedding.model_id,
+                    model: embeddingToSelect.model_id,
                 };
-                newSettings.embeddingModelId = activeEmbedding.id;
+                newSettings.embeddingModelId = embeddingToSelect.id;
                 hasSetDefaultEmbedding.current = true;
-                needsUpdate = true;
             }
 
-            // Sync LLM model (model string + top-level llmModelId)
-            if (activeLLM && !hasSetDefaultLLM.current && !currentSettings.llmModelId) {
+            if (llmToSelect) {
                 newSettings.llm = {
                     ...currentSettings.llm,
-                    model: activeLLM.model_id,
+                    model: llmToSelect.model_id,
                 };
-                newSettings.llmModelId = activeLLM.id;
-                newSettings.llmDisplayName = activeLLM.display_name;
+                newSettings.llmModelId = llmToSelect.id;
+                newSettings.llmDisplayName = llmToSelect.display_name;
                 hasSetDefaultLLM.current = true;
-                needsUpdate = true;
             }
 
-            if (needsUpdate) {
-                // Use setTimeout to call onChange after state update to avoid batching issues
-                setTimeout(() => {
-                    isInternalUpdate.current = true;
-                    onChange(newSettings);
-                }, 0);
-                return newSettings;
-            }
-            return currentSettings;
+            // Use setTimeout to call onChange after state update to avoid batching issues
+            setTimeout(() => {
+                isInternalUpdate.current = true;
+                onChange(newSettings);
+            }, 0);
+
+            return newSettings;
         });
-    }, [activeEmbedding, activeLLM, loadingModels, readOnly, onChange]);
+    }, [activeEmbedding, activeLLM, embeddingModels, llmModels, loadingModels, readOnly, onChange]);
 
     const handleChange = (section: keyof AdvancedSettingsProps['settings'], field: string, value: unknown) => {
         if (readOnly) return;
@@ -429,11 +462,28 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                     <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                                     Loading models...
                                 </div>
-                            ) : modelError || embeddingModels.length === 0 ? (
-                                <div className="mb-4">
-                                    <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">Model Name</label>
-                                    <input type="text" value={localSettings.embedding.model} onChange={(e) => handleChange('embedding', 'model', e.target.value)} disabled={readOnly} className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs sm:text-sm p-2 border" />
-                                    {modelError && <p className="mt-1 text-[10px] sm:text-xs text-amber-600">{modelError}</p>}
+                            ) : embeddingModels.length === 0 ? (
+                                <div className="text-center py-6 px-4">
+                                    <div className="mx-auto w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center mb-3">
+                                        <svg className="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                        </svg>
+                                    </div>
+                                    <h4 className="text-sm font-medium text-gray-900 mb-1">No Embedding Models Available</h4>
+                                    <p className="text-xs text-gray-500 mb-4">
+                                        {modelError || 'Add an embedding model in the AI Registry to enable vector search capabilities.'}
+                                    </p>
+                                    {!readOnly && (
+                                        <button
+                                            type="button"
+                                            onClick={() => window.open('/ai-registry', '_blank')}
+                                            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                            Add Embedding Model
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                        </button>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="grid grid-cols-1 gap-2 sm:gap-3 mb-4">
@@ -464,7 +514,6 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                                             </span>
                                                         </div>
                                                         <p className="text-[10px] sm:text-xs text-gray-500 truncate">{m.provider_name} • {m.model_id}</p>
-                                                        <p className="text-[10px] text-gray-400 mt-1">{m.dimensions}d{m.context_length ? ` • Max ${m.context_length}` : ''}</p>
                                                     </div>
                                                     {!isSelected && !readOnly && <span className="text-[10px] sm:text-xs text-indigo-500 font-medium flex-shrink-0">Select →</span>}
                                                 </div>
@@ -535,8 +584,29 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                                     <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                                     Loading LLM models...
                                 </div>
-                            ) : modelError || llmModels.length === 0 ? (
-                                <p className="text-sm text-gray-500">LLM model registry unavailable. Configure via backend settings.</p>
+                            ) : llmModels.length === 0 ? (
+                                <div className="text-center py-6 px-4">
+                                    <div className="mx-auto w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center mb-3">
+                                        <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                                        </svg>
+                                    </div>
+                                    <h4 className="text-sm font-medium text-gray-900 mb-1">No LLM Models Available</h4>
+                                    <p className="text-xs text-gray-500 mb-4">
+                                        {modelError || 'Add an LLM model in the AI Registry to enable AI-powered responses.'}
+                                    </p>
+                                    {!readOnly && (
+                                        <button
+                                            type="button"
+                                            onClick={() => window.open('/ai-registry', '_blank')}
+                                            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                            Add LLM Model
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                        </button>
+                                    )}
+                                </div>
                             ) : (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     {/* Block 1: Model Selection & Registration */}
