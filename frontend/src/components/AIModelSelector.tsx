@@ -144,8 +144,6 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
                 <option key={model.id} value={model.model_id}>
                   {model.display_name}
                   {model.is_default ? ' (Default) ' : ''}
-                  {model.dimensions ? ` (${model.dimensions}d)` : ''}
-                  {model.context_length ? ` (${Math.round(model.context_length / 1000)}k ctx)` : ''}
                 </option>
               ))}
             </>

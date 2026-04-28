@@ -294,8 +294,7 @@ export const KnowledgeTab: React.FC<KnowledgeTabProps> = ({ configId }) => {
                                 )}
 
                                 {/* Schedule Selector - Disabled until backend API is implemented
-                                   Backend routes for /api/v1/vector-db/schedule/* are not yet available.
-                                   See: migrations/001_initial_schema.sql for vector_db_schedules table schema */}
+                                   Backend routes for /api/v1/vector-db/schedule/* are not yet available. */}
                                 {/* <div className="col-span-1 md:col-span-3 mt-4 pt-6 border-t border-gray-100">
                                     <ScheduleSelector vectorDbName={getVectorDbName()} />
                                 </div> */}
