@@ -50,19 +50,6 @@ class AIModel(Base):
     download_progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     download_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    # Model specifications
-    context_length: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    max_input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    dimensions: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    
-    # RAG compatibility
-    recommended_chunk_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    compatibility_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    
-    # HuggingFace metadata
-    hf_model_id: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    hf_revision: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -94,6 +81,23 @@ class AIModel(Base):
         if self.deployment_type == 'cloud':
             return True
         return self.download_status == 'ready'
+    
+    @property
+    def get_source_model_id(self) -> Optional[str]:
+        """
+        Get model ID for the source provider.
+        
+        For HuggingFace models, extracts the model ID from model_id.
+        Example: "huggingface/BAAI/bge-base-en-v1.5" -> "BAAI/bge-base-en-v1.5"
+        
+        For other providers, returns None (they handle downloads differently).
+        """
+        if self.provider_name.lower() == 'huggingface' and self.model_id:
+            # Extract model ID by removing provider prefix
+            prefix = f"{self.provider_name}/"
+            if self.model_id.startswith(prefix):
+                return self.model_id[len(prefix):]
+        return None
     
     @property
     def has_api_key(self) -> bool:

@@ -51,13 +51,6 @@ class AIModelService:
             api_base_url=data.api_base_url,
             api_key_env_var=data.api_key_env_var,
             local_path=data.local_path,
-            hf_model_id=data.hf_model_id,
-            hf_revision=data.hf_revision,
-            context_length=data.context_length,
-            max_input_tokens=data.max_input_tokens,
-            dimensions=data.dimensions,
-            recommended_chunk_size=data.recommended_chunk_size,
-            compatibility_notes=data.compatibility_notes,
             description=data.description,
             is_default=data.is_default,
             created_by=user_id,
@@ -191,9 +184,7 @@ class AIModelService:
                 provider_name=model.provider_name,
                 deployment_type=model.deployment_type,
                 is_ready=model.is_ready,
-                is_default=model.is_default,
-                context_length=model.context_length,
-                dimensions=model.dimensions
+                is_default=model.is_default
             )
             result[model.model_type].append(item)
         
@@ -273,7 +264,6 @@ class AIModelService:
             model_type=request.model_type,
             provider_name='huggingface',
             deployment_type='local',
-            hf_model_id=request.hf_model_id,
             description=hf_info.description
         )
         
@@ -298,8 +288,9 @@ class AIModelService:
         if model.deployment_type != 'local':
             raise ValueError("Can only download local models")
         
-        if not model.hf_model_id:
-            raise ValueError("Model has no HuggingFace model ID for download")
+        source_model_id = model.get_source_model_id
+        if not source_model_id:
+            raise ValueError("Model does not have a source model ID for download")
         
         if model.download_status == 'downloading':
             raise ValueError("Download already in progress")
@@ -310,11 +301,15 @@ class AIModelService:
         
         # Start background download
         download_manager = get_download_manager()
+        source_model_id = model.get_source_model_id
+        if not source_model_id:
+            raise ValueError(f"Model {model.model_id} does not have a source model ID for download")
+        
         await download_manager.start_download(
             model_id=model.id,
-            hf_model_id=model.hf_model_id,
-            local_path=model.local_path or f"./data/models/{model.hf_model_id}",
-            revision=model.hf_revision or "main"
+            source_model_id=source_model_id,
+            local_path=model.local_path or f"./data/models/{source_model_id}",
+            revision="main"
         )
         
         return DownloadProgressResponse(
@@ -415,13 +410,6 @@ class AIModelService:
             download_status=model.download_status,
             download_progress=model.download_progress,
             download_error=model.download_error,
-            hf_model_id=model.hf_model_id,
-            hf_revision=model.hf_revision,
-            context_length=model.context_length,
-            max_input_tokens=model.max_input_tokens,
-            dimensions=model.dimensions,
-            recommended_chunk_size=model.recommended_chunk_size,
-            compatibility_notes=model.compatibility_notes,
             is_active=model.is_active,
             is_default=model.is_default,
             is_ready=model.is_ready,

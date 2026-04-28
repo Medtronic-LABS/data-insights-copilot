@@ -25,7 +25,7 @@ from app.core.database.connection import Base
 from app.modules.users.models import UserModel  # noqa: F401
 from app.modules.agents.models import AgentModel, AgentConfigModel, UserAgentModel  # noqa: F401
 from app.modules.data_sources.models import DataSourceModel  # noqa: F401
-from app.modules.observability.models import AuditLogModel  # noqa: F401
+from app.modules.audit.models import AuditLogModel  # noqa: F401
 from app.modules.ai_models.models import AIModel  # noqa: F401
 
 # Alembic Config object

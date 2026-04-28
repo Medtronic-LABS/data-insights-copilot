@@ -1863,17 +1863,6 @@ export interface AIModel {
   download_progress: number;
   download_error?: string;
   download_queue_position?: number;
-  hf_model_id?: string;
-  hf_revision?: string;
-
-  // Model specs
-  context_length?: number;
-  max_input_tokens?: number;
-  dimensions?: number;
-
-  // RAG hints
-  recommended_chunk_size?: number;
-  compatibility_notes?: string;
 
   // Status
   is_active: boolean;
@@ -1900,17 +1889,6 @@ export interface AIModelCreate {
 
   // Local config
   local_path?: string;
-  hf_model_id?: string;
-  hf_revision?: string;
-
-  // Model specs
-  context_length?: number;
-  max_input_tokens?: number;
-  dimensions?: number;
-
-  // RAG hints
-  recommended_chunk_size?: number;
-  compatibility_notes?: string;
 
   description?: string;
   is_default?: boolean;
@@ -1923,11 +1901,6 @@ export interface AIModelUpdate {
   api_key?: string;
   api_key_env_var?: string;
   local_path?: string;
-  context_length?: number;
-  max_input_tokens?: number;
-  dimensions?: number;
-  recommended_chunk_size?: number;
-  compatibility_notes?: string;
   description?: string;
   is_active?: boolean;
   is_default?: boolean;
@@ -1995,8 +1968,6 @@ export interface AvailableModel {
   deployment_type: DeploymentType;
   is_ready: boolean;
   is_default: boolean;
-  context_length?: number;
-  dimensions?: number;
 }
 
 export interface AvailableModelsResponse {

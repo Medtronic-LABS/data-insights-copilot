@@ -397,8 +397,6 @@ function ModelCard({ model, onEdit, onDelete, onDownload, onCancelDownload }: Mo
 
           {/* Specs */}
           <div className="flex gap-4 mt-2 text-xs text-gray-500">
-            {model.context_length && <span>Context: {model.context_length.toLocaleString()}</span>}
-            {model.dimensions && <span>Dims: {model.dimensions}</span>}
           </div>
         </div>
 
@@ -460,9 +458,6 @@ function ModelForm({ model, onClose, onSaved, onError }: ModelFormProps) {
     api_base_url: model?.api_base_url || '',
     api_key: '',
     api_key_env_var: model?.api_key_env_var || '',
-    hf_model_id: model?.hf_model_id || '',
-    context_length: model?.context_length || undefined,
-    dimensions: model?.dimensions || undefined,
     description: model?.description || '',
   });
 
@@ -478,8 +473,6 @@ function ModelForm({ model, onClose, onSaved, onError }: ModelFormProps) {
           api_base_url: form.api_base_url || undefined,
           api_key: form.api_key || undefined,
           api_key_env_var: form.api_key_env_var || undefined,
-          context_length: form.context_length,
-          dimensions: form.dimensions,
           description: form.description || undefined,
         };
         await updateAIModel(model.id, updateData);
@@ -618,46 +611,9 @@ function ModelForm({ model, onClose, onSaved, onError }: ModelFormProps) {
           {form.deployment_type === 'local' && (
             <div className="border-t pt-4">
               <h3 className="font-medium text-gray-900 mb-3">Local Configuration</h3>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">HuggingFace Model ID</label>
-                <input
-                  type="text"
-                  value={form.hf_model_id}
-                  onChange={(e) => setForm(f => ({ ...f, hf_model_id: e.target.value }))}
-                  placeholder="BAAI/bge-m3"
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-                <p className="text-xs text-gray-500 mt-1">Required for downloading</p>
-              </div>
+              <p className="text-sm text-gray-600">The source model ID (e.g., HuggingFace ID) is derived from the Model ID.</p>
             </div>
           )}
-
-          {/* Model Specs */}
-          <div className="border-t pt-4">
-            <h3 className="font-medium text-gray-900 mb-3">Model Specifications</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Context Length</label>
-                <input
-                  type="number"
-                  value={form.context_length || ''}
-                  onChange={(e) => setForm(f => ({ ...f, context_length: e.target.value ? parseInt(e.target.value) : undefined }))}
-                  placeholder="128000"
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Dimensions</label>
-                <input
-                  type="number"
-                  value={form.dimensions || ''}
-                  onChange={(e) => setForm(f => ({ ...f, dimensions: e.target.value ? parseInt(e.target.value) : undefined }))}
-                  placeholder="1024"
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-            </div>
-          </div>
 
           {/* Description */}
           <div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MessageList, ChatInput } from '../../chat';
 import { 
     CommandLineIcon, 
@@ -10,8 +10,9 @@ import {
 import { chatService } from '../../../services/chatService';
 import { useAuth } from '../../../contexts/AuthContext';
 import { getConfigHistoryPaginated, type ConfigSummary } from '../../../services/api';
+import AgenticHybridResultsDisplay from '../../AgenticHybridResultsDisplay';
 import type { Agent } from '../../../types/agent';
-import type { Message } from '../../../types';
+import type { Message, AgenticHybridResult } from '../../../types';
 import type { ActiveConfig } from '../../../contexts/AgentContext';
 
 interface SandboxTabProps {
@@ -26,6 +27,9 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
     const { user } = useAuth();
     const [messages, setMessages] = useState<Message[]>([]);
     const [isTyping, setIsTyping] = useState(false);
+    
+    // AbortController for canceling in-flight requests
+    const abortControllerRef = useRef<AbortController | null>(null);
     
     // Version selector state
     const [configVersions, setConfigVersions] = useState<ConfigSummary[]>([]);
@@ -72,18 +76,53 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
     // Handle version switch
     const handleVersionChange = (configId: number) => {
         if (configId !== selectedConfigId) {
+            // Abort any in-flight request when switching versions
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+                abortControllerRef.current = null;
+            }
             setSelectedConfigId(configId);
             setMessages([]); // Clear conversation when switching versions
         }
         setIsDropdownOpen(false);
     };
 
+    // Stop generation handler
+    const handleStopGeneration = () => {
+        if (abortControllerRef.current) {
+            console.log('User manually stopped generation');
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+            setIsTyping(false);
+        }
+    };
+
+    // Feedback handler
+    const handleFeedback = (messageId: string, rating: 'positive' | 'negative') => {
+        console.log('Sandbox feedback:', { messageId, rating, agentId: agent.id, configId: selectedConfigId });
+        // TODO: Send feedback to backend API
+    };
+
+    // Clear session handler
+    const handleClearSession = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        setMessages([]);
+        setIsTyping(false);
+    };
+
     const handleSend = async (content: string) => {
+        // Create new AbortController for this request
+        const abortController = new AbortController();
+        abortControllerRef.current = abortController;
+
         const userMsg: Message = {
             id: Date.now().toString(),
             role: 'user',
             content,
-            timestamp: new Date()
+            timestamp: new Date(),
         };
 
         setMessages(prev => [...prev, userMsg]);
@@ -95,6 +134,7 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
                 query: content,
                 agent_id: agent.id,
                 session_id: `sandbox-${agent.id}-v${selectedConfigId}`,
+                signal: abortController.signal,
                 ...(isTestingNonActive && selectedConfigId ? { config_id: selectedConfigId } : {})
             });
 
@@ -105,13 +145,25 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
                 timestamp: new Date(response.timestamp),
                 sources: response.sources,
                 sqlQuery: response.sql_query,
+                suggestedQuestions: response.suggested_questions,
                 chartData: response.chart_data,
                 dashboards: response.dashboards,
                 traceId: response.trace_id,
-                processingTime: response.processing_time
+                processingTime: response.processing_time,
+                agenticHybridResult: response.agentic_hybrid_result as AgenticHybridResult,
+                comparisonInsights: response.comparison_insights,
             };
             setMessages(prev => [...prev, aiMsg]);
+            
+            // Clear abort controller after successful response
+            abortControllerRef.current = null;
         } catch (err: any) {
+            // Don't show error if request was aborted
+            if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
+                console.log('Sandbox request cancelled - no error shown');
+                return;
+            }
+            
             console.error("Sandbox chat error", err);
             const errorMsg: Message = {
                 id: Date.now().toString(),
@@ -120,6 +172,9 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
                 timestamp: new Date()
             };
             setMessages(prev => [...prev, errorMsg]);
+            
+            // Clear abort controller on error
+            abortControllerRef.current = null;
         } finally {
             setIsTyping(false);
         }
@@ -234,7 +289,7 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
                         </div>
                         
                         <button
-                            onClick={() => setMessages([])}
+                            onClick={handleClearSession}
                             className="text-xs font-semibold text-gray-500 hover:text-red-600 transition-colors"
                         >
                             Clear Session
@@ -270,13 +325,26 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
                     messages={messages}
                     isLoading={isTyping}
                     username={user?.username}
-                    onSuggestedQuestionClick={handleSend}
+                    onSuggestedQuestionClick={(question) => handleSend(question)}
+                    onFeedback={handleFeedback}
                     emptyStateProps={{
                         title: `Testing ${agent.name}${selectedConfig ? ` (v${selectedConfig.version})` : ''}`,
                         subtitle: isTestingNonActive 
                             ? `You're testing version ${selectedConfig?.version}, which is not currently active.`
                             : 'Type a message to see how the agent responds with its current settings.',
                         suggestions: getExampleQuestions()
+                    }}
+                    renderMessageExtra={(message) => {
+                        // Render AgenticHybridResultsDisplay for messages with agentic hybrid results
+                        if (message.agenticHybridResult) {
+                            return (
+                                <AgenticHybridResultsDisplay
+                                    result={message.agenticHybridResult}
+                                    isLoading={false}
+                                />
+                            );
+                        }
+                        return null;
                     }}
                 />
             </div>
@@ -285,8 +353,12 @@ export const SandboxTab: React.FC<SandboxTabProps> = ({
             <div className="p-4 bg-white border-t border-gray-100">
                 <ChatInput
                     onSendMessage={handleSend}
+                    onCancel={handleStopGeneration}
                     isDisabled={isTyping || configVersions.length === 0}
+                    isCancellable={isTyping}
                     placeholder={configVersions.length === 0 ? "No testable config available..." : "Test the agent..."}
+                    maxLength={2000}
+                    showModeSelector={false}
                 />
             </div>
         </div>

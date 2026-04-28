@@ -917,7 +917,7 @@ class ChatService:
                 ai_model = await self.ai_models.get_by_id(agent_config["embedding_model_id"])
                 if ai_model:
                     model_id = ai_model.model_id
-                    dimensions = ai_model.dimensions or 768
+                    dimensions = 768  # Default embedding dimensions
             elif embedding_config.get("model"):
                 model_id = embedding_config["model"]
                 dimensions = embedding_config.get("dimensions", 768)
