@@ -486,10 +486,7 @@ export default function ChatPage() {
             isCancellable={chatMutation.isPending}
             placeholder={canChat ? "Type your message..." : "Read-only access"}
             maxLength={2000}
-            sqlAvailable={true}
-            ragAvailable={ragAvailable}
-            agenticHybridAvailable={agenticHybridAvailable}
-            showModeSelector={true}
+            showModeSelector={false}
           />
         </>
       )}
