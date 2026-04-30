@@ -30,17 +30,6 @@ class AIModelBase(BaseModel):
     
     # Local config
     local_path: Optional[str] = None
-    hf_model_id: Optional[str] = None
-    hf_revision: Optional[str] = None
-    
-    # Model specs
-    context_length: Optional[int] = None
-    max_input_tokens: Optional[int] = None
-    dimensions: Optional[int] = None
-    
-    # RAG hints
-    recommended_chunk_size: Optional[int] = None
-    compatibility_notes: Optional[str] = None
     
     description: Optional[str] = None
 
@@ -70,15 +59,6 @@ class AIModelUpdate(BaseModel):
     
     # Local config
     local_path: Optional[str] = None
-    
-    # Model specs
-    context_length: Optional[int] = None
-    max_input_tokens: Optional[int] = None
-    dimensions: Optional[int] = None
-    
-    # RAG hints
-    recommended_chunk_size: Optional[int] = None
-    compatibility_notes: Optional[str] = None
     
     description: Optional[str] = None
     is_active: Optional[bool] = None
@@ -111,17 +91,6 @@ class AIModelResponse(BaseModel):
     download_status: DownloadStatus = 'not_downloaded'
     download_progress: int = 0
     download_error: Optional[str] = None
-    hf_model_id: Optional[str] = None
-    hf_revision: Optional[str] = None
-    
-    # Model specs
-    context_length: Optional[int] = None
-    max_input_tokens: Optional[int] = None
-    dimensions: Optional[int] = None
-    
-    # RAG hints
-    recommended_chunk_size: Optional[int] = None
-    compatibility_notes: Optional[str] = None
     
     # Status
     is_active: bool
@@ -178,7 +147,7 @@ class HFSearchResponse(BaseModel):
 
 class HFQuickAddRequest(BaseModel):
     """Quick-add model from HuggingFace."""
-    hf_model_id: str = Field(..., min_length=1)
+    hf_model_id: str = Field(..., min_length=1, description="HuggingFace model ID (e.g., 'BAAI/bge-base-en-v1.5')")
     model_type: ModelType
     display_name: Optional[str] = None
     auto_download: bool = False
@@ -232,10 +201,6 @@ class AvailableModel(BaseModel):
     deployment_type: DeploymentType
     is_ready: bool
     is_default: bool
-    
-    # Specs for UI display
-    context_length: Optional[int] = None
-    dimensions: Optional[int] = None
 
 
 class AvailableModelsResponse(BaseModel):

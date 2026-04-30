@@ -24,6 +24,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.utils.logging import get_logger
+from app.core.utils.device import get_best_device
 from app.core.utils.exceptions import AppException, ErrorCode
 from app.core.config import get_settings
 from app.modules.chat.schemas import (
@@ -123,11 +124,19 @@ class ChatService:
                 sql_service = None
                 
                 if request.agent_id:
-                    agent_config = await self._get_agent_config(request.agent_id)
+                    agent_config = await self._get_agent_config(
+                        request.agent_id, 
+                        config_id=request.config_id
+                    )
                     if not agent_config:
+                        error_msg = (
+                            f"Config {request.config_id} not found or not ready for testing"
+                            if request.config_id
+                            else f"Agent {request.agent_id} not found or has no active configuration"
+                        )
                         raise AppException(
                             error_code=ErrorCode.RESOURCE_NOT_FOUND,
-                            message=f"Agent {request.agent_id} not found or has no active configuration",
+                            message=error_msg,
                             status_code=404,
                         )
                     
@@ -832,9 +841,49 @@ class ChatService:
             logger.error(f"RAG response synthesis failed: {e}")
             return f"I encountered an error generating a response: {str(e)}"
     
-    async def _get_agent_config(self, agent_id: uuid.UUID) -> Optional[Dict[str, Any]]:
-        """Get the active configuration for an agent."""
-        config = await self.configs.get_active_config(agent_id)
+    async def _get_agent_config(
+        self, 
+        agent_id: uuid.UUID,
+        config_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the configuration for an agent.
+        
+        Args:
+            agent_id: The agent's UUID
+            config_id: Optional specific config version ID. If provided, fetches that
+                      specific config instead of the active one (for sandbox testing).
+                      
+        Returns:
+            Configuration dict or None if not found/not ready.
+        """
+        config = None
+        
+        if config_id:
+            # Fetch specific config version (for sandbox testing)
+            config = await self.configs.get_by_id(config_id)
+            
+            # Validate: config must exist and belong to the specified agent
+            if not config or str(config.agent_id) != str(agent_id):
+                logger.warning(
+                    "Config not found or doesn't belong to agent",
+                    config_id=config_id,
+                    agent_id=str(agent_id),
+                )
+                return None
+            
+            # Validate: config must have completed embeddings to be testable
+            if config.embedding_status != "completed":
+                logger.warning(
+                    "Config embeddings not ready for testing",
+                    config_id=config_id,
+                    embedding_status=config.embedding_status,
+                )
+                return None
+        else:
+            # Fetch active config (default behavior)
+            config = await self.configs.get_active_config(agent_id)
+        
         if not config:
             return None
         
@@ -868,7 +917,7 @@ class ChatService:
                 ai_model = await self.ai_models.get_by_id(agent_config["embedding_model_id"])
                 if ai_model:
                     model_id = ai_model.model_id
-                    dimensions = ai_model.dimensions or 768
+                    dimensions = 768  # Default embedding dimensions
             elif embedding_config.get("model"):
                 model_id = embedding_config["model"]
                 dimensions = embedding_config.get("dimensions", 768)
@@ -884,7 +933,7 @@ class ChatService:
         
         embedding_model = HuggingFaceEmbeddings(
             model_name=model_name,
-            model_kwargs={"device": "cpu"},
+            model_kwargs={"device": get_best_device()},
             encode_kwargs={"normalize_embeddings": True},
         )
         
@@ -894,6 +943,8 @@ class ChatService:
         """Embed a query string."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, embedding_model.embed_query, query)
+
+
     
     def _get_vector_db_name(self, agent_config: Optional[Dict[str, Any]]) -> str:
         """Get the vector database collection name for the agent."""

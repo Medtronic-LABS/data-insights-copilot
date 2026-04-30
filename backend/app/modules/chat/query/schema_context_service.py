@@ -23,6 +23,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from collections import OrderedDict
 
 from app.core.utils.logging import get_logger
+from app.core.utils.device import get_best_device
 from app.core.settings import get_settings
 
 logger = get_logger(__name__)
@@ -421,7 +422,7 @@ class SchemaContextService:
             
             self._embedding_model = HuggingFaceEmbeddings(
                 model_name="BAAI/bge-base-en-v1.5",
-                model_kwargs={"device": "cpu"},
+                model_kwargs={"device": get_best_device()},
                 encode_kwargs={"normalize_embeddings": True},
             )
             return self._embedding_model
@@ -429,6 +430,8 @@ class SchemaContextService:
             logger.warning(f"Failed to load embedding model: {e}")
             return None
     
+
+
     async def _embed_texts(
         self,
         texts: List[str],

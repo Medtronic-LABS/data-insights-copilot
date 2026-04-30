@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from app.core.utils.logging import get_logger
+from app.core.utils.device import get_best_device
 from app.core.utils.exceptions import AppException, ErrorCode
 from app.modules.embeddings.repository import EmbeddingJobRepository, EmbeddingCheckpointRepository
 from app.modules.embeddings.schemas import (
@@ -1058,22 +1059,10 @@ async def _get_embedding_provider(model_name: str, api_key: str = None, api_base
                 logger.info(f"Found embedding model at: {local_path}")
                 break
         
-        # Auto-detect best device (GPU acceleration)
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda"
-            logger.info("CUDA GPU detected, using GPU acceleration")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            try:
-                # Test MPS functionality
-                test_tensor = torch.zeros(1, device="mps")
-                del test_tensor
-                device = "mps"
-                logger.info("Apple MPS detected, using GPU acceleration")
-            except Exception:
-                logger.warning("MPS available but not functional, using CPU")
-        else:
-            logger.info("No GPU detected, using CPU (this will be slow for large models)")
+
+        # Auto-detect best device using common utility
+        device = get_best_device()
+
         
         # Load model in a thread to avoid blocking
         logger.info(f"Loading embedding model '{actual_model}' on {device} (first load may take 1-2 min)...")

@@ -5,17 +5,20 @@ import { APP_CONFIG } from '../config';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/Toast';
 import { ArrowLeftIcon, CommandLineIcon, UserGroupIcon, Cog6ToothIcon } from '@heroicons/react/24/outline';
-import { getAgent, startEmbeddingJob, handleApiError, getDraftConfig, getVectorDbStatusByConfig } from '../services/api';
+import { getAgent, getDraftConfig } from '../services/api';
 import { canEditPrompt } from '../utils/permissions';
 import type { Agent } from '../types/agent';
-import type { VectorDbStatus, ActiveConfig } from '../contexts/AgentContext';
+import type { ActiveConfig } from '../contexts/AgentContext';
 
 // Import tab components
 import { OverviewTab, KnowledgeTab, SandboxTab, UsersTab, MonitoringTab, ConfigHistoryTab } from '../components/config/tabs';
-import type { EmbeddingSettings } from '../components/EmbeddingSettingsModal';
+
+// Import reusable agent components
+import AgentDetailsCard from '../components/AgentDetailsCard';
+import AgentDangerZone from '../components/AgentDangerZone';
 
 // Import hooks for data fetching
-import { getActiveConfigMetadata, listEmbeddingJobs, getConnections } from '../services/api';
+import { getActiveConfigMetadata, getConnections } from '../services/api';
 
 
 const AgentDashboardPage: React.FC = () => {
@@ -23,7 +26,7 @@ const AgentDashboardPage: React.FC = () => {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const { user, isLoading: isAuthLoading } = useAuth();
-    const { success: showSuccess, error: showError } = useToast();
+    const { error: showError } = useToast();
     const canEdit = canEditPrompt(user);
 
     // Agent state
@@ -32,9 +35,7 @@ const AgentDashboardPage: React.FC = () => {
 
     // Config state
     const [activeConfig, setActiveConfig] = useState<ActiveConfig | null>(null);
-    const [vectorDbStatus, setVectorDbStatus] = useState<VectorDbStatus | null>(null);
     const [connectionName, setConnectionName] = useState('');
-    const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
 
     // Dashboard tab state - persist in URL query string
     const validTabs = ['overview', 'knowledge', 'sandbox', 'config-history', 'users', 'monitoring'];
@@ -155,7 +156,6 @@ const AgentDashboardPage: React.FC = () => {
 
                 if (config) {
                     setActiveConfig(config);
-                    const parseConf = (c: any) => c ? (typeof c === 'string' ? JSON.parse(c) : c) : null;
 
                     // Set connection name from data_source title (no separate lookup needed)
                     if (config.data_source?.title) {
@@ -171,57 +171,6 @@ const AgentDashboardPage: React.FC = () => {
                             console.error("Failed to fetch connection name", e);
                         }
                     }
-
-                    // Fetch vectorDbStatus from the embedding-jobs API
-                    // This gets actual document/vector counts from completed jobs
-                    const configId = config.id || config.prompt_id;
-                    if (configId) {
-                        try {
-                            const status = await getVectorDbStatusByConfig(configId);
-                            if (isMounted) {
-                                setVectorDbStatus(status);
-                            }
-                        } catch (err) {
-                            console.log('Could not fetch vector DB status:', err);
-                            // Fallback to basic status from config
-                            const embConfig = parseConf(config.embedding_config);
-                            if (isMounted) {
-                                setVectorDbStatus({
-                                    name: config.vector_collection_name || `config_${configId}`,
-                                    exists: config.embedding_status === 'completed',
-                                    total_documents_indexed: 0,
-                                    total_vectors: 0,
-                                    last_updated_at: config.updated_at || null,
-                                    embedding_model: embConfig?.model || null,
-                                    llm: null,
-                                    last_full_run: null,
-                                    last_incremental_run: null,
-                                    version: '1.0.0',
-                                    diagnostics: [],
-                                });
-                            }
-                        }
-                    }
-
-                    // Only fetch embedding job if status indicates one is running
-                    if (config.embedding_status === 'in_progress') {
-                        try {
-                            const jobs = await listEmbeddingJobs({
-                                config_id: config.id || config.prompt_id,
-                                limit: 1
-                            });
-                            if (!isMounted) return;
-                            if (jobs.length > 0) {
-                                const latestJob = jobs[0];
-                                const activeStatuses = ['QUEUED', 'PREPARING', 'EMBEDDING', 'VALIDATING', 'STORING'];
-                                if (activeStatuses.includes(latestJob.status)) {
-                                    setEmbeddingJobId(latestJob.job_id);
-                                }
-                            }
-                        } catch (jobErr) {
-                            console.error("Failed to fetch active jobs", jobErr);
-                        }
-                    }
                 }
             } catch (e) {
                 console.error("Failed to load config", e);
@@ -233,57 +182,6 @@ const AgentDashboardPage: React.FC = () => {
             isMounted = false;
         };
     }, [agent?.id, checkForDraft]);
-
-    const handleStartEmbedding = async (incremental: boolean = true, settings?: EmbeddingSettings) => {
-        const configId = activeConfig?.id || activeConfig?.prompt_id;
-        if (!configId) return;
-
-        try {
-            // Use settings from modal if provided, otherwise use defaults
-            // Note: Old /api/v1/settings/embedding endpoint no longer exists
-            const batchSize = settings?.batch_size || 50;
-            const maxConcurrent = settings?.max_concurrent || 5;
-
-            const result = await startEmbeddingJob({
-                config_id: configId,
-                batch_size: batchSize,
-                max_concurrent: maxConcurrent,
-                incremental: incremental,
-                // Pass additional settings from modal
-                chunking: settings?.chunking,
-                parallelization: settings?.parallelization,
-                medical_context_config: settings?.medical_context_config,
-                max_consecutive_failures: settings?.max_consecutive_failures,
-                retry_attempts: settings?.retry_attempts,
-            });
-            setEmbeddingJobId(result.job_id);
-            showSuccess('Embedding Job Started', result.message);
-        } catch (err) {
-            showError('Failed to start embedding job', handleApiError(err));
-        }
-    };
-
-    const handleEmbeddingComplete = async () => {
-        showSuccess('Embeddings Generated', 'Knowledge base updated successfully');
-        setEmbeddingJobId(null);
-        // Refresh vectorDbStatus from API to get actual counts
-        const configId = activeConfig?.id || activeConfig?.prompt_id;
-        if (configId) {
-            try {
-                const status = await getVectorDbStatusByConfig(configId);
-                setVectorDbStatus(status);
-            } catch (err) {
-                console.error('Failed to refresh vector DB status:', err);
-                // Fallback: just mark as exists
-                if (vectorDbStatus) {
-                    setVectorDbStatus({
-                        ...vectorDbStatus,
-                        exists: true,
-                    });
-                }
-            }
-        }
-    };
 
     if (isAuthLoading || isLoadingAgent) {
         return (
@@ -384,18 +282,7 @@ const AgentDashboardPage: React.FC = () => {
                                 )}
 
                                 {dashboardTab === 'knowledge' && (
-                                    <KnowledgeTab
-                                        activeConfig={activeConfig}
-                                        vectorDbStatus={vectorDbStatus}
-                                        embeddingJobId={embeddingJobId}
-                                        onStartEmbedding={handleStartEmbedding}
-                                        onEmbeddingComplete={handleEmbeddingComplete}
-                                        onEmbeddingError={(err) => showError('Embedding Failed', err)}
-                                        onEmbeddingCancel={() => {
-                                            showError('Job Cancelled', 'Embedding generation cancelled');
-                                            setEmbeddingJobId(null);
-                                        }}
-                                    />
+                                    <KnowledgeTab configId={activeConfig.id || activeConfig.prompt_id} />
                                 )}
 
                                 {dashboardTab === 'sandbox' && (
@@ -420,20 +307,35 @@ const AgentDashboardPage: React.FC = () => {
                         ) : dashboardTab === 'users' ? (
                             <UsersTab agentId={agent.id} agentName={agent.name} />
                         ) : (
-                            <div className="min-h-[400px] flex flex-col items-center justify-center text-center p-12 bg-white rounded-2xl border-2 border-dashed border-gray-200 shadow-sm">
-                                <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6">
-                                    <Cog6ToothIcon className="w-10 h-10 text-blue-500" />
+                            <div className="space-y-6">
+                                {/* Agent Details Card - Always visible for unconfigured agents */}
+                                <AgentDetailsCard
+                                    agent={agent}
+                                    canEdit={canEdit}
+                                    onAgentUpdate={reloadAgent}
+                                />
+
+                                {/* No Configuration Message */}
+                                <div className="min-h-[300px] flex flex-col items-center justify-center text-center p-12 bg-white rounded-2xl border-2 border-dashed border-gray-200 shadow-sm">
+                                    <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6">
+                                        <Cog6ToothIcon className="w-10 h-10 text-blue-500" />
+                                    </div>
+                                    <h2 className="text-2xl font-bold text-gray-900 mb-3">No Active Configuration</h2>
+                                    <p className="text-gray-500 max-w-sm mx-auto mb-8">
+                                        This agent has not been configured yet. Start the setup wizard to connect a data source and define behavior.
+                                    </p>
+                                    <button
+                                        onClick={() => navigate(`/agents/${agent.id}/config`)}
+                                        className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold shadow-lg shadow-blue-200 transition-all hover:-translate-y-1 active:translate-y-0"
+                                    >
+                                        Start Setup Wizard
+                                    </button>
                                 </div>
-                                <h2 className="text-2xl font-bold text-gray-900 mb-3">No Active Configuration</h2>
-                                <p className="text-gray-500 max-w-sm mx-auto mb-8">
-                                    This agent has not been configured yet. Start the setup wizard to connect a data source and define behavior.
-                                </p>
-                                <button
-                                    onClick={() => navigate(`/agents/${agent.id}/config`)}
-                                    className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold shadow-lg shadow-blue-200 transition-all hover:-translate-y-1 active:translate-y-0"
-                                >
-                                    Start Setup Wizard
-                                </button>
+
+                                {/* Danger Zone - Delete Agent */}
+                                {canEdit && (
+                                    <AgentDangerZone agent={agent} />
+                                )}
                             </div>
                         )}
                     </div>

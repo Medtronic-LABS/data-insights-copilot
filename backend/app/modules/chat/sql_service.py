@@ -21,7 +21,7 @@ from sqlalchemy.engine import Engine
 
 from app.core.utils.logging import get_logger
 from app.core.settings import get_settings
-from app.core.prompts import get_sql_generator_prompt
+from app.core.prompts import get_sql_generator_prompt, get_duckdb_sql_rules_prompt
 from app.core.encryption import decrypt_value
 from app.core.utils.exceptions import IrrelevantQueryException
 from app.modules.sql_examples.store import get_sql_examples_store, SQLExamplesStore
@@ -50,39 +50,9 @@ _relevance_stats = {
 # Cache for database engines (connection pooling)
 _ENGINE_CACHE: Dict[str, Engine] = {}
 
-# DuckDB-specific SQL rules to include in prompts
-DUCKDB_SQL_RULES = """CRITICAL DUCKDB SQL RULES:
-1. Window functions (LAG, LEAD, ROW_NUMBER, RANK, DENSE_RANK, FIRST_VALUE, LAST_VALUE) CANNOT be used in WHERE clause - use CTE pattern instead
-2. Window functions CANNOT be used in GROUP BY clause - use CTE pattern instead
-3. Aggregate functions (COUNT, SUM, AVG, MIN, MAX) CANNOT be used in WHERE clause - use subquery or CTE with HAVING
-4. Date difference: Use (date1 - date2) for interval or DATEDIFF('day', start_date, end_date) with 3 arguments
-5. For first/last value comparisons, ALWAYS use ROW_NUMBER() in a CTE, then filter in outer query
-6. Use DATE_TRUNC('month', date_col) for date truncation, not MONTH() or DATEPART()
-7. Use INTERVAL '90 days' syntax for date arithmetic, not DATE_SUB() or DATEADD()
-8. For consecutive streak detection, use the ROW_NUMBER difference technique in CTEs
-9. String concatenation uses || operator, not CONCAT() in some contexts
-10. Boolean values are TRUE/FALSE, not 1/0
-11. **TYPE CASTING FOR DATE COLUMNS**: If a date column is VARCHAR type (check schema), CAST it before date comparisons:
-    - Use CAST(column_name AS TIMESTAMP) or column_name::TIMESTAMP
-    - Example: WHERE CAST(created_at AS TIMESTAMP) >= CURRENT_DATE - INTERVAL '1 year'
-    - Also cast before DATE_TRUNC: DATE_TRUNC('month', CAST(created_at AS TIMESTAMP))
-12. **CHECK COLUMN TYPES IN SCHEMA**: Before date/numeric operations, verify the column type. If VARCHAR contains dates, cast explicitly.
-13. **GREATEST/LEAST FOR ROW-WISE MIN/MAX**: To find min/max ACROSS COLUMNS in a single row, use GREATEST() and LEAST(), NOT max() or min():
-    - WRONG: max(col1, col2, col3) or min(col1, col2, col3) - These are AGGREGATE functions!
-    - CORRECT: GREATEST(col1, col2, col3) or LEAST(col1, col2, col3)
-    - Example: SELECT GREATEST(pulse_1, pulse_2, COALESCE(pulse_3, 0)) - LEAST(pulse_1, pulse_2, COALESCE(pulse_3, 0)) AS pulse_variance
-14. **COALESCE FOR NULL HANDLING**: Use COALESCE(column, default_value) to handle NULLs in calculations.
-15. **AGGREGATE vs ROW-WISE FUNCTIONS**: 
-    - max()/min() are AGGREGATE functions - they work ACROSS ROWS (vertical)
-    - GREATEST()/LEAST() are SCALAR functions - they work ACROSS COLUMNS in a single row (horizontal)
-16. **TIMEZONE-AWARE TIMESTAMPS & DIRTY STRINGS**: If a timestamp column contains timezone info (e.g., "+0300", "UTC", "Z") or if a VARCHAR needs conversion, ALWAYS use TIMESTAMPTZ:
-    - WRONG: CAST(created_at AS TIMESTAMP) - fails if string has timezone or is already a DATE.
-    - CORRECT: CAST(created_at AS TIMESTAMPTZ) or created_at::TIMESTAMPTZ
-    - Example: DATE_TRUNC('month', CAST(created_at AS TIMESTAMPTZ))
-    - For any string-to-date conversion where formatting is complex, prefer TIMESTAMPTZ.
-17. **PREFER DEDICATED DATE COLUMNS**: If a table has both a date column (like 'ymd', 'date') and a timestamp, prefer the dedicated date column to avoid timezone issues.
-18. **NO SUBSTRING FOR DATES**: Never use SUBSTRING() on a DATE or TIMESTAMP column. Only use it on VARCHAR if absolutely necessary. DuckDB's CAST is usually smart enough without it.
-"""
+# Global cache for discovered table names (keyed by normalized db_url)
+# This prevents re-querying the database for table discovery on every request
+_TABLE_NAMES_CACHE: Dict[str, List[str]] = {}
 
 # Query type classification keywords
 QUERY_TYPE_KEYWORDS = {
@@ -441,9 +411,28 @@ class SQLService:
             logger.error(f"Failed to create database engine: {e}")
             raise
     
+    def _get_cache_key(self) -> str:
+        """Get a normalized cache key for the database URL."""
+        db_url = self._db_url
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        return db_url
+
     def _discover_tables(self) -> List[str]:
-        """Discover available tables in the database, excluding internal/metadata tables."""
+        """
+        Discover available tables in the database, excluding internal/metadata tables.
+        
+        Uses a global cache to avoid re-querying the database on every request.
+        """
+        # Check instance cache first
         if self._table_names:
+            return self._table_names
+        
+        # Check global cache (shared across SQLService instances with same db_url)
+        cache_key = self._get_cache_key()
+        if cache_key in _TABLE_NAMES_CACHE:
+            self._table_names = _TABLE_NAMES_CACHE[cache_key]
+            logger.debug(f"Using cached table list ({len(self._table_names)} tables)")
             return self._table_names
         
         engine = self._get_engine()
@@ -491,13 +480,12 @@ class SQLService:
                 # Filter out internal/metadata tables (those starting with underscore)
                 self._table_names = [t for t in all_tables if not t.startswith('_')]
                 
-                # Log what was found
-                if all_tables:
-                    filtered_count = len(all_tables) - len(self._table_names)
-                    if filtered_count > 0:
-                        logger.debug(f"Filtered out {filtered_count} internal tables")
+                # Store in global cache for reuse across instances
+                _TABLE_NAMES_CACHE[cache_key] = self._table_names
+                
+                # Log only count on first discovery (not all table names to reduce log noise)
+                logger.info(f"Discovered {len(self._table_names)} tables (cached for future requests)")
             
-            logger.info(f"Discovered {len(self._table_names)} tables: {self._table_names}")
             return self._table_names
             
         except Exception as e:
@@ -816,7 +804,7 @@ class SQLService:
         base_prompt = get_sql_generator_prompt()
         
         # Add DuckDB-specific rules if using DuckDB
-        db_rules = DUCKDB_SQL_RULES if self._is_duckdb() else ""
+        db_rules = get_duckdb_sql_rules_prompt() if self._is_duckdb() else ""
         
         # Get data dictionary context for semantic enrichment
         data_dict_context = self._get_data_dictionary_context()

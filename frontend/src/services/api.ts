@@ -1212,12 +1212,20 @@ export const agenticHybridQuery = async (
 // DATA SOURCES API - Unified database & file source management
 // ============================================================================
 
+/**
+ * Encode a database URL for secure transport.
+ * This is obfuscation (base64) to prevent casual network inspection.
+ */
+export const encodeDbUrl = (dbUrl: string): string => {
+  return btoa(dbUrl);
+};
+
 export interface DataSource {
   id: string;
   title: string;
   description?: string;
   source_type: 'database' | 'file';
-  // Database fields
+  // Database fields - db_url is returned with credentials masked
   db_url?: string;
   db_engine_type?: string;
   // File fields
@@ -1249,6 +1257,7 @@ export interface DatabaseSourceCreate {
   source_type: 'database';
   db_url: string;
   db_engine_type: string;
+  is_encoded?: boolean;  // Whether db_url is base64 encoded
 }
 
 export interface FileSourceCreate {
@@ -1312,9 +1321,16 @@ export const getDataSource = async (id: string): Promise<DataSource> => {
 
 /**
  * Create a database connection data source.
+ * Automatically encodes the db_url for secure transport.
  */
 export const createDatabaseSource = async (data: DatabaseSourceCreate): Promise<DataSource> => {
-  const response = await apiClient.post('/api/v1/data-sources/database', data);
+  // Encode the db_url for secure transport
+  const secureData = {
+    ...data,
+    db_url: encodeDbUrl(data.db_url),
+    is_encoded: true,
+  };
+  const response = await apiClient.post('/api/v1/data-sources/database', secureData);
   // Response wrapped: { success, message, data: DataSource }
   return response.data?.data || response.data;
 };
@@ -1346,14 +1362,17 @@ export const deleteDataSource = async (id: string): Promise<void> => {
 
 /**
  * Test a database connection before saving.
+ * Automatically encodes the db_url for secure transport.
  */
 export const testDataSourceConnection = async (
   db_url: string,
   db_engine_type: string
 ): Promise<TestConnectionResult> => {
+  // Encode the db_url for secure transport
   const response = await apiClient.post('/api/v1/data-sources/test-connection', {
-    db_url,
+    db_url: encodeDbUrl(db_url),
     db_engine_type,
+    is_encoded: true,
   });
   // Response wrapped: { success, message, data: TestConnectionResult }
   return response.data?.data || response.data;
@@ -1427,6 +1446,15 @@ export const deleteDataSourceSqlTable = async (tableName: string): Promise<{ sta
 // AGENT CONFIG DRAFT API - Versioned configuration with draft support
 // ============================================================================
 
+// Model info returned by backend when model IDs are resolved
+export interface ConfigModelInfo {
+  id: number;
+  provider_name: string;
+  display_name: string;
+  model_id: string;
+  model_type: string;
+}
+
 export interface AgentConfig {
   id: number;
   agent_id: string;
@@ -1442,6 +1470,10 @@ export interface AgentConfig {
   llm_model_id?: number;
   embedding_model_id?: number;
   reranker_model_id?: number;
+  // Resolved model info (populated by backend when model IDs are set)
+  llm_model?: ConfigModelInfo;
+  embedding_model?: ConfigModelInfo;
+  reranker_model?: ConfigModelInfo;
   system_prompt?: string;
   example_questions?: string[];
   embedding_path?: string;
@@ -1831,17 +1863,6 @@ export interface AIModel {
   download_progress: number;
   download_error?: string;
   download_queue_position?: number;
-  hf_model_id?: string;
-  hf_revision?: string;
-
-  // Model specs
-  context_length?: number;
-  max_input_tokens?: number;
-  dimensions?: number;
-
-  // RAG hints
-  recommended_chunk_size?: number;
-  compatibility_notes?: string;
 
   // Status
   is_active: boolean;
@@ -1868,17 +1889,6 @@ export interface AIModelCreate {
 
   // Local config
   local_path?: string;
-  hf_model_id?: string;
-  hf_revision?: string;
-
-  // Model specs
-  context_length?: number;
-  max_input_tokens?: number;
-  dimensions?: number;
-
-  // RAG hints
-  recommended_chunk_size?: number;
-  compatibility_notes?: string;
 
   description?: string;
   is_default?: boolean;
@@ -1891,11 +1901,6 @@ export interface AIModelUpdate {
   api_key?: string;
   api_key_env_var?: string;
   local_path?: string;
-  context_length?: number;
-  max_input_tokens?: number;
-  dimensions?: number;
-  recommended_chunk_size?: number;
-  compatibility_notes?: string;
   description?: string;
   is_active?: boolean;
   is_default?: boolean;
@@ -1963,8 +1968,6 @@ export interface AvailableModel {
   deployment_type: DeploymentType;
   is_ready: boolean;
   is_default: boolean;
-  context_length?: number;
-  dimensions?: number;
 }
 
 export interface AvailableModelsResponse {

@@ -74,9 +74,9 @@ async def update_model_download_status(
 class DownloadProgress:
     """Tracks download progress for a single model."""
     
-    def __init__(self, model_id: int, hf_model_id: str, local_path: str):
+    def __init__(self, model_id: int, source_model_id: str, local_path: str):
         self.model_id = model_id
-        self.hf_model_id = hf_model_id
+        self.source_model_id = source_model_id  # Model ID from the source (e.g., HuggingFace)
         self.local_path = local_path
         self.status = "pending"  # pending, downloading, ready, error, not_downloaded
         self.progress_percent = 0
@@ -99,7 +99,7 @@ class DownloadProgress:
     def to_dict(self) -> dict:
         return {
             "model_id": self.model_id,
-            "hf_model_id": self.hf_model_id,
+            "source_model_id": self.source_model_id,
             "status": self.status,
             "progress_percent": self.progress_percent,
             "downloaded_bytes": self.downloaded_bytes,
@@ -120,7 +120,7 @@ class DownloadManager:
         # Start download
         job_id = await manager.start_download(
             model_id=1,
-            hf_model_id="BAAI/bge-base-en-v1.5",
+            source_model_id="BAAI/bge-base-en-v1.5",  # Model ID from source (e.g., HuggingFace)
             local_path="./data/models/BAAI/bge-base-en-v1.5"
         )
         
@@ -135,7 +135,7 @@ class DownloadManager:
     def __init__(self):
         self._downloads: Dict[int, DownloadProgress] = {}  # model_id -> progress
         self._tasks: Dict[int, asyncio.Task] = {}  # model_id -> asyncio task
-        self._queue: list = []  # Queue of pending downloads: (model_id, hf_model_id, local_path, revision, on_complete)
+        self._queue: list = []  # Queue of pending downloads: (model_id, source_model_id, local_path, revision, on_complete)
         self._current_download: Optional[int] = None  # Currently downloading model_id
         self._lock = asyncio.Lock()
         self._hf_service = get_hf_service()
@@ -143,7 +143,7 @@ class DownloadManager:
     async def start_download(
         self,
         model_id: int,
-        hf_model_id: str,
+        source_model_id: str,
         local_path: str,
         revision: str = "main",
         on_complete: Optional[Callable[[int, bool, Optional[str]], None]] = None
@@ -153,7 +153,7 @@ class DownloadManager:
         
         Args:
             model_id: Database model ID
-            hf_model_id: HuggingFace model ID (e.g., 'BAAI/bge-base-en-v1.5')
+            source_model_id: Model ID from source provider (e.g., HuggingFace: 'BAAI/bge-base-en-v1.5')
             local_path: Local directory to save model
             revision: Git revision (default 'main')
             on_complete: Optional callback(model_id, success, error_message)
@@ -169,7 +169,7 @@ class DownloadManager:
                     return existing
             
             # Create progress tracker (starts in pending state)
-            progress = DownloadProgress(model_id, hf_model_id, local_path)
+            progress = DownloadProgress(model_id, source_model_id, local_path)
             self._downloads[model_id] = progress
             
             # If nothing is currently downloading, start immediately
@@ -181,8 +181,8 @@ class DownloadManager:
                 self._tasks[model_id] = task
             else:
                 # Add to queue - will be processed when current download finishes
-                self._queue.append((model_id, hf_model_id, local_path, revision, on_complete))
-                logger.info(f"Queued download for {hf_model_id} (position {len(self._queue)})")
+                self._queue.append((model_id, source_model_id, local_path, revision, on_complete))
+                logger.info(f"Queued download for {source_model_id} (position {len(self._queue)})")
             
             return progress
     
@@ -194,17 +194,17 @@ class DownloadManager:
                 return
             
             # Get next item from queue
-            model_id, hf_model_id, local_path, revision, on_complete = self._queue.pop(0)
+            model_id, source_model_id, local_path, revision, on_complete = self._queue.pop(0)
             
             # Get existing progress tracker
             progress = self._downloads.get(model_id)
             if not progress:
                 # Shouldn't happen, but create one just in case
-                progress = DownloadProgress(model_id, hf_model_id, local_path)
+                progress = DownloadProgress(model_id, source_model_id, local_path)
                 self._downloads[model_id] = progress
             
             self._current_download = model_id
-            logger.info(f"Starting queued download for {hf_model_id}")
+            logger.info(f"Starting queued download for {source_model_id}")
             
             task = asyncio.create_task(
                 self._download_task(progress, revision, on_complete)
@@ -237,14 +237,14 @@ class DownloadManager:
             progress.progress_percent = 5
             
             # Get expected model size (estimate) from HF
-            expected_size = await self._get_expected_model_size(progress.hf_model_id)
+            expected_size = await self._get_expected_model_size(progress.source_model_id)
             if expected_size:
                 progress.total_bytes = expected_size
             
             # Start download in background and monitor progress
             download_task = asyncio.create_task(
                 self._hf_service.download_model(
-                    model_id=progress.hf_model_id,
+                    model_id=progress.source_model_id,
                     local_path=progress.local_path,
                     revision=revision
                 )
@@ -328,7 +328,7 @@ class DownloadManager:
             await update_model_download_status(progress.model_id, "not_downloaded", 0)
             raise
         except Exception as e:
-            logger.exception(f"Download failed for {progress.hf_model_id}")
+            logger.exception(f"Download failed for {progress.source_model_id}")
             progress.status = "error"
             progress.error_message = str(e)
             await update_model_download_status(progress.model_id, "error", 0, str(e))
