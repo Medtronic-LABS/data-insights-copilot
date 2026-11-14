@@ -49,7 +49,7 @@ structlog==24.1.0
 # ============================================
 # Observability - OpenTelemetry
 # ============================================
-opentelemetry-api==1.40.0
+opentelemetry-api==1.45.2
 opentelemetry-sdk==1.40.0
 opentelemetry-instrumentation-fastapi==0.61b0
 opentelemetry-instrumentation-httpx==0.61b0
